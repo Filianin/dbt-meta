@@ -1,0 +1,43 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# Backup files
+*.bak
+*.backup
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+temp/
+
+# Ignore all dotfiles and dotfolders
+.*
+
+# But keep these
+!.gitignore
+
+# Python cache and test artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+htmlcov/
+.coverage
+.pytest_cache/
+.benchmarks/
+
+# Project-specific development files
+CLAUDE.md
