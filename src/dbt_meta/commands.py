@@ -640,7 +640,7 @@ def children(manifest_path: str, model_name: str, recursive: bool = False) -> Op
 
 def schema_dev(manifest_path: str, model_name: str) -> Optional[Dict[str, str]]:
     """
-    Get dev table location (development schema)
+    Get dev table location (development schema) with BigQuery fallback
 
     Args:
         manifest_path: Path to manifest.json
@@ -652,9 +652,13 @@ def schema_dev(manifest_path: str, model_name: str) -> Optional[Dict[str, str]]:
         - table: model name (NOT alias!)
         - full_name: schema.model_name
 
-        Returns None if model not found.
+        Returns None if model not found in manifest AND not in BigQuery.
 
     Note: Dev tables use SQL filename, not config.alias
+
+    Fallback behavior:
+        If model not found in manifest, checks if table exists in BigQuery.
+        Controlled by DBT_FALLBACK_BIGQUERY env var (default: true).
 
     Environment variables (in priority order):
         1. DBT_DEV_SCHEMA: Full dev schema name (e.g., "my_dev_schema")
@@ -667,45 +671,32 @@ def schema_dev(manifest_path: str, model_name: str) -> Optional[Dict[str, str]]:
            - Example: "personal" → "personal_pavel_filianin"
            - Empty string "" means no prefix → just "{username}"
         4. Default: "personal_{username}"
+        5. DBT_FALLBACK_BIGQUERY: Enable BigQuery fallback (default: true)
 
     Username priority: $DBT_USER > $USER > getpass.getuser()
     Dots in username are replaced with underscores for BigQuery compatibility
     """
     import os
     import getpass
+    import subprocess
 
     parser = _get_cached_parser(manifest_path)
     model = parser.get_model(model_name)
 
-    if not model:
-        return None
-
-    # Priority 1: Check if full dev schema is specified
+    # Calculate dev schema (needed for both manifest and fallback paths)
     dev_schema = os.environ.get('DBT_DEV_SCHEMA')
 
     if not dev_schema:
-        # Get username from DBT_USER env var, fallback to system USER, then getpass
         username = os.environ.get('DBT_USER') or os.environ.get('USER') or getpass.getuser()
-        # Replace dots with underscores for BigQuery compatibility
         username = username.replace('.', '_')
 
-        # Priority 2: Check for template
         template = os.environ.get('DBT_DEV_SCHEMA_TEMPLATE')
         if template:
             dev_schema = template.format(username=username)
         else:
-            # Priority 3: Check for prefix (default: "personal")
             prefix = os.environ.get('DBT_DEV_SCHEMA_PREFIX', 'personal')
+            dev_schema = f"{prefix}_{username}" if prefix else username
 
-            # Combine prefix and username
-            if prefix:
-                dev_schema = f"{prefix}_{username}"
-            else:
-                # No prefix, just username
-                dev_schema = username
-
-    # Optional: Sanitize schema name for BigQuery compatibility
-    # Only if DBT_VALIDATE_BIGQUERY is set (opt-in, not breaking for other DWH)
     if os.environ.get('DBT_VALIDATE_BIGQUERY', '').lower() in ('true', '1', 'yes'):
         sanitized_schema, warnings = _sanitize_bigquery_name(dev_schema, "dataset")
         if warnings:
@@ -713,14 +704,49 @@ def schema_dev(manifest_path: str, model_name: str) -> Optional[Dict[str, str]]:
                 print(f"⚠️  BigQuery validation: {warning}", file=sys.stderr)
         dev_schema = sanitized_schema
 
-    # Dev table name uses model.name (filename), NOT config.alias
-    table_name = model.get('name', '')
+    # If model found in manifest - use it
+    if model:
+        table_name = model.get('name', '')
+        return {
+            'schema': dev_schema,
+            'table': table_name,
+            'full_name': f"{dev_schema}.{table_name}"
+        }
 
-    return {
-        'schema': dev_schema,
-        'table': table_name,
-        'full_name': f"{dev_schema}.{table_name}"
-    }
+    # FALLBACK: Model not in manifest - check BigQuery directly
+    fallback_enabled = os.environ.get('DBT_FALLBACK_BIGQUERY', 'true').lower() in ('true', '1', 'yes')
+
+    if fallback_enabled:
+        # Try two naming strategies:
+        # 1. Full model name: core_google_ads__conversions_base → core_google_ads__conversions_base
+        # 2. Just last part: core_google_ads__conversions_base → conversions_base
+        table_candidates = [
+            model_name,  # Try full name first (common in dev)
+            model_name.split('__')[-1] if '__' in model_name else model_name  # Then try last part
+        ]
+
+        for table_name in table_candidates:
+            full_table = f"{dev_schema}.{table_name}"
+
+            try:
+                result = subprocess.run(
+                    ['bq', 'show', '--format=json', full_table],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+
+                if result.returncode == 0:
+                    print(f"⚠️  Model not in manifest, using BigQuery table: {full_table}", file=sys.stderr)
+                    return {
+                        'schema': dev_schema,
+                        'table': table_name,
+                        'full_name': full_table
+                    }
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                continue
+
+    return None
 
 
 def node(manifest_path: str, input_identifier: str) -> Optional[Dict[str, Any]]:

@@ -318,6 +318,40 @@ meta schema-dev model_name
 # username = john_doe (dots → underscores)
 ```
 
+#### BigQuery Fallback (Default: Enabled)
+
+**NEW**: `meta schema-dev` now includes **BigQuery fallback** for tables built outside the manifest.
+
+**Use case**: You have a table in `personal_pavel_filianin.conversions_base`, but the model was removed from the project or not yet parsed into `target/manifest.json`.
+
+```bash
+# Default behavior (fallback enabled)
+meta schema-dev core_google_ads__conversions_base
+# 1. Checks target/manifest.json first
+# 2. If not found → queries BigQuery: bq show personal_pavel_filianin.conversions_base
+# 3. If table exists → returns schema.table
+# Output: {"schema": "personal_pavel_filianin", "table": "conversions_base", ...}
+# stderr: ⚠️  Model not in manifest, using BigQuery table: personal_pavel_filianin.conversions_base
+
+# Disable fallback (strict manifest-only mode)
+export DBT_FALLBACK_BIGQUERY="false"
+meta schema-dev core_google_ads__conversions_base
+# Error: Model 'core_google_ads__conversions_base' not found
+```
+
+**How fallback works**:
+1. Tries two naming strategies:
+   - Full model name: `core_google_ads__conversions_base` → `personal_pavel.core_google_ads__conversions_base`
+   - Last segment only: `core_google_ads__conversions_base` → `personal_pavel.conversions_base`
+2. Runs `bq show {dev_schema}.{table_name}` for each candidate (10s timeout)
+3. Returns first match, or None if neither exists
+
+**Benefits**:
+- ✅ Works with manually created tables in dev schema
+- ✅ Supports tables built before manifest was updated
+- ✅ Gracefully handles deleted models that still have data
+- ✅ No breaking changes (enabled by default)
+
 #### BigQuery Validation (Optional)
 
 **dbt-meta** includes optional BigQuery compatibility validation for schema names. This feature is **opt-in** and won't affect users of other data warehouses (Snowflake, Redshift, etc.).
@@ -437,6 +471,7 @@ meta schema-dev jaffle_shop__customers
 | `DBT_PROD_TABLE_NAME` | Prod table strategy | `alias_or_name` | `name`, `alias` |
 | `DBT_PROD_SCHEMA_SOURCE` | Prod schema/database strategy | `config_or_model` | `model`, `config` |
 | `DBT_VALIDATE_BIGQUERY` | BigQuery name validation (opt-in) | disabled | `true`, `1`, `yes` |
+| `DBT_FALLBACK_BIGQUERY` | BigQuery fallback for schema-dev | `true` | `false`, `0`, `no` |
 
 ### Manifest Priority (Production vs Dev)
 
