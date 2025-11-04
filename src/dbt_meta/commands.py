@@ -8,7 +8,9 @@ Each command returns formatted data matching bash version output.
 import subprocess
 import json as json_lib
 import sys
+import os
 import re
+import glob
 from functools import lru_cache
 from typing import Dict, List, Optional, Any
 from dbt_meta.manifest.parser import ManifestParser
@@ -95,6 +97,160 @@ def _sanitize_bigquery_name(name: str, name_type: str = "dataset") -> tuple[str,
         warnings.append(f"Name sanitized: '{original}' → '{name}'")
 
     return name, warnings
+
+
+def _infer_table_parts(model_name: str) -> tuple[Optional[str], str]:
+    """
+    Extract dataset and table from dbt model name.
+
+    Examples:
+        'core_client__events' → ('core_client', 'events')
+        'staging_sugarcrm__accounts' → ('staging_sugarcrm', 'accounts')
+        'single_word' → (None, 'single_word')
+        'core__client__events' → ('core__client', 'events')
+
+    Args:
+        model_name: dbt model name with __ separator
+
+    Returns:
+        Tuple of (dataset, table). dataset is None if no __ found.
+    """
+    if '__' not in model_name:
+        return None, model_name
+
+    # Split by __ and take last part as table, everything else as dataset
+    parts = model_name.split('__')
+    table = parts[-1]
+    dataset = '__'.join(parts[:-1])
+
+    return dataset, table
+
+
+def _fetch_table_metadata_from_bigquery(
+    dataset: str,
+    table: str,
+    database: Optional[str] = None
+) -> Optional[dict]:
+    """
+    Fetch table metadata from BigQuery using bq show.
+
+    Args:
+        dataset: BigQuery dataset name (schema)
+        table: BigQuery table name
+        database: Optional project ID (if None, uses default project)
+
+    Returns:
+        Dictionary with BigQuery table metadata:
+        {
+            'tableReference': {
+                'projectId': str,
+                'datasetId': str,
+                'tableId': str
+            },
+            'type': 'TABLE' | 'VIEW',
+            'timePartitioning': {...},  # Optional
+            'clustering': {...}  # Optional
+        }
+        None if bq command fails or table not found
+    """
+    # Check if bq command exists
+    try:
+        result = subprocess.run(
+            ['which', 'bq'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode != 0:
+            return None
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+    # Construct full table name
+    if database:
+        full_table = f"{database}:{dataset}.{table}"
+    else:
+        full_table = f"{dataset}.{table}"
+
+    # Execute bq show command
+    try:
+        result = subprocess.run(
+            ['bq', 'show', '--format=json', full_table],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        if result.returncode == 0:
+            metadata = json_lib.loads(result.stdout)
+            return metadata
+        else:
+            return None
+
+    except (subprocess.TimeoutExpired, FileNotFoundError, json_lib.JSONDecodeError):
+        return None
+
+
+def _fetch_columns_from_bigquery_direct(
+    dataset: str,
+    table: str,
+    database: Optional[str] = None
+) -> Optional[List[Dict[str, str]]]:
+    """
+    Fetch columns directly from BigQuery without requiring model in manifest.
+
+    Args:
+        dataset: BigQuery dataset name (schema)
+        table: BigQuery table name
+        database: Optional project ID (if None, uses default project)
+
+    Returns:
+        List of {name, data_type} dictionaries
+        None if BigQuery fetch fails
+    """
+    # Construct full table name
+    if database:
+        full_table = f"{database}:{dataset}.{table}"
+    else:
+        full_table = f"{dataset}.{table}"
+
+    # Check if bq command is available
+    try:
+        subprocess.run(['bq', 'version'], capture_output=True, check=True, timeout=5)
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+        print(f"Error: bq command not found. Install Google Cloud SDK.", file=sys.stderr)
+        return None
+
+    # Fetch schema from BigQuery
+    try:
+        result = subprocess.run(
+            ['bq', 'show', '--schema', '--format=prettyjson', full_table],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10
+        )
+
+        # Parse JSON output
+        bq_schema = json_lib.loads(result.stdout)
+
+        # Convert to our format
+        columns = [
+            {
+                'name': col['name'],
+                'data_type': col['type'].lower()
+            }
+            for col in bq_schema
+        ]
+
+        return columns
+
+    except subprocess.CalledProcessError:
+        print(f"Error: Failed to fetch columns from BigQuery for table: {full_table}", file=sys.stderr)
+        return None
+    except (json_lib.JSONDecodeError, subprocess.TimeoutExpired):
+        print(f"Error: Invalid response from BigQuery", file=sys.stderr)
+        return None
 
 
 def _fetch_columns_from_bigquery(manifest_path: str, model_name: str) -> Optional[List[Dict[str, str]]]:
@@ -192,6 +348,31 @@ def info(manifest_path: str, model_name: str) -> Optional[Dict[str, Any]]:
     model = parser.get_model(model_name)
 
     if not model:
+        # Fallback: Query BigQuery directly
+        if os.environ.get('DBT_FALLBACK_BIGQUERY', 'true').lower() in ('true', '1', 'yes'):
+            dataset, table = _infer_table_parts(model_name)
+            if dataset:
+                bq_metadata = _fetch_table_metadata_from_bigquery(dataset, table)
+                if bq_metadata:
+                    print(f"⚠️  Model '{model_name}' not in manifest, using BigQuery metadata",
+                          file=sys.stderr)
+                    print(f"⚠️  Partial metadata available (missing: file path, tags, unique_id)",
+                          file=sys.stderr)
+
+                    table_ref = bq_metadata.get('tableReference', {})
+                    table_type = bq_metadata.get('type', 'TABLE')
+
+                    return {
+                        'name': model_name,
+                        'database': table_ref.get('projectId', ''),
+                        'schema': table_ref.get('datasetId', ''),
+                        'table': table_ref.get('tableId', ''),
+                        'full_name': f"{table_ref.get('projectId', '')}.{table_ref.get('datasetId', '')}.{table_ref.get('tableId', '')}",
+                        'materialized': 'table' if table_type == 'TABLE' else 'view',
+                        'file': '',  # Not available from BigQuery
+                        'tags': [],  # Not available from BigQuery
+                        'unique_id': ''  # Not available from BigQuery
+                    }
         return None
 
     # Extract config
@@ -243,12 +424,25 @@ def schema(manifest_path: str, model_name: str) -> Optional[Dict[str, str]]:
             - "model": Always use model.schema and model.database
             - "config": Always use config.schema and config.database (fallback to model)
     """
-    import os
-
     parser = _get_cached_parser(manifest_path)
     model = parser.get_model(model_name)
 
     if not model:
+        # Fallback: Query BigQuery directly
+        if os.environ.get('DBT_FALLBACK_BIGQUERY', 'true').lower() in ('true', '1', 'yes'):
+            dataset, table = _infer_table_parts(model_name)
+            if dataset:
+                bq_metadata = _fetch_table_metadata_from_bigquery(dataset, table)
+                if bq_metadata:
+                    print(f"⚠️  Model '{model_name}' not in manifest, using BigQuery table: {dataset}.{table}",
+                          file=sys.stderr)
+                    table_ref = bq_metadata.get('tableReference', {})
+                    return {
+                        'database': table_ref.get('projectId', ''),
+                        'schema': table_ref.get('datasetId', ''),
+                        'table': table_ref.get('tableId', ''),
+                        'full_name': f"{table_ref.get('projectId', '')}.{table_ref.get('datasetId', '')}.{table_ref.get('tableId', '')}"
+                    }
         return None
 
     # Extract config
@@ -321,6 +515,14 @@ def columns(manifest_path: str, model_name: str) -> Optional[List[Dict[str, str]
     model = parser.get_model(model_name)
 
     if not model:
+        # Fallback: Query BigQuery directly
+        if os.environ.get('DBT_FALLBACK_BIGQUERY', 'true').lower() in ('true', '1', 'yes'):
+            dataset, table = _infer_table_parts(model_name)
+            if dataset:
+                print(f"⚠️  Model '{model_name}' not in manifest, fetching columns from BigQuery",
+                      file=sys.stderr)
+                # Fetch directly from BigQuery (bypassing the model parameter)
+                return _fetch_columns_from_bigquery_direct(dataset, table)
         return None
 
     # Extract columns from model
@@ -360,6 +562,51 @@ def config(manifest_path: str, model_name: str) -> Optional[Dict[str, Any]]:
     model = parser.get_model(model_name)
 
     if not model:
+        # Fallback: Query BigQuery directly
+        if os.environ.get('DBT_FALLBACK_BIGQUERY', 'true').lower() in ('true', '1', 'yes'):
+            dataset, table = _infer_table_parts(model_name)
+            if dataset:
+                bq_metadata = _fetch_table_metadata_from_bigquery(dataset, table)
+                if bq_metadata:
+                    print(f"⚠️  Model '{model_name}' not in manifest, using BigQuery config",
+                          file=sys.stderr)
+                    print(f"⚠️  Partial config available (dbt-specific settings unavailable)",
+                          file=sys.stderr)
+
+                    # Map BigQuery → dbt config
+                    table_type = bq_metadata.get('type', 'TABLE')
+                    config_result = {
+                        'materialized': 'table' if table_type == 'TABLE' else 'view',
+                        'partition_by': None,
+                        'cluster_by': None,
+                        # dbt-specific (not available from BigQuery)
+                        'unique_key': None,
+                        'incremental_strategy': None,
+                        'on_schema_change': None,
+                        'grants': {},
+                        'tags': [],
+                        'meta': {},
+                        'enabled': True,
+                        'alias': None,
+                        'schema': None,
+                        'database': None,
+                        'pre_hook': [],
+                        'post_hook': [],
+                        'quoting': {},
+                        'column_types': {},
+                        'persist_docs': {},
+                        'full_refresh': None,
+                    }
+
+                    # Extract partition info
+                    if 'timePartitioning' in bq_metadata:
+                        config_result['partition_by'] = bq_metadata['timePartitioning'].get('field')
+
+                    # Extract clustering info
+                    if 'clustering' in bq_metadata:
+                        config_result['cluster_by'] = bq_metadata['clustering'].get('fields', [])
+
+                    return config_result
         return None
 
     return model.get('config', {})
@@ -381,7 +628,18 @@ def deps(manifest_path: str, model_name: str) -> Optional[Dict[str, List[str]]]:
 
         Returns None if model not found.
     """
-    return _get_cached_parser(manifest_path).get_dependencies(model_name)
+    result = _get_cached_parser(manifest_path).get_dependencies(model_name)
+
+    if result is None:
+        # Improved error message
+        print(f"❌ Dependencies not available for '{model_name}': model not in manifest",
+              file=sys.stderr)
+        print(f"   Dependencies are dbt-specific (refs, sources, macros) and cannot be inferred from BigQuery.",
+              file=sys.stderr)
+        print(f"   Hint: Run 'defer run --select {model_name}' to add model to manifest",
+              file=sys.stderr)
+
+    return result
 
 
 def sql(manifest_path: str, model_name: str, raw: bool = False) -> Optional[str]:
@@ -401,6 +659,11 @@ def sql(manifest_path: str, model_name: str, raw: bool = False) -> Optional[str]
     model = parser.get_model(model_name)
 
     if not model:
+        # Improved error message
+        print(f"❌ SQL code not available for '{model_name}': model not in manifest",
+              file=sys.stderr)
+        print(f"   Hint: Use 'meta path {model_name}' to locate source file",
+              file=sys.stderr)
         return None
 
     # Return raw or compiled SQL
@@ -426,6 +689,26 @@ def path(manifest_path: str, model_name: str) -> Optional[str]:
     model = parser.get_model(model_name)
 
     if not model:
+        # Fallback: Filesystem search
+        if os.environ.get('DBT_FALLBACK_BIGQUERY', 'true').lower() in ('true', '1', 'yes'):
+            # Extract last part of model name (table name)
+            _, table = _infer_table_parts(model_name)
+
+            # Search in models directory
+            matches = glob.glob(f"models/**/*{table}*.sql", recursive=True)
+
+            if len(matches) == 1:
+                print(f"⚠️  Model '{model_name}' not in manifest, found file by pattern: {matches[0]}",
+                      file=sys.stderr)
+                return matches[0]
+            elif len(matches) > 1:
+                print(f"❌ Multiple files match pattern '{table}':", file=sys.stderr)
+                for match in matches:
+                    print(f"   - {match}", file=sys.stderr)
+                return None
+            else:
+                print(f"❌ No .sql files found matching pattern '{table}'", file=sys.stderr)
+                return None
         return None
 
     return model.get('original_file_path', '')
@@ -542,6 +825,11 @@ def parents(manifest_path: str, model_name: str, recursive: bool = False) -> Opt
     model = parser.get_model(model_name)
 
     if not model:
+        # Improved error message
+        print(f"❌ Parent dependencies not available for '{model_name}': model not in manifest",
+              file=sys.stderr)
+        print(f"   Lineage information is stored only in manifest.json",
+              file=sys.stderr)
         return None
 
     unique_id = model['unique_id']
@@ -600,6 +888,11 @@ def children(manifest_path: str, model_name: str, recursive: bool = False) -> Op
     model = parser.get_model(model_name)
 
     if not model:
+        # Improved error message
+        print(f"❌ Child dependencies not available for '{model_name}': model not in manifest",
+              file=sys.stderr)
+        print(f"   Lineage information is stored only in manifest.json",
+              file=sys.stderr)
         return None
 
     unique_id = model['unique_id']
