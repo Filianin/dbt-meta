@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2025-02-04
+
+### Added
+- **BigQuery fallback for models not in manifest** - Continue working even when models are missing from manifest.json
+  - `schema()` - Full fallback to BigQuery table metadata
+  - `columns()` - Full fallback to BigQuery schema
+  - `info()` - Partial fallback (missing: file path, tags, unique_id)
+  - `config()` - Partial fallback (extracts partition_by, cluster_by from BigQuery)
+  - `path()` - Conditional filesystem search fallback
+- **Improved error messages** for commands without fallback:
+  - `deps()` - Explains dependencies are dbt-specific, suggests `defer run`
+  - `sql()` - Suggests using `meta path` to locate source file
+  - `parents()` - Explains lineage is stored only in manifest
+  - `children()` - Explains lineage is stored only in manifest
+- **New helper functions**:
+  - `_infer_table_parts()` - Extract dataset and table from dbt model name
+  - `_fetch_table_metadata_from_bigquery()` - Fetch metadata from BigQuery with 10s timeout
+  - `_fetch_columns_from_bigquery_direct()` - Fetch columns without requiring model in manifest
+- **Environment variable**: `DBT_FALLBACK_BIGQUERY` (default: `true`)
+  - Controls BigQuery fallback behavior
+  - Recognized values: `true`/`1`/`yes` (enable), `false`/`0`/`no` (disable)
+
+### Changed
+- `columns()` now fallback to BigQuery even when model not in manifest (previously only when columns empty)
+- All BigQuery operations use 10-second timeout
+- Warnings printed to stderr with `⚠️` prefix when using fallback
+
+### Documentation
+- Added "BigQuery Fallback" section in README with:
+  - Supported commands table (Full, Partial, None fallback)
+  - Configuration examples
+  - Usage examples with expected output
+  - When to disable fallback
+
 ## [0.1.0] - 2025-01-31
 
 ### Added
@@ -70,5 +104,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Naming configuration guide
   - Apache 2.0 license
 
-[Unreleased]: https://github.com/Filianin/dbt-meta/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Filianin/dbt-meta/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Filianin/dbt-meta/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Filianin/dbt-meta/releases/tag/v0.1.0

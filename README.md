@@ -515,6 +515,99 @@ meta schema-dev core_client__events  # Returns personal_pavel_filianin.events
 bq query "SELECT * FROM personal_pavel_filianin.events"  # Queries YOUR changes
 ```
 
+## 🔄 BigQuery Fallback
+
+**dbt-meta** can fallback to BigQuery when models are not in manifest.json. This is useful when:
+- Working with newly created models not yet in production
+- Testing tables that exist in BigQuery but not in your local manifest
+- Analyzing external tables not managed by dbt
+
+### Supported Commands
+
+| Command | Fallback | Data Source | Limitations |
+|---------|----------|-------------|-------------|
+| `schema` | ✅ Full | BigQuery table metadata | None |
+| `columns` | ✅ Full | BigQuery schema | None |
+| `info` | ⚠️ Partial | BigQuery table metadata | Missing: file path, tags, unique_id |
+| `config` | ⚠️ Partial | BigQuery partitioning/clustering | Missing: dbt-specific configs (unique_key, incremental_strategy, etc.) |
+| `path` | ⚠️ Conditional | Filesystem search | May find wrong file if multiple matches |
+| `deps` | ❌ None | Requires manifest | Cannot infer dbt dependencies from BigQuery |
+| `sql` | ❌ None | Requires manifest | Use `path` to find source file instead |
+| `parents` | ❌ None | Requires manifest | Lineage stored only in manifest.json |
+| `children` | ❌ None | Requires manifest | Lineage stored only in manifest.json |
+
+### Configuration
+
+```bash
+# Enable fallback (default)
+export DBT_FALLBACK_BIGQUERY="true"
+
+# Disable fallback (faster, requires complete manifest)
+export DBT_FALLBACK_BIGQUERY="false"
+```
+
+**Recognized values:**
+- Enable: `true`, `True`, `TRUE`, `1`, `yes`, `Yes`, `YES`
+- Disable: `false`, `False`, `FALSE`, `0`, `no`, `No`, `NO`, empty string
+
+### Example Usage
+
+**Model NOT in manifest - fallback to BigQuery:**
+
+```bash
+# Get schema for model not in manifest
+meta schema core_client__new_model
+# ⚠️  Model 'core_client__new_model' not in manifest, using BigQuery table: core_client.new_model
+# Output: {"database": "admirals-bi-dwh", "schema": "core_client", "table": "new_model", ...}
+
+# Get columns from BigQuery directly
+meta columns -j core_client__new_model
+# ⚠️  Model 'core_client__new_model' not in manifest, fetching columns from BigQuery
+# Output: [{"name": "id", "data_type": "int64"}, {"name": "created_at", "data_type": "timestamp"}, ...]
+
+# Get partial config (partition/cluster info)
+meta config -j core_client__partitioned_table
+# ⚠️  Model 'core_client__partitioned_table' not in manifest, using BigQuery config
+# ⚠️  Partial config available (dbt-specific settings unavailable)
+# Output: {"materialized": "table", "partition_by": "created_at", "cluster_by": ["user_id"], ...}
+
+# Get info (basic metadata)
+meta info core_client__new_model
+# ⚠️  Model 'core_client__new_model' not in manifest, using BigQuery metadata
+# ⚠️  Partial metadata available (missing: file path, tags, unique_id)
+# Output: {"name": "core_client__new_model", "database": "admirals-bi-dwh", ...}
+```
+
+**Commands without fallback - improved error messages:**
+
+```bash
+# Try to get dependencies
+meta deps core_client__new_model
+# ❌ Dependencies not available for 'core_client__new_model': model not in manifest
+#    Dependencies are dbt-specific (refs, sources, macros) and cannot be inferred from BigQuery.
+#    Hint: Run 'defer run --select core_client__new_model' to add model to manifest
+
+# Try to get SQL code
+meta sql core_client__new_model
+# ❌ SQL code not available for 'core_client__new_model': model not in manifest
+#    Hint: Use 'meta path core_client__new_model' to locate source file
+```
+
+### When Fallback is Disabled
+
+```bash
+export DBT_FALLBACK_BIGQUERY="false"
+
+# All commands return None immediately if model not in manifest
+meta schema core_client__new_model
+# Output: (empty, returns None)
+
+meta columns core_client__new_model
+# Output: (empty, returns None)
+```
+
+**Use case**: Faster execution when you know all required models are in manifest, or when BigQuery access is not available.
+
 ## 💡 Examples
 
 ### Before SQL Query Workflow
