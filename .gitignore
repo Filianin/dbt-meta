@@ -40,4 +40,3 @@ htmlcov/
 .benchmarks/
 
 # Project-specific development files
-CLAUDE.md
