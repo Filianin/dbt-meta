@@ -7,6 +7,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2025-11-05
+
+### Added
+
+#### Universal `--dev` Flag Support
+- **All 10 model commands now support `--dev` flag**:
+  - **Metadata**: `schema`, `columns`, `info`, `config`, `docs`
+  - **Code**: `sql`, `path`
+  - **Lineage**: `deps`, `parents`, `children`
+  - Prioritizes dev manifest (`target/`) over production (`.dbt-state/`)
+  - Returns dev schema names and uses model filename (not alias)
+  - Short form: `-d`
+
+#### Simplified Dev Naming Configuration
+- **`DBT_DEV_DATASET`** - Simple constant for dev dataset name
+  - Example: `export DBT_DEV_DATASET="personal_pavel_filianin"`
+  - Replaces complex 4-level priority system
+
+- **`DBT_DEV_TABLE_PATTERN`** - Flexible table naming (default: `name`)
+  - **Predefined**: `name` (filename), `alias` (config alias with fallback)
+  - **Custom with 6 placeholders**: `{name}`, `{alias}`, `{username}`, `{folder}`, `{model_name}`, `{date}`
+  - Examples: `tmp_{name}`, `{username}_{name}`, `{name}_{date}`
+  - Invalid placeholders → warning + fallback to `name`
+
+#### Three-Level Fallback System
+- **LEVEL 1**: Production manifest (`.dbt-state/manifest.json`)
+- **LEVEL 2**: Dev manifest (`target/manifest.json`) - for defer-built models
+- **LEVEL 3**: BigQuery metadata (`bq show`)
+- Environment variables: `DBT_FALLBACK_TARGET`, `DBT_FALLBACK_BIGQUERY` (default: `true`)
+
+#### Intelligent Warning System
+- **Automatic git change detection** - Commands automatically check if model is modified
+  - Warns when querying production but model is modified in git → suggest `--dev`
+  - Warns when using `--dev` flag but model is not modified → suggest removing flag
+  - Warns when using `--dev` but dev manifest not found → suggest `defer run`
+  - **Machine-readable JSON warnings** - All stderr output is JSON when using `-j` flag
+    - Git warnings: `{"warnings": [{"type": "git_mismatch", "severity": "warning", ...}]}`
+    - Fallback warnings: `{"type": "dev_manifest_fallback", "severity": "warning", ...}`
+    - BigQuery fallback: `{"type": "bigquery_fallback", "severity": "warning", ...}`
+  - Color-coded text warnings without `-j` flag (yellow ⚠️) for humans
+
+### Changed
+
+#### Breaking Changes
+- **Removed `is-modified` CLI command** - Now internal helper function
+  - Migration: Remove scripts using `meta is-modified`
+  - Alternative: Use `git diff` directly or check stderr warnings from other commands
+  - Git detection now automatic via warning system
+- **Removed `schema-dev` command** → use `schema --dev` instead
+
+#### Internal Improvements
+- Function signatures: added `use_dev: bool = False` to all 10 model commands
+- New helper functions:
+  - `_calculate_dev_schema()` - simplified dev schema calculation
+  - `_validate_dev_dataset()` - BigQuery validation
+  - `_build_dev_table_name()` - supports 6 placeholders with error handling
+  - `_build_dev_schema_result()` - builds dev schema result
+  - `is_modified()` - internal helper for git change detection (no longer public API)
+  - `_check_manifest_git_mismatch()` - warns when git status doesn't match command
+  - `_find_dev_manifest()` - locates target/manifest.json
+- Manifest parser: LRU cache increased from 1 to 2 entries
+
+### Deprecated
+- `DBT_DEV_SCHEMA`, `DBT_DEV_SCHEMA_TEMPLATE`, `DBT_DEV_SCHEMA_PREFIX` → use `DBT_DEV_DATASET`
+- These still work with deprecation warnings
+
+### Testing
+- **145 tests passing** (was 110 in v0.1.0, was 151 before refactor)
+  - Removed 6 tests for `is-modified` CLI command (no longer public API)
+  - Git detection now tested indirectly through warning system
+- Added 35 new tests in v0.2.1:
+  - 10 tests for --dev flag behavior
+  - 13 tests for dev table pattern placeholders
+  - 12 tests for three-level fallback system
+
 ## [0.2.0] - 2025-02-04
 
 ### Added
@@ -104,6 +179,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Naming configuration guide
   - Apache 2.0 license
 
-[Unreleased]: https://github.com/Filianin/dbt-meta/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Filianin/dbt-meta/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/Filianin/dbt-meta/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Filianin/dbt-meta/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Filianin/dbt-meta/releases/tag/v0.1.0

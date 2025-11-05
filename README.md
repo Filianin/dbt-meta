@@ -2,7 +2,7 @@
 
 > ⚡ AI-first CLI for dbt metadata extraction
 
-[![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)](https://github.com/Filianin/dbt-meta/releases)
+[![Version](https://img.shields.io/badge/version-0.3.0-blue.svg)](https://github.com/Filianin/dbt-meta/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
 [![Built for AI](https://img.shields.io/badge/Built_for-AI_Agents-blueviolet.svg)](#-built-for-ai-workflows)
@@ -13,7 +13,8 @@
 ## ✨ Features
 
 - **⚡ Lightning fast** - Optimized Python with LRU caching and orjson parser
-- **🎯 Production-first** - Automatically prioritizes `.dbt-state/manifest.json` (production) over `target/` (dev)
+- **🎯 Three-level fallback** - Production manifest → Dev manifest → BigQuery (v0.3.0)
+- **🔄 Multi-project support** - Works with defer-built models in dev environment
 - **🔍 Rich metadata** - Schema, columns, dependencies, config, compiled SQL
 - **📊 JSON output** - Machine-readable format for scripting with `jq`
 - **🌳 Dependency navigation** - Trace upstream/downstream models
@@ -471,7 +472,8 @@ meta schema-dev jaffle_shop__customers
 | `DBT_PROD_TABLE_NAME` | Prod table strategy | `alias_or_name` | `name`, `alias` |
 | `DBT_PROD_SCHEMA_SOURCE` | Prod schema/database strategy | `config_or_model` | `model`, `config` |
 | `DBT_VALIDATE_BIGQUERY` | BigQuery name validation (opt-in) | disabled | `true`, `1`, `yes` |
-| `DBT_FALLBACK_BIGQUERY` | BigQuery fallback for schema-dev | `true` | `false`, `0`, `no` |
+| `DBT_FALLBACK_TARGET` | Dev manifest fallback (NEW v0.3.0) | `true` | `false`, `0`, `no` |
+| `DBT_FALLBACK_BIGQUERY` | BigQuery fallback | `true` | `false`, `0`, `no` |
 
 ### Manifest Priority (Production vs Dev)
 
@@ -515,35 +517,72 @@ meta schema-dev core_client__events  # Returns personal_pavel_filianin.events
 bq query "SELECT * FROM personal_pavel_filianin.events"  # Queries YOUR changes
 ```
 
-## 🔄 BigQuery Fallback
+## 🔄 Three-Level Fallback System
 
-**dbt-meta** can fallback to BigQuery when models are not in manifest.json. This is useful when:
-- Working with newly created models not yet in production
-- Testing tables that exist in BigQuery but not in your local manifest
-- Analyzing external tables not managed by dbt
+**dbt-meta** v0.3.0 introduces a three-level fallback system for maximum flexibility:
+
+```
+LEVEL 1: Production Manifest (.dbt-state/manifest.json)
+         ↓ (model not found)
+LEVEL 2: Dev Manifest (target/manifest.json)
+         ↓ (model not found)
+LEVEL 3: BigQuery Metadata (bq show)
+```
+
+This solves the common problem of working with models built via `defer run` that aren't in production:
+
+```bash
+# You build model in dev
+defer run --select core_client__events
+
+# Production manifest doesn't have it, but target/ does
+meta schema core_client__events
+# ⚠️  Model 'core_client__events' found in dev manifest (target/)
+# Output: {"schema": "personal_pavel_filianin", "table": "events"}
+```
+
+### How It Works
+
+1. **LEVEL 1**: Try production manifest (`.dbt-state/manifest.json`) first
+   - Fast path for unchanged models
+   - Returns production table name (`core_client.events`)
+
+2. **LEVEL 2**: If not found, try dev manifest (`target/manifest.json`)
+   - Enabled by default via `DBT_FALLBACK_TARGET=true`
+   - Finds models built with `defer run`
+   - Returns dev table name (`personal_pavel_filianin.events`)
+   - Prints warning to stderr: `⚠️  Model found in dev manifest (target/)`
+
+3. **LEVEL 3**: If still not found, query BigQuery
+   - Enabled by default via `DBT_FALLBACK_BIGQUERY=true`
+   - Infers table name and queries `bq show`
+   - Returns partial metadata (limited to what BigQuery provides)
+   - Prints warning to stderr: `⚠️  Model not in manifest, using BigQuery`
 
 ### Supported Commands
 
-| Command | Fallback | Data Source | Limitations |
-|---------|----------|-------------|-------------|
-| `schema` | ✅ Full | BigQuery table metadata | None |
-| `columns` | ✅ Full | BigQuery schema | None |
-| `info` | ⚠️ Partial | BigQuery table metadata | Missing: file path, tags, unique_id |
-| `config` | ⚠️ Partial | BigQuery partitioning/clustering | Missing: dbt-specific configs (unique_key, incremental_strategy, etc.) |
-| `path` | ⚠️ Conditional | Filesystem search | May find wrong file if multiple matches |
-| `deps` | ❌ None | Requires manifest | Cannot infer dbt dependencies from BigQuery |
-| `sql` | ❌ None | Requires manifest | Use `path` to find source file instead |
-| `parents` | ❌ None | Requires manifest | Lineage stored only in manifest.json |
-| `children` | ❌ None | Requires manifest | Lineage stored only in manifest.json |
+| Command | Level 1 (Prod) | Level 2 (Dev) | Level 3 (BigQuery) | Limitations |
+|---------|----------------|---------------|---------------------|-------------|
+| `schema` | ✅ Full | ✅ Full | ✅ Full | None |
+| `columns` | ✅ Full | ✅ Full | ✅ Full | None |
+| `info` | ✅ Full | ✅ Full | ⚠️ Partial | L3: Missing file path, tags, unique_id |
+| `config` | ✅ Full | ✅ Full | ⚠️ Partial | L3: Missing dbt-specific configs |
+| `path` | ✅ Full | ✅ Full | ⚠️ Conditional | L3: Filesystem search may find wrong file |
+| `deps` | ✅ Full | ✅ Full | ❌ None | L3: Cannot infer dependencies from BigQuery |
+| `sql` | ✅ Full | ✅ Full | ❌ None | L3: Use `path` to find source file |
+| `parents` | ✅ Full | ✅ Full | ❌ None | L3: Lineage only in manifest |
+| `children` | ✅ Full | ✅ Full | ❌ None | L3: Lineage only in manifest |
 
 ### Configuration
 
 ```bash
-# Enable fallback (default)
-export DBT_FALLBACK_BIGQUERY="true"
+# Configure target/ fallback (default: enabled)
+export DBT_FALLBACK_TARGET="true"    # Enable dev manifest fallback
+export DBT_FALLBACK_TARGET="false"   # Disable (prod manifest only)
 
-# Disable fallback (faster, requires complete manifest)
-export DBT_FALLBACK_BIGQUERY="false"
+# Configure BigQuery fallback (default: enabled)
+export DBT_FALLBACK_BIGQUERY="true"  # Enable BigQuery fallback
+export DBT_FALLBACK_BIGQUERY="false" # Disable (manifest-only mode)
 ```
 
 **Recognized values:**
