@@ -428,6 +428,7 @@ def deps(
 def sql(
     model_name: str = typer.Argument(..., help="Model name"),
     jinja: bool = typer.Option(False, "--jinja", help="Show raw SQL with Jinja"),
+    json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
 ):
@@ -462,6 +463,7 @@ def sql(
 @app.command()
 def path(
     model_name: str = typer.Argument(..., help="Model name"),
+    json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
 ):
