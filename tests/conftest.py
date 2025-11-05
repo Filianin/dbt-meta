@@ -10,6 +10,40 @@ def prod_manifest():
     """Production manifest (15MB, 865 models) - for all tests"""
     return Path(__file__).parent / "fixtures" / "manifests" / "prod_manifest.json"
 
+@pytest.fixture
+def dev_manifest_setup(tmp_path, prod_manifest):
+    """
+    Create dev manifest structure for tests requiring use_dev=True
+    Returns path to production manifest with dev manifest (target/) created alongside
+    """
+    # Create manifest structure
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    dbt_state = project_root / ".dbt-state"
+    dbt_state.mkdir()
+    target = project_root / "target"
+    target.mkdir()
+
+    # Production manifest (empty for simplicity)
+    prod_path = dbt_state / "manifest.json"
+    prod_path.write_text('{"nodes": {}}')
+
+    # Dev manifest with test model
+    dev_path = target / "manifest.json"
+    dev_data = {
+        "nodes": {
+            "model.project.core_client__client_profiles_events": {
+                "name": "client_profiles_events",
+                "schema": "core_client",
+                "database": "",
+                "config": {}
+            }
+        }
+    }
+    dev_path.write_text(json.dumps(dev_data))
+
+    return prod_path
+
 # Test models (real production models)
 TEST_MODELS = [
     "core_client__client_profiles_events",

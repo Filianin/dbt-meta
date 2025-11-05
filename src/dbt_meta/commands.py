@@ -17,13 +17,13 @@ from dbt_meta.manifest.parser import ManifestParser
 from dbt_meta.manifest.finder import ManifestFinder
 
 
-@lru_cache(maxsize=1)
+@lru_cache(maxsize=2)
 def _get_cached_parser(manifest_path: str) -> ManifestParser:
     """
     Get cached ManifestParser instance
 
     Uses LRU cache to avoid re-parsing the same manifest.
-    Cache size = 1 since we typically work with one manifest at a time.
+    Cache size = 2 to cache both production (.dbt-state) and dev (target/) manifests.
 
     Args:
         manifest_path: Path to manifest.json
@@ -32,6 +32,396 @@ def _get_cached_parser(manifest_path: str) -> ManifestParser:
         Cached ManifestParser instance
     """
     return ManifestParser(manifest_path)
+
+
+def is_modified(model_name: str) -> bool:
+    """
+    Check if model file is modified in git (new or changed).
+
+    Uses git diff to detect if the model's SQL file has uncommitted changes.
+
+    Args:
+        model_name: dbt model name (e.g., "core_client__events")
+
+    Returns:
+        True if model is new or modified, False otherwise or if git check fails
+    """
+    try:
+        # Extract table name from model_name
+        _, table = _infer_table_parts(model_name)
+
+        # Check git diff for modified files
+        result = subprocess.run(
+            ['git', 'diff', '--name-only', 'HEAD'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+
+        if result.returncode == 0:
+            # Check if any modified file contains the table name
+            modified_files = result.stdout.splitlines()
+            for file_path in modified_files:
+                if table in file_path and file_path.endswith('.sql'):
+                    return True
+
+        # Check git status for new files (untracked)
+        result = subprocess.run(
+            ['git', 'status', '--porcelain'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+
+        if result.returncode == 0:
+            # Check for new files (starting with ??)
+            status_lines = result.stdout.splitlines()
+            for line in status_lines:
+                if line.startswith('??') or line.startswith('A '):
+                    if table in line and line.endswith('.sql'):
+                        return True
+
+        return False
+
+    except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+        # If git check fails, assume not modified (safe default)
+        return False
+
+
+def _check_manifest_git_mismatch(
+    model_name: str,
+    use_dev: bool,
+    dev_manifest_found: Optional[str] = None
+) -> List[Dict[str, str]]:
+    """
+    Internal helper: Check git status and return structured warnings.
+
+    Returns list of warning objects that can be output as JSON (with -j) or text (without -j).
+
+    Warning types:
+    - git_mismatch: Model modified in git but querying production
+    - dev_without_changes: Using --dev but model not modified
+    - dev_manifest_missing: Using --dev but dev manifest not found
+
+    Args:
+        model_name: dbt model name (e.g., "core_client__events")
+        use_dev: Whether --dev flag was used
+        dev_manifest_found: Path to dev manifest if found, None otherwise
+
+    Returns:
+        List of warning dictionaries with keys: type, severity, message, suggestion (optional)
+    """
+    warnings = []
+    modified = is_modified(model_name)
+
+    # Case 1: Using --dev but model NOT modified
+    if use_dev and not modified:
+        warnings.append({
+            "type": "dev_without_changes",
+            "severity": "warning",
+            "message": f"Model '{model_name}' NOT modified in git, but using --dev flag",
+            "detail": "Dev table may not exist or may be outdated",
+            "suggestion": "Remove --dev flag to query production table"
+        })
+
+    # Case 2: NOT using --dev but model IS modified
+    elif not use_dev and modified:
+        warnings.append({
+            "type": "git_mismatch",
+            "severity": "warning",
+            "message": f"Model '{model_name}' IS modified in git",
+            "detail": "Querying production table, but local changes exist",
+            "suggestion": "Use --dev flag to query dev table"
+        })
+
+    # Case 3: Using --dev but dev manifest not found
+    if use_dev and dev_manifest_found is None:
+        warnings.append({
+            "type": "dev_manifest_missing",
+            "severity": "error",
+            "message": "Dev manifest (target/manifest.json) not found",
+            "detail": "Dev table cannot be queried without manifest",
+            "suggestion": f"Run 'defer run --select {model_name}' to build dev table"
+        })
+
+    return warnings
+
+
+def _print_warnings(warnings: List[Dict[str, str]], json_output: bool = False) -> None:
+    """
+    Print warnings to stderr in JSON or text format.
+
+    Args:
+        warnings: List of warning dictionaries from _check_manifest_git_mismatch()
+        json_output: If True, print as JSON. If False, print as colored text.
+    """
+    if not warnings:
+        return
+
+    if json_output:
+        # Print as JSON for machine parsing (agents)
+        print(json_lib.dumps({"warnings": warnings}), file=sys.stderr)
+    else:
+        # Print as colored text for humans
+        for warning in warnings:
+            severity_icon = "⚠️" if warning["severity"] == "warning" else "❌"
+            message = warning["message"]
+            detail = warning.get("detail", "")
+            suggestion = warning.get("suggestion", "")
+
+            # Color: yellow for warning, red for error
+            color_code = "\033[33m" if warning["severity"] == "warning" else "\033[31m"
+            reset_code = "\033[0m"
+
+            print(f"{color_code}{severity_icon}  WARNING: {message}{reset_code}", file=sys.stderr)
+            if detail:
+                print(f"   {detail}", file=sys.stderr)
+            if suggestion:
+                print(f"   Suggestion: {suggestion}", file=sys.stderr)
+
+
+def _find_dev_manifest(prod_manifest_path: str) -> Optional[str]:
+    """
+    Find dev manifest (target/manifest.json) relative to production manifest.
+
+    Given production manifest path like:
+        /path/to/project/.dbt-state/manifest.json
+    Returns dev manifest path:
+        /path/to/project/target/manifest.json
+
+    Args:
+        prod_manifest_path: Path to production manifest
+
+    Returns:
+        Path to dev manifest if exists, None otherwise
+    """
+    from pathlib import Path
+
+    try:
+        prod_path = Path(prod_manifest_path)
+
+        # Navigate up to project root
+        # Assuming prod manifest is in .dbt-state/ or similar
+        project_root = prod_path.parent.parent
+
+        # Look for target/manifest.json
+        dev_manifest = project_root / 'target' / 'manifest.json'
+
+        if dev_manifest.exists():
+            return str(dev_manifest.absolute())
+
+        return None
+
+    except Exception:
+        return None
+
+
+def _calculate_dev_schema() -> str:
+    """
+    Calculate dev schema/dataset name for development tables.
+
+    Environment variables (simplified priority):
+    1. DBT_DEV_DATASET - Full dataset name (REQUIRED, e.g., "personal_pavel_filianin")
+    2. Legacy fallback for backward compatibility:
+       - DBT_DEV_SCHEMA (alias for DBT_DEV_DATASET)
+       - DBT_DEV_SCHEMA_TEMPLATE with {username} placeholder
+       - DBT_DEV_SCHEMA_PREFIX + username
+
+    Returns:
+        Dev dataset name (e.g., "personal_pavel_filianin")
+
+    Raises:
+        ValueError: If no dev dataset is configured
+
+    Example:
+        export DBT_DEV_DATASET="personal_pavel_filianin"
+        meta schema --dev model_name  # → personal_pavel_filianin.table_name
+    """
+    import os
+    import getpass
+
+    # Get username for templates
+    username = os.environ.get('DBT_USER') or os.environ.get('USER') or getpass.getuser()
+    username = username.replace('.', '_')
+
+    # Primary: DBT_DEV_DATASET (recommended)
+    dev_dataset = os.environ.get('DBT_DEV_DATASET')
+
+    if dev_dataset:
+        # Validate and return
+        return _validate_dev_dataset(dev_dataset)
+
+    # Legacy support: DBT_DEV_SCHEMA (deprecated, use DBT_DEV_DATASET)
+    dev_schema = os.environ.get('DBT_DEV_SCHEMA')
+
+    if dev_schema:
+        print("⚠️  DBT_DEV_SCHEMA is deprecated, use DBT_DEV_DATASET instead", file=sys.stderr)
+        return _validate_dev_dataset(dev_schema)
+
+    # Legacy template/prefix support (for backward compatibility)
+    has_template = 'DBT_DEV_SCHEMA_TEMPLATE' in os.environ
+    has_prefix = 'DBT_DEV_SCHEMA_PREFIX' in os.environ
+
+    if has_template:
+        template = os.environ.get('DBT_DEV_SCHEMA_TEMPLATE', '')
+        print("⚠️  DBT_DEV_SCHEMA_TEMPLATE is deprecated, use DBT_DEV_DATASET instead", file=sys.stderr)
+        if template:
+            result = template.format(username=username)
+            return _validate_dev_dataset(result)
+        # Empty template - fallback to prefix logic
+        has_template = False
+
+    if has_prefix:
+        prefix = os.environ.get('DBT_DEV_SCHEMA_PREFIX', '')
+        print("⚠️  DBT_DEV_SCHEMA_PREFIX is deprecated, use DBT_DEV_DATASET instead", file=sys.stderr)
+        result = f"{prefix}_{username}" if prefix else username
+        return _validate_dev_dataset(result)
+
+    # No legacy vars set - use default for backward compatibility
+    # (This maintains v0.3.0 behavior when no env vars are set)
+    dev_dataset = f"personal_{username}"
+    return _validate_dev_dataset(dev_dataset)
+
+
+def _validate_dev_dataset(dataset: str) -> str:
+    """
+    Apply BigQuery validation to dev dataset name if enabled.
+
+    Args:
+        dataset: Dataset name to validate
+
+    Returns:
+        Validated (possibly sanitized) dataset name
+    """
+    if os.environ.get('DBT_VALIDATE_BIGQUERY', '').lower() in ('true', '1', 'yes'):
+        sanitized, warnings = _sanitize_bigquery_name(dataset, "dataset")
+        if warnings:
+            for warning in warnings:
+                print(f"⚠️  BigQuery validation: {warning}", file=sys.stderr)
+        return sanitized
+    return dataset
+
+
+def _build_dev_table_name(model: dict, model_name: str) -> str:
+    """
+    Build dev table name based on DBT_DEV_TABLE_PATTERN.
+
+    Environment variable:
+        DBT_DEV_TABLE_PATTERN - Table naming pattern (default: "name")
+
+    Predefined patterns:
+        - "name" (default): Use model filename
+        - "alias": Use alias (fallback to name)
+
+    Custom patterns with placeholders:
+        - {name}: Model filename (e.g., "client_events")
+        - {alias}: Model alias from config (fallback to name)
+        - {username}: Current user (DBT_USER or $USER)
+        - {model_name}: Full model name with __ (e.g., "core_client__events")
+        - {folder}: Model folder (e.g., "core_client")
+        - {date}: Current date YYYYMMDD (e.g., "20250205")
+
+    Args:
+        model: Model data from manifest
+        model_name: Original dbt model name (e.g., "core_client__events")
+
+    Returns:
+        Table name for dev environment
+
+    Examples:
+        # Simple patterns
+        DBT_DEV_TABLE_PATTERN="name"
+        → "client_events"  (filename, default)
+
+        DBT_DEV_TABLE_PATTERN="alias"
+        → "events"  (from config.alias, or filename if no alias)
+
+        # Custom patterns with placeholders
+        DBT_DEV_TABLE_PATTERN="{username}_{name}"
+        → "pavel_client_events"
+
+        DBT_DEV_TABLE_PATTERN="tmp_{name}"
+        → "tmp_client_events"  (temporary dev table)
+
+        DBT_DEV_TABLE_PATTERN="{folder}_{name}"
+        → "core_client_client_events"  (avoid name collisions)
+
+        DBT_DEV_TABLE_PATTERN="{name}_{date}"
+        → "client_events_20250205"  (date-stamped)
+
+    Use cases:
+        - Standard dev: "name" (default)
+        - Shared dataset: "{username}_{name}"
+        - Temporary work: "tmp_{name}"
+        - Avoid collisions: "{folder}_{name}"
+        - Time-based: "{name}_{date}"
+    """
+    import os
+    import getpass
+    from datetime import datetime
+
+    pattern = os.environ.get('DBT_DEV_TABLE_PATTERN', 'name')
+
+    # Extract values
+    name = model.get('name', model_name)
+    alias = model.get('config', {}).get('alias', '')
+    username = os.environ.get('DBT_USER') or os.environ.get('USER') or getpass.getuser()
+    username = username.replace('.', '_')
+
+    # Extract folder from model_name (e.g., "core_client__events" → "core_client")
+    folder = model_name.split('__')[0] if '__' in model_name else ''
+
+    # Current date
+    date = datetime.now().strftime('%Y%m%d')
+
+    # Apply pattern
+    if pattern == 'name':
+        return name
+    elif pattern == 'alias':
+        return alias if alias else name
+    elif '{' in pattern:
+        # Custom pattern with placeholders
+        try:
+            return pattern.format(
+                name=name,
+                alias=alias if alias else name,
+                username=username,
+                model_name=model_name,
+                folder=folder,
+                date=date
+            )
+        except KeyError as e:
+            # Unknown placeholder
+            print(f"⚠️  Unknown placeholder in DBT_DEV_TABLE_PATTERN: {e}", file=sys.stderr)
+            print(f"⚠️  Available: {{name}}, {{alias}}, {{username}}, {{model_name}}, {{folder}}, {{date}}", file=sys.stderr)
+            # Fallback to name
+            return name
+    else:
+        # Treat as literal string
+        return pattern
+
+
+def _build_dev_schema_result(model: dict, model_name: str) -> Dict[str, str]:
+    """
+    Build dev schema result from model data.
+
+    Args:
+        model: Model data from manifest
+        model_name: Original model name (for fallback)
+
+    Returns:
+        Dictionary with schema, table, full_name (dev format)
+
+    Note: Dev tables use pattern from DBT_DEV_TABLE_PATTERN (default: filename)
+    """
+    dev_schema = _calculate_dev_schema()
+    table_name = _build_dev_table_name(model, model_name)
+
+    return {
+        'schema': dev_schema,
+        'table': table_name,
+        'full_name': f"{dev_schema}.{table_name}"
+    }
 
 
 def _sanitize_bigquery_name(name: str, name_type: str = "dataset") -> tuple[str, list[str]]:
@@ -322,42 +712,131 @@ def _fetch_columns_from_bigquery(manifest_path: str, model_name: str) -> Optiona
         return None
 
 
-def info(manifest_path: str, model_name: str) -> Optional[Dict[str, Any]]:
+def info(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[Dict[str, Any]]:
     """
     Extract basic model information
 
     Args:
         manifest_path: Path to manifest.json
         model_name: Model name (e.g., "core_client__client_profiles_events")
+        use_dev: If True, prioritize dev manifest over production
 
     Returns:
         Dictionary with:
         - name: Model name
-        - database: BigQuery project
-        - schema: BigQuery dataset
-        - table: Table name (alias or model name)
-        - full_name: database.schema.table
+        - database: BigQuery project (empty for dev)
+        - schema: BigQuery dataset (dev schema for use_dev=True)
+        - table: Table name (filename for dev, alias for prod)
+        - full_name: database.schema.table (or schema.table for dev)
         - materialized: Materialization type
         - file: Relative file path
         - tags: List of tags
         - unique_id: Full unique identifier
 
         Returns None if model not found.
+
+    Behavior with use_dev=True:
+        - Searches dev manifest (target/) FIRST
+        - Returns dev schema name (e.g., personal_USERNAME)
+        - Uses model filename, NOT alias
+        - Falls back to BigQuery if not in dev manifest
     """
+    # Check git status and collect warnings
+    dev_manifest = _find_dev_manifest(manifest_path) if use_dev else None
+    warnings = _check_manifest_git_mismatch(model_name, use_dev, dev_manifest)
+    _print_warnings(warnings, json_output)
+
+    # Handle --dev flag: prioritize dev manifest
+    if use_dev:
+        if not dev_manifest:
+            dev_manifest = _find_dev_manifest(manifest_path)
+        if dev_manifest:
+            try:
+                parser_dev = _get_cached_parser(dev_manifest)
+                model = parser_dev.get_model(model_name)
+                if model:
+                    # Build dev info result
+                    dev_schema = _calculate_dev_schema()
+                    table_name = _build_dev_table_name(model, model_name)
+                    config = model.get('config', {})
+
+                    return {
+                        'name': model_name,
+                        'database': '',  # Dev doesn't use database
+                        'schema': dev_schema,
+                        'table': table_name,
+                        'full_name': f"{dev_schema}.{table_name}",
+                        'materialized': config.get('materialized', 'table'),
+                        'file': model.get('original_file_path', ''),
+                        'tags': model.get('tags', []),
+                        'unique_id': model.get('unique_id', '')
+                    }
+            except Exception:
+                pass
+
+        # Fallback to BigQuery for dev (if enabled)
+        if os.environ.get('DBT_FALLBACK_BIGQUERY', 'true').lower() in ('true', '1', 'yes'):
+            dataset, table = _infer_table_parts(model_name)
+            if dataset:
+                dev_schema = _calculate_dev_schema()
+                bq_metadata = _fetch_table_metadata_from_bigquery(dev_schema, table)
+                if bq_metadata:
+                    table_ref = bq_metadata.get('tableReference', {})
+                    table_type = bq_metadata.get('type', 'TABLE')
+
+                    return {
+                        'name': model_name,
+                        'database': '',
+                        'schema': dev_schema,
+                        'table': table,
+                        'full_name': f"{dev_schema}.{table}",
+                        'materialized': 'table' if table_type == 'TABLE' else 'view',
+                        'file': '',
+                        'tags': [],
+                        'unique_id': ''
+                    }
+
+        return None
+
+    # Default behavior: production first, then fallbacks
     parser = _get_cached_parser(manifest_path)
     model = parser.get_model(model_name)
+    fallback_warnings = []
 
     if not model:
-        # Fallback: Query BigQuery directly
-        if os.environ.get('DBT_FALLBACK_BIGQUERY', 'true').lower() in ('true', '1', 'yes'):
+        # LEVEL 2 Fallback: Try dev manifest (target/)
+        if os.environ.get('DBT_FALLBACK_TARGET', 'true').lower() in ('true', '1', 'yes'):
+            dev_manifest = _find_dev_manifest(manifest_path)
+            if dev_manifest:
+                try:
+                    parser_dev = _get_cached_parser(dev_manifest)
+                    model = parser_dev.get_model(model_name)
+                    if model:
+                        fallback_warnings.append({
+                            "type": "dev_manifest_fallback",
+                            "severity": "warning",
+                            "message": f"Model '{model_name}' not found in production manifest",
+                            "detail": "Using dev manifest (target/manifest.json) as fallback",
+                            "source": "LEVEL 2"
+                        })
+                        # Continue with model data processing below
+                except Exception:
+                    pass  # Fall through to BigQuery fallback
+
+        # LEVEL 3 Fallback: Query BigQuery directly
+        if not model and os.environ.get('DBT_FALLBACK_BIGQUERY', 'true').lower() in ('true', '1', 'yes'):
             dataset, table = _infer_table_parts(model_name)
             if dataset:
                 bq_metadata = _fetch_table_metadata_from_bigquery(dataset, table)
                 if bq_metadata:
-                    print(f"⚠️  Model '{model_name}' not in manifest, using BigQuery metadata",
-                          file=sys.stderr)
-                    print(f"⚠️  Partial metadata available (missing: file path, tags, unique_id)",
-                          file=sys.stderr)
+                    fallback_warnings.append({
+                        "type": "bigquery_fallback",
+                        "severity": "warning",
+                        "message": f"Model '{model_name}' not in manifest",
+                        "detail": "Using BigQuery metadata (missing: file path, tags, unique_id)",
+                        "source": "LEVEL 3"
+                    })
+                    _print_warnings(fallback_warnings, json_output)
 
                     table_ref = bq_metadata.get('tableReference', {})
                     table_type = bq_metadata.get('type', 'TABLE')
@@ -373,7 +852,13 @@ def info(manifest_path: str, model_name: str) -> Optional[Dict[str, Any]]:
                         'tags': [],  # Not available from BigQuery
                         'unique_id': ''  # Not available from BigQuery
                     }
-        return None
+
+        if not model:
+            return None
+
+    # Print fallback warnings if any
+    if fallback_warnings:
+        _print_warnings(fallback_warnings, json_output)
 
     # Extract config
     config = model.get('config', {})
@@ -396,46 +881,139 @@ def info(manifest_path: str, model_name: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def schema(manifest_path: str, model_name: str) -> Optional[Dict[str, str]]:
+def schema(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[Dict[str, str]]:
     """
     Extract schema/table location information
 
     Args:
         manifest_path: Path to manifest.json
         model_name: Model name
+        use_dev: If True, prioritize dev manifest and return dev schema name
 
     Returns:
         Dictionary with:
-        - database: BigQuery project
-        - schema: BigQuery dataset
-        - table: Table name (based on DBT_PROD_TABLE_NAME setting)
-        - full_name: database.schema.table
+        - database: BigQuery project (prod) or empty (dev)
+        - schema: BigQuery dataset (prod schema or dev schema like personal_USERNAME)
+        - table: Table name (prod: alias or name, dev: filename)
+        - full_name: database.schema.table (prod) or schema.table (dev)
 
         Returns None if model not found.
 
+    Behavior with use_dev=True:
+        - Searches dev manifest (target/) FIRST
+        - Returns dev schema name (e.g., personal_pavel_filianin)
+        - Uses model filename, NOT alias
+        - Falls back to BigQuery if not in dev manifest
+
+    Behavior with use_dev=False (default):
+        - Searches production manifest (.dbt-state/) first
+        - Falls back to dev manifest if DBT_FALLBACK_TARGET=true
+        - Falls back to BigQuery if DBT_FALLBACK_BIGQUERY=true
+
     Environment variables:
-        DBT_PROD_TABLE_NAME: Table name resolution strategy
+        DBT_PROD_TABLE_NAME: Table name resolution strategy (prod only)
             - "alias_or_name" (default): Use alias if present, else name
             - "name": Always use model name
             - "alias": Always use alias (fallback to name)
 
-        DBT_PROD_SCHEMA_SOURCE: Schema/database resolution strategy
+        DBT_PROD_SCHEMA_SOURCE: Schema/database resolution strategy (prod only)
             - "config_or_model" (default): Use config if present, else model
             - "model": Always use model.schema and model.database
             - "config": Always use config.schema and config.database (fallback to model)
+
+        DBT_DEV_SCHEMA: Full dev schema override
+        DBT_DEV_SCHEMA_TEMPLATE: Template with {username} placeholder
+        DBT_DEV_SCHEMA_PREFIX: Prefix for dev schema (default: "personal")
+        DBT_FALLBACK_TARGET: Enable dev manifest fallback (default: true)
+        DBT_FALLBACK_BIGQUERY: Enable BigQuery fallback (default: true)
     """
+    # Check git status and collect warnings
+    dev_manifest = _find_dev_manifest(manifest_path) if use_dev else None
+    warnings = _check_manifest_git_mismatch(model_name, use_dev, dev_manifest)
+    _print_warnings(warnings, json_output)
+
+    # Handle --dev flag: prioritize dev manifest
+    if use_dev:
+        if not dev_manifest:
+            dev_manifest = _find_dev_manifest(manifest_path)
+        if dev_manifest:
+            try:
+                parser_dev = _get_cached_parser(dev_manifest)
+                model = parser_dev.get_model(model_name)
+                if model:
+                    return _build_dev_schema_result(model, model_name)
+            except Exception:
+                pass  # Fall through to BigQuery fallback
+
+        # Fallback to BigQuery for dev
+        if os.environ.get('DBT_FALLBACK_BIGQUERY', 'true').lower() in ('true', '1', 'yes'):
+            dataset, table = _infer_table_parts(model_name)
+            if dataset:
+                # For dev, try dev schema
+                dev_schema = _calculate_dev_schema()
+                full_table = f"{dev_schema}.{table}"
+
+                try:
+                    import subprocess
+                    result = subprocess.run(
+                        ['bq', 'show', '--format=json', full_table],
+                        capture_output=True,
+                        text=True,
+                        timeout=10
+                    )
+                    if result.returncode == 0:
+                        print(f"⚠️  Model not in manifest, using BigQuery table: {full_table}",
+                              file=sys.stderr)
+                        return {
+                            'database': '',
+                            'schema': dev_schema,
+                            'table': table,
+                            'full_name': full_table
+                        }
+                except (subprocess.TimeoutExpired, FileNotFoundError):
+                    pass
+
+        return None
+
+    # Default behavior: production first, then fallbacks
     parser = _get_cached_parser(manifest_path)
     model = parser.get_model(model_name)
+    fallback_warnings = []
 
     if not model:
-        # Fallback: Query BigQuery directly
-        if os.environ.get('DBT_FALLBACK_BIGQUERY', 'true').lower() in ('true', '1', 'yes'):
+        # LEVEL 2 Fallback: Try dev manifest (target/)
+        if os.environ.get('DBT_FALLBACK_TARGET', 'true').lower() in ('true', '1', 'yes'):
+            dev_manifest = _find_dev_manifest(manifest_path)
+            if dev_manifest:
+                try:
+                    parser_dev = _get_cached_parser(dev_manifest)
+                    model = parser_dev.get_model(model_name)
+                    if model:
+                        fallback_warnings.append({
+                            "type": "dev_manifest_fallback",
+                            "severity": "warning",
+                            "message": f"Model '{model_name}' not found in production manifest",
+                            "detail": "Using dev manifest (target/manifest.json) as fallback",
+                            "source": "LEVEL 2"
+                        })
+                        # Continue with model data processing below
+                except Exception:
+                    pass  # Fall through to BigQuery fallback
+
+        # LEVEL 3 Fallback: Query BigQuery directly
+        if not model and os.environ.get('DBT_FALLBACK_BIGQUERY', 'true').lower() in ('true', '1', 'yes'):
             dataset, table = _infer_table_parts(model_name)
             if dataset:
                 bq_metadata = _fetch_table_metadata_from_bigquery(dataset, table)
                 if bq_metadata:
-                    print(f"⚠️  Model '{model_name}' not in manifest, using BigQuery table: {dataset}.{table}",
-                          file=sys.stderr)
+                    fallback_warnings.append({
+                        "type": "bigquery_fallback",
+                        "severity": "warning",
+                        "message": f"Model '{model_name}' not in manifest",
+                        "detail": f"Using BigQuery table: {dataset}.{table}",
+                        "source": "LEVEL 3"
+                    })
+                    _print_warnings(fallback_warnings, json_output)
                     table_ref = bq_metadata.get('tableReference', {})
                     return {
                         'database': table_ref.get('projectId', ''),
@@ -443,7 +1021,13 @@ def schema(manifest_path: str, model_name: str) -> Optional[Dict[str, str]]:
                         'table': table_ref.get('tableId', ''),
                         'full_name': f"{table_ref.get('projectId', '')}.{table_ref.get('datasetId', '')}.{table_ref.get('tableId', '')}"
                     }
-        return None
+
+        if not model:
+            return None
+
+    # Print fallback warnings if any
+    if fallback_warnings:
+        _print_warnings(fallback_warnings, json_output)
 
     # Extract config
     config = model.get('config', {})
@@ -493,13 +1077,14 @@ def schema(manifest_path: str, model_name: str) -> Optional[Dict[str, str]]:
     }
 
 
-def columns(manifest_path: str, model_name: str) -> Optional[List[Dict[str, str]]]:
+def columns(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[List[Dict[str, str]]]:
     """
     Extract column list with types
 
     Args:
         manifest_path: Path to manifest.json
         model_name: Model name
+        use_dev: If True, prioritize dev manifest over production
 
     Returns:
         List of dictionaries with:
@@ -511,19 +1096,87 @@ def columns(manifest_path: str, model_name: str) -> Optional[List[Dict[str, str]
 
         Falls back to BigQuery if columns not in manifest.
     """
-    parser = _get_cached_parser(manifest_path)
-    model = parser.get_model(model_name)
+    # Check git status and collect warnings
+    dev_manifest = _find_dev_manifest(manifest_path) if use_dev else None
+    warnings = _check_manifest_git_mismatch(model_name, use_dev, dev_manifest)
+    _print_warnings(warnings, json_output)
 
-    if not model:
-        # Fallback: Query BigQuery directly
+    # Handle --dev flag: prioritize dev manifest
+    if use_dev:
+        if not dev_manifest:
+            dev_manifest = _find_dev_manifest(manifest_path)
+        if dev_manifest:
+            try:
+                parser_dev = _get_cached_parser(dev_manifest)
+                model = parser_dev.get_model(model_name)
+                if model:
+                    model_columns = model.get('columns', {})
+                    if model_columns:
+                        result = []
+                        for col_name, col_data in model_columns.items():
+                            result.append({
+                                'name': col_name,
+                                'data_type': col_data.get('data_type', 'unknown')
+                            })
+                        return result
+            except Exception:
+                pass
+
+        # Fallback to BigQuery for dev
         if os.environ.get('DBT_FALLBACK_BIGQUERY', 'true').lower() in ('true', '1', 'yes'):
             dataset, table = _infer_table_parts(model_name)
             if dataset:
-                print(f"⚠️  Model '{model_name}' not in manifest, fetching columns from BigQuery",
-                      file=sys.stderr)
+                dev_schema = _calculate_dev_schema()
+                return _fetch_columns_from_bigquery_direct(dev_schema, table)
+
+        return None
+
+    # Default behavior: production first, then fallbacks
+    parser = _get_cached_parser(manifest_path)
+    model = parser.get_model(model_name)
+    fallback_warnings = []
+
+    if not model:
+        # LEVEL 2 Fallback: Try dev manifest (target/)
+        if os.environ.get('DBT_FALLBACK_TARGET', 'true').lower() in ('true', '1', 'yes'):
+            dev_manifest = _find_dev_manifest(manifest_path)
+            if dev_manifest:
+                try:
+                    parser_dev = _get_cached_parser(dev_manifest)
+                    model = parser_dev.get_model(model_name)
+                    if model:
+                        fallback_warnings.append({
+                            "type": "dev_manifest_fallback",
+                            "severity": "warning",
+                            "message": f"Model '{model_name}' not found in production manifest",
+                            "detail": "Using dev manifest (target/manifest.json) as fallback",
+                            "source": "LEVEL 2"
+                        })
+                        # Continue with model data processing below
+                except Exception:
+                    pass  # Fall through to BigQuery fallback
+
+        # LEVEL 3 Fallback: Query BigQuery directly
+        if not model and os.environ.get('DBT_FALLBACK_BIGQUERY', 'true').lower() in ('true', '1', 'yes'):
+            dataset, table = _infer_table_parts(model_name)
+            if dataset:
+                fallback_warnings.append({
+                    "type": "bigquery_fallback",
+                    "severity": "info",
+                    "message": f"Model '{model_name}' not in manifest",
+                    "detail": "Fetching columns from BigQuery",
+                    "source": "LEVEL 3"
+                })
+                _print_warnings(fallback_warnings, json_output)
                 # Fetch directly from BigQuery (bypassing the model parameter)
                 return _fetch_columns_from_bigquery_direct(dataset, table)
-        return None
+
+        if not model:
+            return None
+
+    # Print fallback warnings if any
+    if fallback_warnings:
+        _print_warnings(fallback_warnings, json_output)
 
     # Extract columns from model
     model_columns = model.get('columns', {})
@@ -543,13 +1196,14 @@ def columns(manifest_path: str, model_name: str) -> Optional[List[Dict[str, str]
     return result
 
 
-def config(manifest_path: str, model_name: str) -> Optional[Dict[str, Any]]:
+def config(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[Dict[str, Any]]:
     """
     Extract full dbt config
 
     Args:
         manifest_path: Path to manifest.json
         model_name: Model name
+        use_dev: If True, prioritize dev manifest over production
 
     Returns:
         Full config dictionary with all 29+ fields:
@@ -557,18 +1211,38 @@ def config(manifest_path: str, model_name: str) -> Optional[Dict[str, Any]]:
         incremental_strategy, on_schema_change, grants, etc.
 
         Returns None if model not found.
-    """
-    parser = _get_cached_parser(manifest_path)
-    model = parser.get_model(model_name)
 
-    if not model:
-        # Fallback: Query BigQuery directly
+    Behavior with use_dev=True:
+        - Searches dev manifest (target/) FIRST
+        - Returns dev-specific config
+        - Falls back to BigQuery if not in dev manifest
+    """
+    # Check git status and collect warnings
+    dev_manifest = _find_dev_manifest(manifest_path) if use_dev else None
+    warnings = _check_manifest_git_mismatch(model_name, use_dev, dev_manifest)
+    _print_warnings(warnings, json_output)
+
+    # Handle --dev flag: prioritize dev manifest
+    if use_dev:
+        if not dev_manifest:
+            dev_manifest = _find_dev_manifest(manifest_path)
+        if dev_manifest:
+            try:
+                parser_dev = _get_cached_parser(dev_manifest)
+                model = parser_dev.get_model(model_name)
+                if model:
+                    return model.get('config', {})
+            except Exception:
+                pass
+
+        # Fallback to BigQuery for dev (if enabled)
         if os.environ.get('DBT_FALLBACK_BIGQUERY', 'true').lower() in ('true', '1', 'yes'):
             dataset, table = _infer_table_parts(model_name)
             if dataset:
-                bq_metadata = _fetch_table_metadata_from_bigquery(dataset, table)
+                dev_schema = _calculate_dev_schema()
+                bq_metadata = _fetch_table_metadata_from_bigquery(dev_schema, table)
                 if bq_metadata:
-                    print(f"⚠️  Model '{model_name}' not in manifest, using BigQuery config",
+                    print(f"⚠️  Model not in manifest, using BigQuery config: {dev_schema}.{table}",
                           file=sys.stderr)
                     print(f"⚠️  Partial config available (dbt-specific settings unavailable)",
                           file=sys.stderr)
@@ -607,18 +1281,102 @@ def config(manifest_path: str, model_name: str) -> Optional[Dict[str, Any]]:
                         config_result['cluster_by'] = bq_metadata['clustering'].get('fields', [])
 
                     return config_result
+
         return None
+
+    # Default behavior: production first, then fallbacks
+    parser = _get_cached_parser(manifest_path)
+    model = parser.get_model(model_name)
+    fallback_warnings = []
+
+    if not model:
+        # LEVEL 2 Fallback: Try dev manifest (target/)
+        if os.environ.get('DBT_FALLBACK_TARGET', 'true').lower() in ('true', '1', 'yes'):
+            dev_manifest = _find_dev_manifest(manifest_path)
+            if dev_manifest:
+                try:
+                    parser_dev = _get_cached_parser(dev_manifest)
+                    model = parser_dev.get_model(model_name)
+                    if model:
+                        fallback_warnings.append({
+                            "type": "dev_manifest_fallback",
+                            "severity": "warning",
+                            "message": f"Model '{model_name}' not found in production manifest",
+                            "detail": "Using dev manifest (target/manifest.json) as fallback",
+                            "source": "LEVEL 2"
+                        })
+                        # Continue with model data processing below
+                except Exception:
+                    pass  # Fall through to BigQuery fallback
+
+        # LEVEL 3 Fallback: Query BigQuery directly
+        if not model and os.environ.get('DBT_FALLBACK_BIGQUERY', 'true').lower() in ('true', '1', 'yes'):
+            dataset, table = _infer_table_parts(model_name)
+            if dataset:
+                bq_metadata = _fetch_table_metadata_from_bigquery(dataset, table)
+                if bq_metadata:
+                    fallback_warnings.append({
+                        "type": "bigquery_fallback",
+                        "severity": "warning",
+                        "message": f"Model '{model_name}' not in manifest",
+                        "detail": "Using BigQuery config (dbt-specific settings unavailable)",
+                        "source": "LEVEL 3"
+                    })
+                    _print_warnings(fallback_warnings, json_output)
+
+                    # Map BigQuery → dbt config
+                    table_type = bq_metadata.get('type', 'TABLE')
+                    config_result = {
+                        'materialized': 'table' if table_type == 'TABLE' else 'view',
+                        'partition_by': None,
+                        'cluster_by': None,
+                        # dbt-specific (not available from BigQuery)
+                        'unique_key': None,
+                        'incremental_strategy': None,
+                        'on_schema_change': None,
+                        'grants': {},
+                        'tags': [],
+                        'meta': {},
+                        'enabled': True,
+                        'alias': None,
+                        'schema': None,
+                        'database': None,
+                        'pre_hook': [],
+                        'post_hook': [],
+                        'quoting': {},
+                        'column_types': {},
+                        'persist_docs': {},
+                        'full_refresh': None,
+                    }
+
+                    # Extract partition info
+                    if 'timePartitioning' in bq_metadata:
+                        config_result['partition_by'] = bq_metadata['timePartitioning'].get('field')
+
+                    # Extract clustering info
+                    if 'clustering' in bq_metadata:
+                        config_result['cluster_by'] = bq_metadata['clustering'].get('fields', [])
+
+                    return config_result
+
+        if not model:
+            return None
+
+    # Print fallback warnings if any
+    if fallback_warnings:
+        _print_warnings(fallback_warnings, json_output)
 
     return model.get('config', {})
 
 
-def deps(manifest_path: str, model_name: str) -> Optional[Dict[str, List[str]]]:
+def deps(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[Dict[str, List[str]]]:
     """
     Extract dependencies by type
 
     Args:
         manifest_path: Path to manifest.json
         model_name: Model name
+        use_dev: If True, prioritize dev manifest over production
 
     Returns:
         Dictionary with:
@@ -627,7 +1385,40 @@ def deps(manifest_path: str, model_name: str) -> Optional[Dict[str, List[str]]]:
         - macros: List of macro dependencies
 
         Returns None if model not found.
+
+    Behavior with use_dev=True:
+        - Searches dev manifest (target/) FIRST
+        - Returns dev-specific dependencies
+        - NO BigQuery fallback (lineage is manifest-only)
     """
+    # Check git status and collect warnings
+    dev_manifest = _find_dev_manifest(manifest_path) if use_dev else None
+    warnings = _check_manifest_git_mismatch(model_name, use_dev, dev_manifest)
+    _print_warnings(warnings, json_output)
+
+    # Handle --dev flag: prioritize dev manifest
+    if use_dev:
+        if not dev_manifest:
+            dev_manifest = _find_dev_manifest(manifest_path)
+        if dev_manifest:
+            try:
+                parser_dev = _get_cached_parser(dev_manifest)
+                result = parser_dev.get_dependencies(model_name)
+                if result is not None:
+                    return result
+            except Exception:
+                pass
+
+        # No BigQuery fallback for dependencies (lineage is manifest-only)
+        print(f"❌ Dependencies not available for '{model_name}': model not in dev manifest",
+              file=sys.stderr)
+        print(f"   Dependencies are dbt-specific (refs, sources, macros) and cannot be inferred from BigQuery.",
+              file=sys.stderr)
+        print(f"   Hint: Run 'defer run --select {model_name}' to add model to manifest",
+              file=sys.stderr)
+        return None
+
+    # Default behavior: production first
     result = _get_cached_parser(manifest_path).get_dependencies(model_name)
 
     if result is None:
@@ -642,19 +1433,55 @@ def deps(manifest_path: str, model_name: str) -> Optional[Dict[str, List[str]]]:
     return result
 
 
-def sql(manifest_path: str, model_name: str, raw: bool = False) -> Optional[str]:
+def sql(manifest_path: str, model_name: str, use_dev: bool = False, raw: bool = False, json_output: bool = False) -> Optional[str]:
     """
     Extract SQL code
 
     Args:
         manifest_path: Path to manifest.json
         model_name: Model name
+        use_dev: If True, prioritize dev manifest over production
         raw: If True, return raw SQL with Jinja. If False, return compiled SQL.
 
     Returns:
         SQL code as string
         Returns None if model not found.
+
+    Behavior with use_dev=True:
+        - Searches dev manifest (target/) FIRST
+        - Returns dev-specific SQL
+        - NO BigQuery fallback (SQL is dbt-specific)
     """
+    # Check git status and collect warnings
+    dev_manifest = _find_dev_manifest(manifest_path) if use_dev else None
+    warnings = _check_manifest_git_mismatch(model_name, use_dev, dev_manifest)
+    _print_warnings(warnings, json_output)
+
+    # Handle --dev flag: prioritize dev manifest
+    if use_dev:
+        if not dev_manifest:
+            dev_manifest = _find_dev_manifest(manifest_path)
+        if dev_manifest:
+            try:
+                parser_dev = _get_cached_parser(dev_manifest)
+                model = parser_dev.get_model(model_name)
+                if model:
+                    # Return raw or compiled SQL
+                    if raw:
+                        return model.get('raw_code', '')
+                    else:
+                        return model.get('compiled_code', '')
+            except Exception:
+                pass
+
+        # No BigQuery fallback for SQL (dbt-specific)
+        print(f"❌ SQL code not available for '{model_name}': model not in dev manifest",
+              file=sys.stderr)
+        print(f"   Hint: Use 'meta path {model_name}' to locate source file",
+              file=sys.stderr)
+        return None
+
+    # Default behavior: production first
     parser = _get_cached_parser(manifest_path)
     model = parser.get_model(model_name)
 
@@ -673,18 +1500,46 @@ def sql(manifest_path: str, model_name: str, raw: bool = False) -> Optional[str]
         return model.get('compiled_code', '')
 
 
-def path(manifest_path: str, model_name: str) -> Optional[str]:
+def path(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[str]:
     """
     Get relative file path
 
     Args:
         manifest_path: Path to manifest.json
         model_name: Model name
+        use_dev: If True, prioritize dev manifest over production
 
     Returns:
         Relative file path (e.g., "models/core/client/model.sql")
         Returns None if model not found.
+
+    Behavior with use_dev=True:
+        - Searches dev manifest (target/) FIRST
+        - Returns dev-specific file path
+        - NO BigQuery fallback (file path is dbt-specific)
     """
+    # Check git status and collect warnings
+    dev_manifest = _find_dev_manifest(manifest_path) if use_dev else None
+    warnings = _check_manifest_git_mismatch(model_name, use_dev, dev_manifest)
+    _print_warnings(warnings, json_output)
+
+    # Handle --dev flag: prioritize dev manifest
+    if use_dev:
+        if not dev_manifest:
+            dev_manifest = _find_dev_manifest(manifest_path)
+        if dev_manifest:
+            try:
+                parser_dev = _get_cached_parser(dev_manifest)
+                model = parser_dev.get_model(model_name)
+                if model:
+                    return model.get('original_file_path', '')
+            except Exception:
+                pass
+
+        # No BigQuery fallback for path (dbt-specific)
+        return None
+
+    # Default behavior: production first
     parser = _get_cached_parser(manifest_path)
     model = parser.get_model(model_name)
 
@@ -805,13 +1660,14 @@ def _get_all_relations_recursive(
     return list(dict.fromkeys(all_relations))
 
 
-def parents(manifest_path: str, model_name: str, recursive: bool = False) -> Optional[List[Dict[str, str]]]:
+def parents(manifest_path: str, model_name: str, use_dev: bool = False, recursive: bool = False, json_output: bool = False) -> Optional[List[Dict[str, str]]]:
     """
     Get upstream dependencies (parent models)
 
     Args:
         manifest_path: Path to manifest.json
         model_name: Model name
+        use_dev: If True, prioritize dev manifest over production
         recursive: If True, get all ancestors. If False, only direct parents.
 
     Returns:
@@ -820,7 +1676,71 @@ def parents(manifest_path: str, model_name: str, recursive: bool = False) -> Opt
 
         Returns None if model not found.
         Filters out tests (resource_type != "test").
+
+    Behavior with use_dev=True:
+        - Searches dev manifest (target/) FIRST
+        - Returns dev-specific parent dependencies
+        - NO BigQuery fallback (lineage is manifest-only)
     """
+    # Check git status and collect warnings
+    dev_manifest = _find_dev_manifest(manifest_path) if use_dev else None
+    warnings = _check_manifest_git_mismatch(model_name, use_dev, dev_manifest)
+    _print_warnings(warnings, json_output)
+
+    # Handle --dev flag: prioritize dev manifest
+    if use_dev:
+        if not dev_manifest:
+            dev_manifest = _find_dev_manifest(manifest_path)
+        if dev_manifest:
+            try:
+                parser_dev = _get_cached_parser(dev_manifest)
+                model = parser_dev.get_model(model_name)
+                if model:
+                    unique_id = model['unique_id']
+                    parent_map = parser_dev.manifest.get('parent_map', {})
+
+                    # Get parent IDs
+                    if recursive:
+                        parent_ids = _get_all_relations_recursive(parent_map, unique_id)
+                    else:
+                        parent_ids = parent_map.get(unique_id, [])
+
+                    # Get parent details (filter out tests)
+                    parents_details = []
+                    nodes = parser_dev.manifest.get('nodes', {})
+                    sources = parser_dev.manifest.get('sources', {})
+
+                    for parent_id in parent_ids:
+                        # Get from nodes or sources
+                        parent_node = nodes.get(parent_id) or sources.get(parent_id)
+
+                        if not parent_node:
+                            continue
+
+                        # Filter out tests
+                        if parent_node.get('resource_type') == 'test':
+                            continue
+
+                        parents_details.append({
+                            'unique_id': parent_id,
+                            'name': parent_node.get('name', ''),
+                            'type': parent_node.get('resource_type', ''),
+                            'database': parent_node.get('database', ''),
+                            'schema': parent_node.get('schema', '')
+                        })
+
+                    return parents_details
+            except Exception:
+                pass
+
+        # No BigQuery fallback for lineage (manifest-only)
+        print(f"❌ Parent dependencies not available for '{model_name}': model not in dev manifest",
+              file=sys.stderr)
+        print(f"   Lineage information is stored only in manifest.json",
+              file=sys.stderr)
+        return None
+
+    # Default behavior: production first
     parser = _get_cached_parser(manifest_path)
     model = parser.get_model(model_name)
 
@@ -868,13 +1788,14 @@ def parents(manifest_path: str, model_name: str, recursive: bool = False) -> Opt
     return parents_details
 
 
-def children(manifest_path: str, model_name: str, recursive: bool = False) -> Optional[List[Dict[str, str]]]:
+def children(manifest_path: str, model_name: str, use_dev: bool = False, recursive: bool = False, json_output: bool = False) -> Optional[List[Dict[str, str]]]:
     """
     Get downstream dependencies (child models)
 
     Args:
         manifest_path: Path to manifest.json
         model_name: Model name
+        use_dev: If True, prioritize dev manifest over production
         recursive: If True, get all descendants. If False, only direct children.
 
     Returns:
@@ -883,7 +1804,71 @@ def children(manifest_path: str, model_name: str, recursive: bool = False) -> Op
 
         Returns None if model not found.
         Filters out tests (resource_type != "test").
+
+    Behavior with use_dev=True:
+        - Searches dev manifest (target/) FIRST
+        - Returns dev-specific child dependencies
+        - NO BigQuery fallback (lineage is manifest-only)
     """
+    # Check git status and collect warnings
+    dev_manifest = _find_dev_manifest(manifest_path) if use_dev else None
+    warnings = _check_manifest_git_mismatch(model_name, use_dev, dev_manifest)
+    _print_warnings(warnings, json_output)
+
+    # Handle --dev flag: prioritize dev manifest
+    if use_dev:
+        if not dev_manifest:
+            dev_manifest = _find_dev_manifest(manifest_path)
+        if dev_manifest:
+            try:
+                parser_dev = _get_cached_parser(dev_manifest)
+                model = parser_dev.get_model(model_name)
+                if model:
+                    unique_id = model['unique_id']
+                    child_map = parser_dev.manifest.get('child_map', {})
+
+                    # Get child IDs
+                    if recursive:
+                        child_ids = _get_all_relations_recursive(child_map, unique_id)
+                    else:
+                        child_ids = child_map.get(unique_id, [])
+
+                    # Get child details (filter out tests)
+                    children_details = []
+                    nodes = parser_dev.manifest.get('nodes', {})
+                    sources = parser_dev.manifest.get('sources', {})
+
+                    for child_id in child_ids:
+                        # Get from nodes or sources
+                        child_node = nodes.get(child_id) or sources.get(child_id)
+
+                        if not child_node:
+                            continue
+
+                        # Filter out tests
+                        if child_node.get('resource_type') == 'test':
+                            continue
+
+                        children_details.append({
+                            'unique_id': child_id,
+                            'name': child_node.get('name', ''),
+                            'type': child_node.get('resource_type', ''),
+                            'database': child_node.get('database', ''),
+                            'schema': child_node.get('schema', '')
+                        })
+
+                    return children_details
+            except Exception:
+                pass
+
+        # No BigQuery fallback for lineage (manifest-only)
+        print(f"❌ Child dependencies not available for '{model_name}': model not in dev manifest",
+              file=sys.stderr)
+        print(f"   Lineage information is stored only in manifest.json",
+              file=sys.stderr)
+        return None
+
+    # Default behavior: production first
     parser = _get_cached_parser(manifest_path)
     model = parser.get_model(model_name)
 
@@ -929,117 +1914,6 @@ def children(manifest_path: str, model_name: str, recursive: bool = False) -> Op
         })
 
     return children_details
-
-
-def schema_dev(manifest_path: str, model_name: str) -> Optional[Dict[str, str]]:
-    """
-    Get dev table location (development schema) with BigQuery fallback
-
-    Args:
-        manifest_path: Path to manifest.json
-        model_name: Model name
-
-    Returns:
-        Dictionary with:
-        - schema: Development schema name
-        - table: model name (NOT alias!)
-        - full_name: schema.model_name
-
-        Returns None if model not found in manifest AND not in BigQuery.
-
-    Note: Dev tables use SQL filename, not config.alias
-
-    Fallback behavior:
-        If model not found in manifest, checks if table exists in BigQuery.
-        Controlled by DBT_FALLBACK_BIGQUERY env var (default: true).
-
-    Environment variables (in priority order):
-        1. DBT_DEV_SCHEMA: Full dev schema name (e.g., "my_dev_schema")
-           - Highest priority, bypasses all template logic
-        2. DBT_DEV_SCHEMA_TEMPLATE: Schema template with {username} placeholder
-           - Example: "dev_{username}" → "dev_pavel_filianin"
-           - Example: "{username}_sandbox" → "pavel_filianin_sandbox"
-           - Example: "{username}" → "pavel_filianin"
-        3. DBT_DEV_SCHEMA_PREFIX: Prefix for schema (becomes "prefix_{username}")
-           - Example: "personal" → "personal_pavel_filianin"
-           - Empty string "" means no prefix → just "{username}"
-        4. Default: "personal_{username}"
-        5. DBT_FALLBACK_BIGQUERY: Enable BigQuery fallback (default: true)
-
-    Username priority: $DBT_USER > $USER > getpass.getuser()
-    Dots in username are replaced with underscores for BigQuery compatibility
-    """
-    import os
-    import getpass
-    import subprocess
-
-    parser = _get_cached_parser(manifest_path)
-    model = parser.get_model(model_name)
-
-    # Calculate dev schema (needed for both manifest and fallback paths)
-    dev_schema = os.environ.get('DBT_DEV_SCHEMA')
-
-    if not dev_schema:
-        username = os.environ.get('DBT_USER') or os.environ.get('USER') or getpass.getuser()
-        username = username.replace('.', '_')
-
-        template = os.environ.get('DBT_DEV_SCHEMA_TEMPLATE')
-        if template:
-            dev_schema = template.format(username=username)
-        else:
-            prefix = os.environ.get('DBT_DEV_SCHEMA_PREFIX', 'personal')
-            dev_schema = f"{prefix}_{username}" if prefix else username
-
-    if os.environ.get('DBT_VALIDATE_BIGQUERY', '').lower() in ('true', '1', 'yes'):
-        sanitized_schema, warnings = _sanitize_bigquery_name(dev_schema, "dataset")
-        if warnings:
-            for warning in warnings:
-                print(f"⚠️  BigQuery validation: {warning}", file=sys.stderr)
-        dev_schema = sanitized_schema
-
-    # If model found in manifest - use it
-    if model:
-        table_name = model.get('name', '')
-        return {
-            'schema': dev_schema,
-            'table': table_name,
-            'full_name': f"{dev_schema}.{table_name}"
-        }
-
-    # FALLBACK: Model not in manifest - check BigQuery directly
-    fallback_enabled = os.environ.get('DBT_FALLBACK_BIGQUERY', 'true').lower() in ('true', '1', 'yes')
-
-    if fallback_enabled:
-        # Try two naming strategies:
-        # 1. Full model name: core_google_ads__conversions_base → core_google_ads__conversions_base
-        # 2. Just last part: core_google_ads__conversions_base → conversions_base
-        table_candidates = [
-            model_name,  # Try full name first (common in dev)
-            model_name.split('__')[-1] if '__' in model_name else model_name  # Then try last part
-        ]
-
-        for table_name in table_candidates:
-            full_table = f"{dev_schema}.{table_name}"
-
-            try:
-                result = subprocess.run(
-                    ['bq', 'show', '--format=json', full_table],
-                    capture_output=True,
-                    text=True,
-                    timeout=10
-                )
-
-                if result.returncode == 0:
-                    print(f"⚠️  Model not in manifest, using BigQuery table: {full_table}", file=sys.stderr)
-                    return {
-                        'schema': dev_schema,
-                        'table': table_name,
-                        'full_name': full_table
-                    }
-            except (subprocess.TimeoutExpired, FileNotFoundError):
-                continue
-
-    return None
 
 
 def node(manifest_path: str, input_identifier: str) -> Optional[Dict[str, Any]]:
@@ -1092,13 +1966,14 @@ def refresh() -> None:
     print("✓ Manifest refreshed")
 
 
-def docs(manifest_path: str, model_name: str) -> Optional[List[Dict[str, str]]]:
+def docs(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[List[Dict[str, str]]]:
     """
     Get columns with descriptions
 
     Args:
         manifest_path: Path to manifest.json
         model_name: Model name
+        use_dev: If True, prioritize dev manifest over production
 
     Returns:
         List of dictionaries with:
@@ -1107,7 +1982,45 @@ def docs(manifest_path: str, model_name: str) -> Optional[List[Dict[str, str]]]:
         - description: Column description
 
         Returns None if model not found.
+
+    Behavior with use_dev=True:
+        - Searches dev manifest (target/) FIRST
+        - Returns dev-specific column descriptions
+        - NO BigQuery fallback (descriptions are manifest-only)
     """
+    # Check git status and collect warnings
+    dev_manifest = _find_dev_manifest(manifest_path) if use_dev else None
+    warnings = _check_manifest_git_mismatch(model_name, use_dev, dev_manifest)
+    _print_warnings(warnings, json_output)
+
+    # Handle --dev flag: prioritize dev manifest
+    if use_dev:
+        if not dev_manifest:
+            dev_manifest = _find_dev_manifest(manifest_path)
+        if dev_manifest:
+            try:
+                parser_dev = _get_cached_parser(dev_manifest)
+                model = parser_dev.get_model(model_name)
+                if model:
+                    # Extract columns with descriptions
+                    model_columns = model.get('columns', {})
+
+                    result = []
+                    for col_name, col_data in model_columns.items():
+                        result.append({
+                            'name': col_name,
+                            'data_type': col_data.get('data_type', 'unknown'),
+                            'description': col_data.get('description', '')
+                        })
+
+                    return result
+            except Exception:
+                pass
+
+        # No BigQuery fallback for docs (descriptions are manifest-only)
+        return None
+
+    # Default behavior: production first
     parser = _get_cached_parser(manifest_path)
     model = parser.get_model(model_name)
 

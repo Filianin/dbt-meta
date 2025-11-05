@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 from dbt_meta.commands import (
     info, schema, columns, config, deps, sql, path, list_models, search,
-    parents, children, schema_dev, node, refresh, docs
+    parents, children, node, refresh, docs
 )
 
 
@@ -200,6 +200,9 @@ class TestColumnsCommand:
 
         Critical: 64% of models don't have columns in manifest.
         """
+        # Mock is_modified to avoid git calls
+        mocker.patch('dbt_meta.commands.is_modified', return_value=False)
+
         # Mock subprocess to simulate bq command
         mock_run = mocker.patch('subprocess.run')
 
@@ -654,32 +657,7 @@ class TestChildrenCommand:
         assert isinstance(result, list)
 
 
-class TestSchemaDevCommand:
-    """Test schema-dev command - dev table location"""
-
-    def test_schema_dev_returns_personal_schema(self, prod_manifest):
-        """Should return personal_USERNAME schema"""
-        model_name = "core_client__client_profiles_events"
-        result = schema_dev(str(prod_manifest), model_name)
-
-        assert isinstance(result, dict)
-        assert result['schema'] == 'personal_pavel_filianin'
-        assert 'table' in result
-        assert 'full_name' in result
-
-    def test_schema_dev_uses_model_name_not_alias(self, prod_manifest):
-        """Should use model name (filename), NOT alias"""
-        model_name = "core_client__client_profiles_events"
-        result = schema_dev(str(prod_manifest), model_name)
-
-        # Table should be model name, not alias
-        assert result['table'] == 'core_client__client_profiles_events'
-        assert result['full_name'] == 'personal_pavel_filianin.core_client__client_profiles_events'
-
-    def test_schema_dev_nonexistent_model_returns_none(self, prod_manifest):
-        """Should return None for non-existent model"""
-        result = schema_dev(str(prod_manifest), "nonexistent__model")
-        assert result is None
+# TestSchemaDevFlag class moved to test_dev_and_fallbacks.py for better organization
 
 
 class TestNodeCommand:

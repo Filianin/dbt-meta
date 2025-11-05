@@ -49,9 +49,8 @@ def _build_commands_panel() -> Panel:
     # Core commands (green)
     table.add_row("[bold]Core:[/bold]", "")
     table.add_row("  [green]info[/green]", "Model summary (name, schema, table, materialization, tags)")
-    table.add_row("  [green]schema[/green]", "Production table name (database.schema.table)")
-    table.add_row("  [green]schema-dev[/green]", "Dev table name (personal_USERNAME.filename)")
-    table.add_row("  [green]columns[/green]", "Column names and types (auto-fallback to BigQuery)")
+    table.add_row("  [green]schema[/green]", "Production table name (--dev for dev schema)")
+    table.add_row("  [green]columns[/green]", "Column names and types (--dev for dev schema)")
     table.add_row("", "")
 
     # Advanced commands (yellow)
@@ -84,6 +83,7 @@ def _build_flags_panel() -> Panel:
     table.add_row("-h, --help", "Show this help message")
     table.add_row("-v, --version", "Show version and exit")
     table.add_row("-j, --json", "Output as JSON (most commands)")
+    table.add_row("-d, --dev", "Use dev schema (schema/columns commands)")
     table.add_row("--all", "Recursive mode (parents/children)")
     table.add_row("--jinja", "Show raw SQL with Jinja (sql command only)")
     table.add_row("--manifest PATH", "Override manifest.json location")
@@ -98,11 +98,10 @@ def _build_examples_panel() -> Panel:
     table.add_column(style=STYLE_DIM)
 
     table.add_row("meta schema jaffle_shop__customers", "Get production table name")
+    table.add_row("meta schema --dev jaffle_shop__orders", "Get dev table name (personal_*)")
     table.add_row("meta columns -j jaffle_shop__orders", "Get columns as JSON")
     table.add_row("meta deps -j jaffle_shop__customers", "Get dependencies")
-    table.add_row("meta parents --all jaffle_shop__orders", "Get all upstream models")
     table.add_row("meta sql jaffle_shop__customers", "View compiled SQL")
-    table.add_row("meta list jaffle_shop", "List models in schema")
     table.add_row('meta search "customer"', "Search by name/description")
 
     return Panel(table, title="[b]💡 Examples[/b]", title_align="left", border_style="dim", padding=(0, 1))
@@ -132,9 +131,8 @@ def _build_env_vars_panel() -> Panel:
     table.add_row("DBT_PROJECT_PATH", "dbt project root directory")
     table.add_row("DBT_PROD_STATE_PATH", "Prod manifest dir: '.dbt-state'")
     table.add_row("DBT_USER", "Override username (default: $USER)")
-    table.add_row("DBT_DEV_SCHEMA", "Full schema (highest priority)")
-    table.add_row("DBT_DEV_SCHEMA_TEMPLATE", "Template: 'dev_{username}'")
-    table.add_row("DBT_DEV_SCHEMA_PREFIX", "Prefix: 'personal' (default)")
+    table.add_row("[yellow]DBT_DEV_DATASET[/yellow]", "[green]Dev dataset name (recommended)[/green]")
+    table.add_row("DBT_DEV_TABLE_PATTERN", "Dev table pattern: 'name' (default)")
     table.add_row("DBT_PROD_TABLE_NAME", "Table: 'alias_or_name' (default)")
     table.add_row("DBT_PROD_SCHEMA_SOURCE", "Schema: 'config_or_model' (default)")
     table.add_row("DBT_VALIDATE_BIGQUERY", "Validate BigQuery names (opt-in)")
@@ -265,14 +263,17 @@ def info(
     model_name: str = typer.Argument(..., help="Model name (e.g., core_client__events)"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
 ):
     """
     Model summary (name, schema, table, materialization, tags)
 
-    Example: meta info -j customers
+    Examples:
+        meta info -j customers               # Production
+        meta info --dev -j customers         # Dev (personal_USERNAME)
     """
     manifest_path = get_manifest_path(manifest)
-    result = commands.info(manifest_path, model_name)
+    result = commands.info(manifest_path, model_name, use_dev=use_dev, json_output=json_output)
 
     if not result:
         console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
@@ -297,14 +298,17 @@ def schema(
     model_name: str = typer.Argument(..., help="Model name"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
 ):
     """
-    Production table name (database.schema.table)
+    Production table name (database.schema.table) or dev with --dev flag
 
-    Example: meta schema jaffle_shop__orders
+    Examples:
+        meta schema jaffle_shop__orders            # Production
+        meta schema --dev jaffle_shop__orders      # Dev (personal_USERNAME)
     """
     manifest_path = get_manifest_path(manifest)
-    result = commands.schema(manifest_path, model_name)
+    result = commands.schema(manifest_path, model_name, use_dev=use_dev, json_output=json_output)
 
     if not result:
         console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
@@ -313,7 +317,8 @@ def schema(
     if json_output:
         print(json.dumps(result, indent=2))
     else:
-        print(f"Database: {result['database']}")
+        if 'database' in result and result['database']:
+            print(f"Database: {result['database']}")
         print(f"Schema:   {result['schema']}")
         print(f"Table:    {result['table']}")
         print(f"Full:     {result['full_name']}")
@@ -324,14 +329,17 @@ def columns(
     model_name: str = typer.Argument(..., help="Model name"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema"),
 ):
     """
     Column names and types
 
-    Example: meta columns -j customers
+    Examples:
+        meta columns -j customers                # Production
+        meta columns --dev -j customers          # Dev
     """
     manifest_path = get_manifest_path(manifest)
-    result = commands.columns(manifest_path, model_name)
+    result = commands.columns(manifest_path, model_name, use_dev=use_dev, json_output=json_output)
 
     if not result:
         console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
@@ -356,14 +364,17 @@ def config(
     model_name: str = typer.Argument(..., help="Model name"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
 ):
     """
     Full dbt config (29 fields: partition_by, cluster_by, etc.)
 
-    Example: meta config -j model_name
+    Examples:
+        meta config -j model_name              # Production
+        meta config --dev -j model_name        # Dev (personal_USERNAME)
     """
     manifest_path = get_manifest_path(manifest)
-    result = commands.config(manifest_path, model_name)
+    result = commands.config(manifest_path, model_name, use_dev=use_dev, json_output=json_output)
 
     if result is None:
         console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
@@ -382,14 +393,17 @@ def deps(
     model_name: str = typer.Argument(..., help="Model name"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
 ):
     """
     Dependencies by type (refs, sources, macros)
 
-    Example: meta deps -j model_name
+    Examples:
+        meta deps -j model_name              # Production
+        meta deps --dev -j model_name        # Dev (personal_USERNAME)
     """
     manifest_path = get_manifest_path(manifest)
-    result = commands.deps(manifest_path, model_name)
+    result = commands.deps(manifest_path, model_name, use_dev=use_dev, json_output=json_output)
 
     if result is None:
         console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
@@ -415,14 +429,18 @@ def sql(
     model_name: str = typer.Argument(..., help="Model name"),
     jinja: bool = typer.Option(False, "--jinja", help="Show raw SQL with Jinja"),
     manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
 ):
     """
     Compiled SQL (default) or raw SQL with --jinja
 
-    Example: meta sql model_name
+    Examples:
+        meta sql model_name                  # Production compiled SQL
+        meta sql --dev model_name            # Dev (personal_USERNAME)
+        meta sql --jinja model_name          # Raw SQL with Jinja
     """
     manifest_path = get_manifest_path(manifest)
-    result = commands.sql(manifest_path, model_name, raw=jinja)
+    result = commands.sql(manifest_path, model_name, use_dev=use_dev, raw=jinja, json_output=json_output)
 
     if result is None:
         console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
@@ -445,14 +463,17 @@ def sql(
 def path(
     model_name: str = typer.Argument(..., help="Model name"),
     manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
 ):
     """
     Relative file path to .sql file
 
-    Example: meta path model_name
+    Examples:
+        meta path model_name              # Production
+        meta path --dev model_name        # Dev (personal_USERNAME)
     """
     manifest_path = get_manifest_path(manifest)
-    result = commands.path(manifest_path, model_name)
+    result = commands.path(manifest_path, model_name, use_dev=use_dev, json_output=json_output)
 
     if result is None:
         console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
@@ -513,14 +534,17 @@ def parents(
     all_ancestors: bool = typer.Option(False, "--all", help="Get all ancestors (recursive)"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
 ):
     """
     Upstream dependencies (direct or all ancestors)
 
-    Example: meta parents -j --all model_name
+    Examples:
+        meta parents -j model_name                    # Production, direct parents
+        meta parents --dev -j --all model_name        # Dev, all ancestors
     """
     manifest_path = get_manifest_path(manifest)
-    result = commands.parents(manifest_path, model_name, recursive=all_ancestors)
+    result = commands.parents(manifest_path, model_name, use_dev=use_dev, recursive=all_ancestors, json_output=json_output)
 
     if result is None:
         console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
@@ -541,14 +565,17 @@ def children(
     all_descendants: bool = typer.Option(False, "--all", help="Get all descendants (recursive)"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
 ):
     """
     Downstream dependencies (direct or all descendants)
 
-    Example: meta children model_name
+    Examples:
+        meta children model_name                    # Production, direct children
+        meta children --dev --all model_name        # Dev, all descendants
     """
     manifest_path = get_manifest_path(manifest)
-    result = commands.children(manifest_path, model_name, recursive=all_descendants)
+    result = commands.children(manifest_path, model_name, use_dev=use_dev, recursive=all_descendants, json_output=json_output)
 
     if result is None:
         console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
@@ -561,32 +588,6 @@ def children(
         rprint(f"[{STYLE_HEADER}]{mode} for {model_name} ({len(result)}):[/{STYLE_HEADER}]")
         for child in result:
             print(f"  {child['unique_id']}")
-
-
-@app.command("schema-dev")
-def schema_dev_cmd(
-    model_name: str = typer.Argument(..., help="Model name"),
-    json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
-):
-    """
-    Dev table name (personal_USERNAME.filename)
-
-    Example: meta schema-dev jaffle_shop__orders
-    """
-    manifest_path = get_manifest_path(manifest)
-    result = commands.schema_dev(manifest_path, model_name)
-
-    if not result:
-        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
-        raise typer.Exit(code=1)
-
-    if json_output:
-        print(json.dumps(result, indent=2))
-    else:
-        print(f"Schema: {result['schema']}")
-        print(f"Table:  {result['table']}")
-        print(f"Full:   {result['full_name']}")
 
 
 @app.command()
@@ -638,14 +639,17 @@ def docs(
     model_name: str = typer.Argument(..., help="Model name"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
 ):
     """
     Column names, types, and descriptions
 
-    Example: meta docs customers
+    Examples:
+        meta docs customers              # Production
+        meta docs --dev customers        # Dev (personal_USERNAME)
     """
     manifest_path = get_manifest_path(manifest)
-    result = commands.docs(manifest_path, model_name)
+    result = commands.docs(manifest_path, model_name, use_dev=use_dev, json_output=json_output)
 
     if not result:
         console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
