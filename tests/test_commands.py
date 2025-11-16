@@ -22,7 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from dbt_meta.commands import (
     info, schema, columns, config, deps, sql, path, list_models, search,
-    parents, children, node, refresh, docs
+    parents, children, refresh, docs
 )
 
 
@@ -394,6 +394,31 @@ class TestPathCommand:
         result = path(str(prod_manifest), "nonexistent__model")
         assert result is None
 
+    def test_path_with_bigquery_format(self, tmp_path):
+        """Should find model by BigQuery format (schema.table)"""
+        # Create manifest with model that has alias
+        manifest_path = tmp_path / "manifest.json"
+        manifest_data = {
+            "metadata": {"dbt_version": "1.5.0"},
+            "nodes": {
+                "model.project.customers": {
+                    "name": "customers",
+                    "resource_type": "model",
+                    "schema": "analytics",
+                    "alias": "dim_customers",
+                    "original_file_path": "models/analytics/customers.sql"
+                }
+            }
+        }
+        manifest_path.write_text(json.dumps(manifest_data))
+
+        # Try to find model by BigQuery format: schema.table
+        result = path(str(manifest_path), "analytics.dim_customers")
+
+        # Should find model by schema + alias
+        assert result is not None
+        assert result == "models/analytics/customers.sql"
+
 
 class TestPathCommandJsonOutput:
     """Test path command JSON output with -j flag"""
@@ -613,46 +638,6 @@ class TestChildrenCommand:
 
 
 # TestSchemaDevFlag class moved to test_dev_and_fallbacks.py for better organization
-
-
-class TestNodeCommand:
-    """Test node command - full node details"""
-
-    def test_node_by_model_name(self, prod_manifest, test_model):
-        """Should get node by model name"""
-        model_name = test_model  # Use fixture
-        result = node(str(prod_manifest), model_name)
-
-        assert isinstance(result, dict)
-        assert 'unique_id' in result
-        assert result['unique_id'].startswith('model.')
-        assert 'name' in result
-        assert 'resource_type' in result
-
-    def test_node_by_unique_id(self, prod_manifest, test_model):
-        """Should get node by unique_id"""
-        unique_id = f"model.admirals_bi_dwh.{test_model}"
-        result = node(str(prod_manifest), unique_id)
-
-        assert isinstance(result, dict)
-        assert result['unique_id'] == unique_id
-        assert 'name' in result
-
-    def test_node_returns_complete_metadata(self, prod_manifest, test_model):
-        """Should return complete node metadata"""
-        model_name = test_model  # Use fixture
-        result = node(str(prod_manifest), model_name)
-
-        # Should have extensive metadata
-        assert 'database' in result
-        assert 'schema' in result
-        assert 'config' in result
-        assert 'columns' in result or result.get('columns') is not None
-
-    def test_node_nonexistent_returns_none(self, prod_manifest):
-        """Should return None for non-existent node"""
-        result = node(str(prod_manifest), "nonexistent__model")
-        assert result is None
 
 
 class TestRefreshCommand:
@@ -1190,6 +1175,73 @@ class TestDevTablePatternCustom:
 class TestDevTablePatternErrorHandling:
     """Test error handling for invalid patterns"""
 
+    def test_invalid_placeholder_in_pattern(self, tmp_path, monkeypatch, capsys):
+        """Should fallback to 'name' and warn on invalid placeholder"""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        target = project_root / "target"
+        target.mkdir()
+
+        dev_path = target / "manifest.json"
+        dev_data = {
+            "nodes": {
+                "model.project.test_model": {
+                    "name": "test_model",
+                    "schema": "staging",
+                    "database": "",
+                    "config": {},
+                    "original_file_path": "models/test_model.sql"
+                }
+            }
+        }
+        dev_path.write_text(json.dumps(dev_data))
+
+        monkeypatch.setenv('DBT_DEV_MANIFEST_PATH', str(dev_path))
+        monkeypatch.setenv('DBT_DEV_DATASET', 'test_ds')
+        monkeypatch.setenv('DBT_DEV_TABLE_PATTERN', '{invalid_placeholder}')  # Invalid!
+
+        result = schema(str(dev_path), 'test_model', use_dev=True, json_output=False)
+
+        # Should fallback to model name
+        assert result is not None
+        assert result['table'] == 'test_model'
+
+        # Should print warning to stderr
+        captured = capsys.readouterr()
+        assert 'Unknown placeholder' in captured.err or 'invalid_placeholder' in captured.err
+
+    def test_literal_pattern_without_placeholders(self, tmp_path, monkeypatch):
+        """Should treat non-bracketed pattern as literal string"""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        target = project_root / "target"
+        target.mkdir()
+
+        dev_path = target / "manifest.json"
+        dev_data = {
+            "nodes": {
+                "model.project.test_model": {
+                    "name": "test_model",
+                    "schema": "staging",
+                    "database": "",
+                    "config": {},
+                    "original_file_path": "models/test_model.sql"
+                }
+            }
+        }
+        dev_path.write_text(json.dumps(dev_data))
+
+        monkeypatch.setenv('DBT_DEV_MANIFEST_PATH', str(dev_path))
+        monkeypatch.setenv('DBT_DEV_DATASET', 'test_ds')
+        monkeypatch.setenv('DBT_DEV_TABLE_PATTERN', 'custom_literal_name')  # Literal
+
+        result = schema(str(dev_path), 'test_model', use_dev=True, json_output=False)
+
+        # Should use literal pattern
+        assert result is not None
+        assert result['table'] == 'custom_literal_name'
+
+
 class TestDevTablePatternIntegration:
     """Integration tests with other dev features"""
 
@@ -1351,12 +1403,13 @@ class TestSchemaTargetFallback:
         # Enable target fallback
         monkeypatch.setenv('DBT_FALLBACK_TARGET', 'true')
         monkeypatch.setenv('DBT_FALLBACK_BIGQUERY', 'false')
+        monkeypatch.setenv('USER', 'alice')  # Mock username
 
         result = schema(str(prod_manifest), "test_schema__events")
 
         assert result is not None
         # When using dev fallback, should return DEV schema location
-        assert result['schema'] == 'personal_pavel_filianin'  # Dev schema, not production
+        assert result['schema'] == 'personal_alice'  # Dev schema, not production
         assert result['table'] == 'test_schema__events'  # Dev table name (uses 'name' field)
 
     def test_schema_skips_target_when_disabled(self, tmp_path, monkeypatch):
@@ -1440,7 +1493,7 @@ class TestInfoTargetFallback:
             "nodes": {
                 "model.my_project.test_schema__events": {
                     "name": "test_schema__events",
-                    "schema": "personal_pavel_filianin",
+                    "schema": "personal_alice",
                     "database": "test-project",
                     "original_file_path": "models/test_schema/events.sql",
                     "tags": ["dev", "test"],
@@ -1460,7 +1513,7 @@ class TestInfoTargetFallback:
         result = info(str(prod_manifest), "test_schema__events")
 
         assert result is not None
-        assert result['schema'] == 'personal_pavel_filianin'
+        assert result['schema'] == 'personal_alice'
         assert result['materialized'] == 'table'
         assert result['file'] == 'models/test_schema/events.sql'
         assert 'dev' in result['tags']
@@ -1561,7 +1614,7 @@ class TestThreeLevelFallbackIntegration:
             "nodes": {
                 "model.my_project.test_schema__events": {
                     "name": "test_schema__events",
-                    "schema": "personal_pavel_filianin",
+                    "schema": "personal_alice",
                     "database": "test-project",
                     "config": {"alias": "events_dev"}
                 }
@@ -1572,13 +1625,14 @@ class TestThreeLevelFallbackIntegration:
         monkeypatch.setenv('DBT_FALLBACK_TARGET', 'true')
         monkeypatch.setenv('DBT_FALLBACK_BIGQUERY', 'false')
         monkeypatch.setenv('DBT_DEV_TABLE_PATTERN', 'alias')  # Use alias for dev table name
+        monkeypatch.setenv('USER', 'alice')  # Mock username
 
         result = schema(str(prod_manifest), "test_schema__events")
 
         # Should use dev
         assert result is not None
         assert result['table'] == 'events_dev'  # Uses alias because DBT_DEV_TABLE_PATTERN='alias'
-        assert result['schema'] == 'personal_pavel_filianin'
+        assert result['schema'] == 'personal_alice'
 
 # ============================================================================
 # Edge Cases
@@ -1618,4 +1672,72 @@ class TestEdgeCasesCombinations:
 
 class TestBigQueryValidation:
     """Test BigQuery schema name validation (opt-in feature)"""
+
+    def test_bigquery_validation_with_invalid_chars(self, tmp_path, monkeypatch, capsys):
+        """Should sanitize dataset name and print warnings when DBT_VALIDATE_BIGQUERY=true"""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        target = project_root / "target"
+        target.mkdir()
+
+        dev_path = target / "manifest.json"
+        dev_data = {
+            "nodes": {
+                "model.project.test_model": {
+                    "name": "test_model",
+                    "schema": "staging",
+                    "database": "",
+                    "config": {},
+                    "original_file_path": "models/test_model.sql"
+                }
+            }
+        }
+        dev_path.write_text(json.dumps(dev_data))
+
+        monkeypatch.setenv('DBT_DEV_MANIFEST_PATH', str(dev_path))
+        monkeypatch.setenv('DBT_DEV_DATASET', 'invalid.name@test')  # Invalid chars
+        monkeypatch.setenv('DBT_VALIDATE_BIGQUERY', 'true')  # Enable validation
+
+        result = schema(str(dev_path), 'test_model', use_dev=True, json_output=False)
+
+        # Should sanitize to valid name
+        assert result is not None
+        assert '.' not in result['schema']
+        assert '@' not in result['schema']
+
+        # Should print warnings to stderr
+        captured = capsys.readouterr()
+        assert 'BigQuery validation' in captured.err
+
+    def test_bigquery_validation_disabled_by_default(self, tmp_path, monkeypatch):
+        """Should not validate when DBT_VALIDATE_BIGQUERY is not set"""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        target = project_root / "target"
+        target.mkdir()
+
+        dev_path = target / "manifest.json"
+        dev_data = {
+            "nodes": {
+                "model.project.test_model": {
+                    "name": "test_model",
+                    "schema": "staging",
+                    "database": "",
+                    "config": {},
+                    "original_file_path": "models/test_model.sql"
+                }
+            }
+        }
+        dev_path.write_text(json.dumps(dev_data))
+
+        monkeypatch.setenv('DBT_DEV_MANIFEST_PATH', str(dev_path))
+        monkeypatch.setenv('DBT_DEV_DATASET', 'invalid.name@test')  # Invalid chars
+        # DBT_VALIDATE_BIGQUERY not set - validation disabled
+
+        result = schema(str(dev_path), 'test_model', use_dev=True, json_output=False)
+
+        # Should NOT sanitize (validation disabled)
+        assert result is not None
+        assert result['schema'] == 'invalid.name@test'  # Unchanged
+
 

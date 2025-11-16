@@ -84,6 +84,7 @@ def _build_commands_panel() -> Panel:
     table.add_row("  [green]columns[/green]", "Column names and types (--dev for dev schema)")
     table.add_row("  [green]sql[/green]", "Compiled SQL (default) or raw SQL with --jinja")
     table.add_row("  [green]docs[/green]", "Column names, types, and descriptions")
+    table.add_row("  [green]deps[/green]", "Dependencies by type (refs, sources, macros)")
     table.add_row("  [green]parents[/green]", "Upstream dependencies (direct or -a/--all ancestors)")
     table.add_row("  [green]children[/green]", "Downstream dependencies (direct or -a/--all descendants)")
     table.add_row("  [green]config[/green]", "Full dbt config (29 fields: partition_by, cluster_by, etc.)")
@@ -93,7 +94,6 @@ def _build_commands_panel() -> Panel:
     table.add_row("[bold cyan]Utilities:[/bold cyan]", "")
     table.add_row("  [cyan]list[/cyan]", "List models (optionally filter by pattern)")
     table.add_row("  [cyan]search[/cyan]", "Search by name or description")
-    table.add_row("  [cyan]node[/cyan]", "Full node details by unique_id or model name")
     table.add_row("  [cyan]refresh[/cyan]", "Refresh manifest (runs dbt parse)")
 
     return Panel(table, title="[bold white]📊 Commands[/bold white]", title_align="left", border_style="white", padding=(0, 1))
@@ -108,11 +108,11 @@ def _build_flags_panel() -> Panel:
     table.add_row("[bold cyan]Global flags:[/bold cyan]", "")
     table.add_row("-h, --help", "Show this help message")
     table.add_row("-v, --version", "Show version and exit")
-    table.add_row("--manifest PATH", "Path to manifest.json")
+    table.add_row("-m, --manifest PATH", "Explicit path to manifest.json")
+    table.add_row("-d, --dev", "Use dev manifest and schema")
     table.add_row("", "")
     table.add_row("[bold cyan]Command flags:[/bold cyan]", "")
-    table.add_row("-j, --json", "Output as JSON (most commands)")
-    table.add_row("-d, --dev", "Use dev schema (schema/columns commands)")
+    table.add_row("[green]-j, --json[/green]", "Output as JSON (AI-friendly structured data)")
     table.add_row("-a, --all", "Recursive mode (parents/children)")
     table.add_row("--jinja", "Show raw SQL with Jinja (sql command only)")
 
@@ -126,92 +126,99 @@ def _build_examples_panel() -> Panel:
     table.add_column(style=STYLE_DESCRIPTION)
 
     table.add_row("[bold]Basic Usage:[/bold]", "")
-    table.add_row("  meta schema core_client__client_profiles", "admirals-bi-dwh.core_client.client_profiles")
-    table.add_row("  meta path core_client__client_profiles", "models/core/client/client_profiles.sql")
-    table.add_row("  meta columns -j core_client__orders", "Get columns as JSON")
-    table.add_row("  meta sql core_client__customers", "View compiled SQL")
+    table.add_row("  meta schema customers", "my_project.analytics.customers")
+    table.add_row("  meta path customers", "models/analytics/customers.sql")
+    table.add_row("  meta columns -j orders", "Get columns as JSON")
+    table.add_row("  meta sql customers", "View compiled SQL")
     table.add_row('  meta search "customer"', "Search by name/description")
     table.add_row("", "")
-    table.add_row("[bold]Dev Workflow:[/bold]", "")
-    table.add_row("  meta schema --dev core_client__orders", "personal_pavel.core_client__orders")
-    table.add_row("  meta columns --dev -j core_client__orders", "Get dev table columns")
+    table.add_row("[bold]Dev Workflow (with defer):[/bold]", "")
+    table.add_row("  defer run --select customers", "Build dev table first")
+    table.add_row("  meta schema --dev customers", "personal_USERNAME.customers")
+    table.add_row("  meta columns --dev -j customers", "Get dev table columns")
+    table.add_row("", "")
+    table.add_row("[bold]Combined flags:[/bold]", "")
+    table.add_row("  meta schema -dj customers", "Dev + JSON output")
+    table.add_row("  meta parents -ajd model", "All + JSON + Dev")
+    table.add_row("  meta columns -jm ~/custom.json model", "JSON + Custom manifest")
     table.add_row("", "")
     table.add_row("[bold]Works from anywhere:[/bold]", "")
     table.add_row("  cd /tmp && meta list", "Uses $DBT_PROD_MANIFEST_PATH")
-    table.add_row("  meta schema --manifest ~/custom.json model", "Use custom manifest")
+    table.add_row("  meta schema -m ~/custom.json model", "Use custom manifest")
 
     return Panel(table, title="[bold white]💡 Examples[/bold white]", title_align="left", border_style="white", padding=(0, 1))
 
 
-def _build_manifest_priority_panel() -> Panel:
-    """Build Manifest Priority panel"""
-    table = Table(show_header=False, box=None, padding=(0, 1))
-    table.add_column(style="bold", width=4, no_wrap=True)
-    table.add_column(style="white")
+def _build_configuration_panel() -> Panel:
+    """Build unified Configuration panel (Simple + Production setups)"""
+    from rich.console import Group
 
-    table.add_row("1.", "--manifest PATH [cyan](explicit override)[/cyan]")
-    table.add_row("2.", "DBT_DEV_MANIFEST_PATH [yellow](when --dev)[/yellow] - default: ./target/manifest.json")
-    table.add_row("3.", "DBT_PROD_MANIFEST_PATH [green](production)[/green] - default: ~/dbt-state/manifest.json")
-    table.add_row("", "")
-    table.add_row("", "[white]Recommended: Set DBT_PROD_MANIFEST_PATH in ~/.zshrc[/white]")
+    # Part 1: Setup instructions (single column)
+    setup_table = Table(show_header=False, box=None, padding=(0, 1))
+    setup_table.add_column(style="white", no_wrap=False)
 
-    return Panel(table, title="[bold white]⚙️ Manifest Discovery[/bold white]", title_align="left", border_style="white", padding=(0, 1))
+    # Simple Setup
+    setup_table.add_row("[bold cyan][1] Simple Setup (single project, no defer):[/bold cyan]")
+    setup_table.add_row("Just run: [cyan]dbt compile[/cyan]")
+    setup_table.add_row("Commands automatically use [cyan]./target/manifest.json[/cyan]")
+    setup_table.add_row("[bold cyan]No configuration needed![/bold cyan]")
+    setup_table.add_row("")
+    setup_table.add_row("Example:")
+    setup_table.add_row("  dbt compile")
+    setup_table.add_row("  meta schema customers                       → Uses ./target/manifest.json")
+    setup_table.add_row("")
+    setup_table.add_row("[dim]Note: Without production manifest, falls back to ./target/[/dim]")
+    setup_table.add_row("[dim]      For clarity, use --dev flag explicitly[/dim]")
+    setup_table.add_row("")
 
+    # Production Setup
+    setup_table.add_row("[bold cyan][2] Production Setup (with defer workflow):[/bold cyan]")
+    setup_table.add_row("1. Set production manifest path in ~/.zshrc:")
+    setup_table.add_row("   export DBT_PROD_MANIFEST_PATH=~/dbt-state/manifest.json")
+    setup_table.add_row("")
+    setup_table.add_row("2. Auto-update production manifest (hourly cron):")
+    setup_table.add_row("   0 * * * * cp <project>/.dbt-state/manifest.json ~/dbt-state/")
+    setup_table.add_row("")
+    setup_table.add_row("3. Use [cyan]--dev[/cyan] flag for dev models:")
+    setup_table.add_row("   defer run --select customers")
+    setup_table.add_row("   meta schema --dev customers                → Uses ./target/manifest.json")
+    setup_table.add_row("")
 
-def _build_env_vars_panel() -> Panel:
-    """Build Environment Variables panel"""
-    table = Table(show_header=False, box=None, padding=(0, 1))
-    table.add_column(style=STYLE_COMMAND)
-    table.add_column(style=STYLE_DESCRIPTION)
+    # Part 2: Reference info (two columns)
+    ref_table = Table(show_header=False, box=None, padding=(0, 1))
+    ref_table.add_column(style="white", no_wrap=False, width=45)
+    ref_table.add_column(style="white", no_wrap=False)
 
-    table.add_row("[bold yellow]Setup (Required):", "")
-    table.add_row("", "")
-    table.add_row("  [cyan]1. Add to ~/.zshrc:", "")
-    table.add_row("     [white]export DBT_PROD_MANIFEST_PATH=<path>[/white]", "[cyan]Default: ~/dbt-state/manifest.json[/cyan]")
-    table.add_row("", "")
-    table.add_row("  [cyan]2. Auto-update (hourly cron):", "")
-    table.add_row("     [white]0 * * * * cp <src> <dst>[/white]", "[cyan]Keep manifest in sync[/cyan]")
-    table.add_row("", "")
-    table.add_row("[bold cyan]Optional:[/bold cyan]", "")
-    table.add_row("  [cyan]DBT_DEV_MANIFEST_PATH[/cyan]", "[white]Dev manifest path (default: ./target/manifest.json)[/white]")
-    table.add_row("  [cyan]DBT_DEV_SCHEMA[/cyan]", "[white]Dev schema name (e.g., personal_username)[/white]")
+    # Manifest Discovery
+    ref_table.add_row("[bold cyan]Manifest Discovery (priority order):[/bold cyan]", "")
+    ref_table.add_row("Without --dev:", "")
+    ref_table.add_row("  1. [cyan]-m/--manifest PATH[/cyan]", "Explicit override")
+    ref_table.add_row("  2. [cyan]DBT_PROD_MANIFEST_PATH[/cyan]", "Production")
+    ref_table.add_row("  3. [cyan]./target/manifest.json[/cyan]", "Simple mode")
+    ref_table.add_row("", "")
+    ref_table.add_row("With --dev:", "")
+    ref_table.add_row("  1. [cyan]-m/--manifest PATH[/cyan]", "Override")
+    ref_table.add_row("  2. [cyan]DBT_DEV_MANIFEST_PATH[/cyan]", "Dev manifest")
+    ref_table.add_row("", "")
 
-    return Panel(table, title="[bold white]🚀 Setup[/bold white]", title_align="left", border_style="white", padding=(0, 1))
+    # Environment Variables
+    ref_table.add_row("[bold cyan]Environment Variables:[/bold cyan]", "")
+    ref_table.add_row("", "")
+    ref_table.add_row("Manifest:", "")
+    ref_table.add_row("  [cyan]DBT_PROD_MANIFEST_PATH[/cyan]", "Production manifest path")
+    ref_table.add_row("  [cyan]DBT_DEV_MANIFEST_PATH[/cyan]", "Dev manifest path")
+    ref_table.add_row("", "")
+    ref_table.add_row("Dev Workflow:", "")
+    ref_table.add_row("  Uses schema/table from target/manifest.json", "(dbt-compiled values)")
+    ref_table.add_row("  Fallback: DBT_DEV_SCHEMA.{alias|name}", "When not in manifest")
+    ref_table.add_row("", "")
+    ref_table.add_row("Naming Strategy (advanced):", "")
+    ref_table.add_row("  [cyan]DBT_PROD_TABLE_NAME[/cyan]", "alias_or_name (default)")
+    ref_table.add_row("  [cyan]DBT_PROD_SCHEMA_SOURCE[/cyan]", "config_or_model (default)")
 
-
-def _build_advanced_config_panel() -> Panel:
-    """Build Advanced Configuration panel"""
-    table = Table(show_header=False, box=None, padding=(0, 1))
-    table.add_column(style=STYLE_COMMAND, width=28)
-    table.add_column(style=STYLE_DESCRIPTION)
-
-    table.add_row("[bold cyan]Naming strategy:[/bold cyan]", "")
-    table.add_row("  DBT_PROD_TABLE_NAME", "alias_or_name | name | alias")
-    table.add_row("  DBT_PROD_SCHEMA_SOURCE", "config_or_model | model | config")
-    table.add_row("", "")
-    table.add_row("[bold cyan]Discovery:[/bold cyan]", "")
-    table.add_row("  DBT_PROD_MANIFEST_PATH", "Production manifest path (default: ~/dbt-state/manifest.json)")
-    table.add_row("", "")
-    table.add_row("[bold cyan]Dev workflow:[/bold cyan]", "")
-    table.add_row("  DBT_USER", "Override username (default: $USER)")
-    table.add_row("  DBT_DEV_TABLE_PATTERN", "Dev table: name | alias")
-
-    return Panel(table, title="[bold white]⚙️ Advanced Configuration[/bold white]", title_align="left", border_style="white", padding=(0, 1))
-
-
-def _build_setup_panel() -> Panel:
-    """Build Setup panel"""
-    table = Table(show_header=False, box=None, padding=(0, 1))
-    table.add_column(style="white")
-
-    table.add_row("[bold green]One-time setup:[/bold green]")
-    table.add_row("")
-    table.add_row("  [cyan]mkdir -p ~/.dbt-state[/cyan]")
-    table.add_row("  [cyan]cp /path/to/manifest.json ~/.dbt-state/[/cyan]")
-    table.add_row("")
-    table.add_row("[dim]Now dbt-meta works from any directory![/dim]")
-
-    return Panel(table, title="[b]🚀 Setup[/b]", title_align="left", border_style="dim", padding=(0, 1))
+    # Combine both tables
+    group = Group(setup_table, ref_table)
+    return Panel(group, title="[bold white]⚙️ Configuration[/bold white]", title_align="left", border_style="white", padding=(0, 1))
 
 
 def show_help_with_examples(ctx: typer.Context):
@@ -221,7 +228,6 @@ def show_help_with_examples(ctx: typer.Context):
 
     # Description
     rprint("AI-first CLI for dbt metadata extraction")
-    rprint("Works from [green]any directory[/green] using manifest from [cyan]$DBT_PROD_MANIFEST_PATH[/cyan]")
     rprint()
 
     # Usage block (like glab style)
@@ -238,9 +244,7 @@ def show_help_with_examples(ctx: typer.Context):
     console.print(_build_commands_panel())
     console.print(_build_flags_panel())
     console.print(_build_examples_panel())
-    console.print(_build_manifest_priority_panel())
-    console.print(_build_env_vars_panel())
-    console.print(_build_advanced_config_panel())
+    console.print(_build_configuration_panel())
 
     # Footer with links
     console.print()
@@ -357,7 +361,7 @@ def handle_command_output(result, json_output: bool, formatter_func=None):
 def info(
     model_name: str = typer.Argument(..., help="Model name (e.g., core_client__events)"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
 ):
     """
@@ -398,7 +402,7 @@ def info(
 def schema(
     model_name: str = typer.Argument(..., help="Model name"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
 ):
     """
@@ -437,7 +441,7 @@ def schema(
 def columns(
     model_name: str = typer.Argument(..., help="Model name"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema"),
 ):
     """
@@ -473,7 +477,7 @@ def columns(
 def config(
     model_name: str = typer.Argument(..., help="Model name"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
 ):
     """
@@ -509,7 +513,7 @@ def config(
 def deps(
     model_name: str = typer.Argument(..., help="Model name"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
 ):
     """
@@ -564,7 +568,7 @@ def sql(
     model_name: str = typer.Argument(..., help="Model name"),
     jinja: bool = typer.Option(False, "--jinja", help="Show raw SQL with Jinja"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
 ):
     """
@@ -607,7 +611,7 @@ def sql(
 def path(
     model_name: str = typer.Argument(..., help="Model name"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
 ):
     """
@@ -639,7 +643,7 @@ def path(
 def list_cmd(
     pattern: Optional[str] = typer.Argument(None, help="Filter pattern"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
 ):
     """
     List models (optionally filter by pattern)
@@ -671,7 +675,7 @@ def list_cmd(
 def search(
     query: str = typer.Argument(..., help="Search query"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
 ):
     """
     Search by name or description
@@ -691,7 +695,7 @@ def search(
         table.add_column("Description", style="white")
 
         for model in result:
-            desc = model['description'][:80] + "..." if model['description'] and len(model['description']) > 80 else model['description'] or ""
+            desc = model['description'] or ""
             table.add_row(model['name'], desc)
 
         console.print(table)
@@ -702,7 +706,7 @@ def parents(
     model_name: str = typer.Argument(..., help="Model name"),
     all_ancestors: bool = typer.Option(False, "-a", "--all", help="Get all ancestors (recursive)"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
 ):
     """
@@ -748,7 +752,7 @@ def children(
     model_name: str = typer.Argument(..., help="Model name"),
     all_descendants: bool = typer.Option(False, "-a", "--all", help="Get all descendants (recursive)"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
 ):
     """
@@ -790,35 +794,6 @@ def children(
 
 
 @app.command()
-def node(
-    identifier: str = typer.Argument(..., help="Model name or unique_id"),
-    json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
-):
-    """
-    Full node details by unique_id or model name
-
-    Returns complete node metadata from manifest
-    """
-    manifest_path, _ = get_manifest_path(manifest)
-    result = commands.node(manifest_path, identifier)
-
-    if not result:
-        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Node '{identifier}' not found")
-        raise typer.Exit(code=1)
-
-    if json_output:
-        print(json.dumps(result, indent=2))
-    else:
-        rprint(f"[{STYLE_HEADER}]Node: {result.get('name', 'unknown')}[/{STYLE_HEADER}]")
-        print(f"Unique ID:     {result.get('unique_id', 'N/A')}")
-        print(f"Resource Type: {result.get('resource_type', 'N/A')}")
-        print(f"Database:      {result.get('database', 'N/A')}")
-        print(f"Schema:        {result.get('schema', 'N/A')}")
-        print(f"Materialized:  {result.get('config', {}).get('materialized', 'N/A')}")
-
-
-@app.command()
 def refresh():
     """
     Refresh manifest (runs dbt parse)
@@ -837,7 +812,7 @@ def refresh():
 def docs(
     model_name: str = typer.Argument(..., help="Model name"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
 ):
     """
@@ -857,17 +832,16 @@ def docs(
     if json_output:
         print(json.dumps(result, indent=2))
     else:
-        # Rich table output
+        # Rich table output with blank line first
+        print()
         table = Table(title=f"[bold green not italic]Column Documentation: {model_name}[/bold green not italic]", header_style="bold green")
         table.add_column("Name", style=STYLE_COMMAND, no_wrap=True)
         table.add_column("Type", style="white")
         table.add_column("Description", style=STYLE_DESCRIPTION)
 
         for col in result:
-            desc = col.get('description', '')
-            if len(desc) > 80:
-                desc = desc[:77] + "..."
-            table.add_row(col['name'], col['data_type'], desc or "(no description)")
+            desc = col.get('description', '') or "(no description)"
+            table.add_row(col['name'], col['data_type'], desc)
 
         console.print(table)
 

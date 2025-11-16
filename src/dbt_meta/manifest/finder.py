@@ -1,10 +1,15 @@
 """
 ManifestFinder - Locate dbt manifest.json
 
-Priority order:
-1. Explicit manifest path (via --manifest flag or function parameter)
-2. DBT_PROD_MANIFEST_PATH (default: ~/dbt-state/manifest.json)
-3. DBT_DEV_MANIFEST_PATH (default: ./target/manifest.json) - only when use_dev=True
+Priority order (without --dev):
+1. --manifest PATH (explicit override)
+2. DBT_PROD_MANIFEST_PATH (if set - production mode)
+3. ./target/manifest.json (simple mode fallback)
+4. ~/dbt-state/manifest.json (backward compatibility)
+
+Priority order (with --dev):
+1. --manifest PATH (explicit override, ignores --dev)
+2. DBT_DEV_MANIFEST_PATH (default: ./target/manifest.json)
 """
 
 import os
@@ -19,6 +24,10 @@ class ManifestFinder:
     def find(explicit_path: Optional[str] = None, use_dev: bool = False) -> str:
         """
         Find manifest.json using simplified priority search
+
+        Supports two modes:
+        - Simple mode: Works out-of-box with ./target/manifest.json (after dbt compile)
+        - Production mode: Uses DBT_PROD_MANIFEST_PATH for defer workflow
 
         Args:
             explicit_path: Explicit manifest path (from --manifest flag)
@@ -45,35 +54,53 @@ class ManifestFinder:
                 return str(dev_path.absolute())
             raise FileNotFoundError(
                 f"Dev manifest not found at: {dev_manifest_path}\n"
-                f"Set DBT_DEV_MANIFEST_PATH or ensure ./target/manifest.json exists"
+                f"Hint: Run 'defer run --select model_name' first to build dev table\n"
+                f"      Or set DBT_DEV_MANIFEST_PATH to custom location"
             )
 
-        # Priority 3: Production manifest (default)
-        prod_manifest_path = os.getenv("DBT_PROD_MANIFEST_PATH", str(Path.home() / "dbt-state" / "manifest.json"))
-        prod_path = Path(prod_manifest_path).expanduser()
-        if prod_path.exists():
-            return str(prod_path.absolute())
+        # Priority 3: Production manifest (if DBT_PROD_MANIFEST_PATH is set)
+        prod_manifest_env = os.getenv("DBT_PROD_MANIFEST_PATH")
+        if prod_manifest_env:
+            prod_path = Path(prod_manifest_env).expanduser()
+            if prod_path.exists():
+                return str(prod_path.absolute())
+            # Environment variable is set but file doesn't exist - raise error
+            raise FileNotFoundError(
+                f"Production manifest not found at: {prod_manifest_env}\n"
+                f"DBT_PROD_MANIFEST_PATH is set but file doesn't exist.\n"
+                f"Ensure manifest file exists at the configured location."
+            )
+
+        # Priority 4: Simple mode fallback (./target/manifest.json)
+        # This allows dbt-meta to work out-of-box after 'dbt compile'
+        simple_mode_path = Path.cwd() / "target" / "manifest.json"
+        if simple_mode_path.exists():
+            return str(simple_mode_path.absolute())
+
+        # Priority 5: Default production path (backward compatibility)
+        default_prod_path = Path.home() / "dbt-state" / "manifest.json"
+        if default_prod_path.exists():
+            return str(default_prod_path.absolute())
 
         # No manifest found - raise error with helpful message
         raise FileNotFoundError(
-            "No production manifest found. Searched:\n"
-            f"  DBT_PROD_MANIFEST_PATH (default: ~/dbt-state/manifest.json)\n"
+            "No manifest.json found. Tried:\n"
+            "  1. DBT_PROD_MANIFEST_PATH (not set)\n"
+            "  2. ./target/manifest.json (not found)\n"
+            "  3. ~/dbt-state/manifest.json (not found)\n"
             "\n"
-            "SETUP REQUIRED:\n"
+            "SIMPLE SETUP (single project):\n"
+            "  Run: dbt compile\n"
+            "  This creates ./target/manifest.json automatically\n"
             "\n"
-            "1. Set manifest path in ~/.zshrc or ~/.bashrc:\n"
-            "   export DBT_PROD_MANIFEST_PATH=~/dbt-state/manifest.json\n"
+            "PRODUCTION SETUP (defer workflow):\n"
+            "  1. Set manifest path in ~/.zshrc:\n"
+            "     export DBT_PROD_MANIFEST_PATH=~/dbt-state/manifest.json\n"
             "\n"
-            "2. Place production manifest at the configured location:\n"
-            "   mkdir -p ~/dbt-state\n"
-            "   cp /path/to/prod/manifest.json ~/dbt-state/\n"
+            "  2. Place production manifest:\n"
+            "     mkdir -p ~/dbt-state\n"
+            "     cp /path/to/prod/manifest.json ~/dbt-state/\n"
             "\n"
-            "3. IMPORTANT: Set up automatic manifest updates (e.g., hourly via cron/CI)\n"
-            "   to keep metadata in sync with production state.\n"
-            "\n"
-            "   Example cron job:\n"
-            "   0 * * * * cp /prod/manifest/path/manifest.json ~/dbt-state/manifest.json\n"
-            "\n"
-            "WHY: dbt-meta requires production manifest to extract metadata.\n"
-            "     Without regular updates, metadata becomes stale and queries may fail.\n"
+            "  3. Set up auto-update (hourly cron):\n"
+            "     0 * * * * cp /prod/path/manifest.json ~/dbt-state/\n"
         )

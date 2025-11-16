@@ -9,12 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-#### `--manifest` CLI Flag
-- **Global `--manifest PATH` flag** - Explicitly specify manifest.json path
-  - Short form: `-m`
+#### Simple Mode Support (Works Out-of-Box)
+- **`./target/manifest.json` fallback** - Automatically finds manifest after `dbt compile`
+  - No configuration needed for single-project setups
+  - Perfect for users without defer workflow
+  - Priority 3: Used when `DBT_PROD_MANIFEST_PATH` is not set
+  - Example: `dbt compile && meta schema customers` → works immediately!
+
+#### `-m, --manifest` CLI Flag
+- **Global `-m, --manifest PATH` flag** - Explicitly specify manifest.json path
   - Overrides all environment variables
-  - Example: `meta schema --manifest ~/custom.json model_name`
+  - Example: `meta schema -m ~/custom.json model_name`
   - Warning displayed when used with `--dev` flag (--dev is ignored)
+
+#### Combined Short Flags Support
+- **Multiple short flags can be combined** in any order (built-in Typer/Click feature)
+  - Example: `-dj` = `-d -j` (dev + JSON)
+  - Example: `-ajd` = `-a -j -d` (all + JSON + dev)
+  - Example: `-jm PATH` = `-j -m PATH` (JSON + custom manifest)
+  - Works with all flag combinations for streamlined commands
 
 #### `DBT_DEV_MANIFEST_PATH` Environment Variable
 - **New environment variable** for dev manifest path
@@ -22,7 +35,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Used when `--dev` flag is provided
   - Example: `export DBT_DEV_MANIFEST_PATH="./target/manifest.json"`
 
+#### Unified Configuration Panel in Help
+- **Consolidated help documentation** - Single "Configuration" panel instead of 4 separate sections
+  - **[1] Simple Setup** - For users without defer (dbt compile + ready to go)
+  - **[2] Production Setup** - For defer workflow (3 steps: export, cron, --dev)
+  - **Manifest Discovery** - Clear priority order for both modes
+  - **Environment Variables** - All variables grouped logically
+
 ### Changed
+
+#### UI Improvements
+- **Help system styling** - Unified color scheme for Configuration panel
+  - All section headers now use `[bold cyan]` (previously mixed green/cyan/white)
+  - Removed excessive colors from paths and variables
+  - Simplified intro text - removed redundant "Works from any directory" line
+  - **Hybrid layout** - Configuration panel uses best layout for each section
+    - Setup instructions (Simple + Production): Single column for better readability
+    - Reference info (Manifest Discovery + Environment Variables): Two columns with alignment
+    - Left column (45 chars): variable names and paths
+    - Right column: concise descriptions
+  - **Simplified Dev Workflow section** - Completely redesigned to reflect actual behavior
+    - **New approach:** Reads schema/table directly from `target/manifest.json` (dbt-compiled values)
+    - **Fallback:** `DBT_DEV_SCHEMA.{alias|name}` when model not in manifest
+      - Uses `alias` if present in config, otherwise uses `name` (filename)
+      - `DBT_DEV_SCHEMA` defaults to `personal_{username}` if not set
+    - **Removed from help:** All dev naming environment variables (still work for backward compatibility)
+      - `DBT_DEV_SCHEMA_TEMPLATE`, `DBT_DEV_SCHEMA_PREFIX`, `DBT_DEV_TABLE_PATTERN`, `DBT_USER`
+    - **Rationale:** Each project has custom `generate_schema_name` and `generate_alias_name` macros
+      - `dbt-meta` should NOT replicate dbt logic - just read the results from manifest
+      - Universal approach works with any dbt setup
+  - **Depersonalized examples** - Replaced all personal data with generic examples
+    - Changed `pavel_filianin` → `alice` in all documentation and code comments
+    - Changed `personal_pavel_filianin` → `personal_alice` in examples and tests
+    - Kept GitHub links and copyright attribution unchanged
+  - **Simple Mode clarification** - Added note about fallback behavior
+    - Explains that without production manifest, commands use `./target/manifest.json`
+    - Recommends using `--dev` flag explicitly for clarity
+    - Helps users understand automatic fallback in single-project setups
+  - Removed legacy fallback `~/dbt-state/manifest.json` from Manifest Discovery display
+  - More consistent with overall help design
+- **`docs` command** - Removed 80-character description truncation
+  - Now shows full column descriptions without cutting them off
+  - Added blank line before output for consistency
+- **`search` command** - Removed 80-character description truncation
+  - Now shows full model descriptions in search results
+
+#### Documentation Improvements
+- **README fully updated** - Reflects current functionality and removes outdated content
+  - Updated all examples to use `--dev` flag instead of removed `schema-dev` command
+  - Removed ~300 lines of duplicate and outdated sections
+  - Added "Common Use Cases" section with practical examples
+  - Consolidated "Commands Reference" into single comprehensive table
+  - Split configuration into "Simple Mode" and "Production Mode" sections
+  - Removed duplicate "Examples" and "Three-Level Fallback" sections
 
 #### Manifest Discovery Simplification
 - **Renamed `DBT_PROD_STATE_PATH` → `DBT_PROD_MANIFEST_PATH`**
@@ -31,16 +96,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - New: `DBT_PROD_MANIFEST_PATH=~/dbt-state/manifest.json` (file path)
   - Default changed: `~/.dbt-state/manifest.json` → `~/dbt-state/manifest.json`
 
-- **Simplified 3-level manifest priority**:
-  1. `--manifest PATH` - Explicit CLI flag (highest priority)
-  2. `DBT_DEV_MANIFEST_PATH` - Dev manifest when `--dev` flag used (default: `./target/manifest.json`)
-  3. `DBT_PROD_MANIFEST_PATH` - Production manifest (default: `~/dbt-state/manifest.json`)
+- **Enhanced manifest priority with Simple Mode fallback**:
+  - **Without `--dev`**:
+    1. `--manifest PATH` - Explicit CLI flag
+    2. `DBT_PROD_MANIFEST_PATH` - Production (if set)
+    3. `./target/manifest.json` - **Simple mode fallback** (NEW)
+    4. `~/dbt-state/manifest.json` - Backward compatibility
+  - **With `--dev`**:
+    1. `--manifest PATH` - Explicit CLI flag (--dev ignored with warning)
+    2. `DBT_DEV_MANIFEST_PATH` - Default: `./target/manifest.json`
+
+- **`DBT_PROD_MANIFEST_PATH` is now optional** - Not required for simple setups
 
 ### Removed
 
+- **Removed `node` command** - Duplicated functionality of `info` command
+  - `info` command provides same information in cleaner format
+  - For raw manifest data, use `info -j` which returns structured metadata
+  - Migration: Replace `meta node model_name` with `meta info model_name`
 - **Removed `DBT_MANIFEST_PATH` environment variable** - Use `--manifest` flag or `DBT_PROD_MANIFEST_PATH` instead
 - **Removed upward directory search** - No longer searches parent directories for `target/manifest.json`
 - **Removed `~/Projects/reports/.dbt-state/manifest.json` priority** - Deprecated hardcoded path
+- **Removed separate help panels** - Consolidated into single Configuration panel
 
 ## [0.2.1] - 2025-11-05
 
@@ -57,7 +134,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Simplified Dev Naming Configuration
 - **`DBT_DEV_DATASET`** - Simple constant for dev dataset name
-  - Example: `export DBT_DEV_DATASET="personal_pavel_filianin"`
+  - Example: `export DBT_DEV_DATASET="personal_alice"`
   - Replaces complex 4-level priority system
 
 - **`DBT_DEV_TABLE_PATTERN`** - Flexible table naming (default: `name`)

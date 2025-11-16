@@ -14,6 +14,7 @@ Replaces old files:
 
 import pytest
 import json
+import os
 from pathlib import Path
 from dbt_meta.manifest.finder import ManifestFinder
 from dbt_meta.manifest.parser import ManifestParser
@@ -110,19 +111,73 @@ class TestManifestFinder:
         # MUST find custom manifest, not dev
         assert found_path == str(custom_manifest.absolute())
 
+    def test_simple_mode_fallback_to_target(self, tmp_path, monkeypatch):
+        """
+        Simple mode: Fallback to ./target/manifest.json when DBT_PROD_MANIFEST_PATH not set
+
+        This allows dbt-meta to work out-of-box after 'dbt compile'.
+        Priority 3: ./target/manifest.json (when DBT_PROD_MANIFEST_PATH not set)
+        """
+        monkeypatch.chdir(tmp_path)
+        # Ensure DBT_PROD_MANIFEST_PATH is not set
+        monkeypatch.delenv("DBT_PROD_MANIFEST_PATH", raising=False)
+
+        # Create ./target/manifest.json (simple mode)
+        target_manifest = tmp_path / "target" / "manifest.json"
+        target_manifest.parent.mkdir(parents=True)
+        target_manifest.write_text('{"metadata": {"mode": "simple"}}')
+
+        finder = ManifestFinder()
+        found_path = finder.find()
+
+        # MUST find ./target/manifest.json
+        assert found_path == str(target_manifest.absolute())
+
+    def test_production_prioritized_over_simple_mode(self, tmp_path, monkeypatch):
+        """
+        Production manifest (DBT_PROD_MANIFEST_PATH) has priority over ./target/
+
+        When both are present, production manifest takes precedence.
+        """
+        monkeypatch.chdir(tmp_path)
+
+        # Create production manifest
+        prod_manifest = tmp_path / "prod" / "manifest.json"
+        prod_manifest.parent.mkdir(parents=True)
+        prod_manifest.write_text('{"metadata": {"mode": "production"}}')
+
+        # Create ./target/manifest.json (should be ignored)
+        target_manifest = tmp_path / "target" / "manifest.json"
+        target_manifest.parent.mkdir(parents=True)
+        target_manifest.write_text('{"metadata": {"mode": "simple"}}')
+
+        # Set DBT_PROD_MANIFEST_PATH
+        monkeypatch.setenv("DBT_PROD_MANIFEST_PATH", str(prod_manifest))
+
+        finder = ManifestFinder()
+        found_path = finder.find()
+
+        # MUST find production manifest, not ./target/
+        assert found_path == str(prod_manifest.absolute())
+
     def test_raises_when_no_manifest_found(self, tmp_path, monkeypatch):
         """
         Should raise clear error when no manifest found
 
-        Error message must explain the production manifest location.
+        Error message must explain where it searched.
         """
-        # Clear env vars and use non-existent location
-        monkeypatch.setenv("DBT_PROD_MANIFEST_PATH", str(tmp_path / "nonexistent" / "manifest.json"))
+        # Mock home directory to prevent finding ~/dbt-state/manifest.json
+        fake_home = tmp_path / "fake_home"
+        fake_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+        # Clear env vars and ensure no manifest exists anywhere
+        monkeypatch.delenv("DBT_PROD_MANIFEST_PATH", raising=False)
         monkeypatch.chdir(tmp_path)
 
         finder = ManifestFinder()
 
-        with pytest.raises(FileNotFoundError, match="No production manifest found"):
+        with pytest.raises(FileNotFoundError, match="No manifest.json found"):
             finder.find()
 
     def test_finds_absolute_path(self, tmp_path, monkeypatch):
@@ -859,3 +914,109 @@ class TestWarningEdgeCases:
         captured = capsys.readouterr()
 
         assert "Test message" in captured.err
+
+
+class TestCombinedFlags:
+    """Test combined short flags support (-dj, -ajd, etc)"""
+
+    def test_combined_dev_and_json_flags(self, tmp_path, test_model, mocker):
+        """Verify -dj equals -d -j"""
+        # Create dev manifest in temp directory
+        dev_manifest = tmp_path / "target" / "manifest.json"
+        dev_manifest.parent.mkdir(parents=True)
+        dev_manifest.write_text('{"metadata": {"dbt_version": "1.5.0"}, "nodes": {}}')
+
+        mocker.patch.dict(os.environ, {"DBT_DEV_MANIFEST_PATH": str(dev_manifest)})
+
+        # Mock schema command to verify both flags are processed
+        mock_schema = mocker.patch("dbt_meta.commands.schema")
+        mock_schema.return_value = {"database": "test", "schema": "personal_user", "table": "model"}
+
+        from typer.testing import CliRunner
+        from dbt_meta.cli import app
+
+        runner = CliRunner()
+
+        # Test -dj (combined)
+        result = runner.invoke(app, ["schema", "-dj", test_model])
+
+        assert result.exit_code == 0, f"Command failed: {result.stdout}"
+
+        # Verify output is JSON
+        assert "{" in result.stdout
+
+    def test_combined_all_json_dev_flags(self, tmp_path, test_model, mocker):
+        """Verify -ajd equals -a -j -d"""
+        # Create dev manifest in temp directory
+        dev_manifest = tmp_path / "target" / "manifest.json"
+        dev_manifest.parent.mkdir(parents=True)
+        dev_manifest.write_text('{"metadata": {"dbt_version": "1.5.0"}, "nodes": {}}')
+
+        mocker.patch.dict(os.environ, {"DBT_DEV_MANIFEST_PATH": str(dev_manifest)})
+
+        mock_parents = mocker.patch("dbt_meta.commands.parents")
+        mock_parents.return_value = ["parent1", "parent2"]
+
+        from typer.testing import CliRunner
+        from dbt_meta.cli import app
+
+        runner = CliRunner()
+
+        # Test -ajd (combined)
+        result = runner.invoke(app, ["parents", "-ajd", test_model])
+        assert result.exit_code == 0
+
+        # Verify output is JSON
+        assert "[" in result.stdout or "{" in result.stdout
+
+    def test_combined_json_and_manifest_flags(self, tmp_path, test_model, mocker):
+        """Verify -jm PATH equals -j -m PATH"""
+        # Create temporary manifest
+        manifest_path = tmp_path / "custom.json"
+        manifest_path.write_text('{"metadata": {"dbt_version": "1.5.0"}, "nodes": {}}')
+
+        mock_schema = mocker.patch("dbt_meta.commands.schema")
+        mock_schema.return_value = {"database": "test", "schema": "analytics", "table": "model"}
+
+        from typer.testing import CliRunner
+        from dbt_meta.cli import app
+
+        runner = CliRunner()
+
+        # Test -jm PATH (combined)
+        result = runner.invoke(app, ["schema", "-jm", str(manifest_path), test_model])
+        assert result.exit_code == 0
+
+        # Verify output is JSON
+        assert "{" in result.stdout
+
+    def test_combined_flags_order_independent(self, tmp_path, test_model, mocker):
+        """Verify flag order doesn't matter: -dj = -jd"""
+        # Create dev manifest in temp directory
+        dev_manifest = tmp_path / "target" / "manifest.json"
+        dev_manifest.parent.mkdir(parents=True)
+        dev_manifest.write_text('{"metadata": {"dbt_version": "1.5.0"}, "nodes": {}}')
+
+        mocker.patch.dict(os.environ, {"DBT_DEV_MANIFEST_PATH": str(dev_manifest)})
+
+        mock_columns = mocker.patch("dbt_meta.commands.columns")
+        mock_columns.return_value = [{"name": "id", "data_type": "INTEGER"}]
+
+        from typer.testing import CliRunner
+        from dbt_meta.cli import app
+
+        runner = CliRunner()
+
+        # Test -dj
+        result1 = runner.invoke(app, ["columns", "-dj", test_model])
+        output1 = result1.stdout
+
+        # Test -jd (reversed order)
+        result2 = runner.invoke(app, ["columns", "-jd", test_model])
+        output2 = result2.stdout
+
+        # Both should succeed and produce JSON output
+        assert result1.exit_code == 0
+        assert result2.exit_code == 0
+        assert "{" in output1 or "[" in output1
+        assert "{" in output2 or "[" in output2

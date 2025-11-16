@@ -12,15 +12,16 @@
 
 ## ✨ Features
 
+- **🎯 Works out-of-box** - Simple Mode: just run `dbt compile` and start using (v0.3.1+)
 - **⚡ Lightning fast** - Optimized Python with LRU caching and orjson parser
-- **🎯 Three-level fallback** - Production manifest → Dev manifest → BigQuery (v0.3.0)
-- **🔄 Multi-project support** - Works with defer-built models in dev environment
+- **🔄 Production Mode** - Full defer workflow support for multi-project setups
+- **📊 AI-friendly JSON** - Machine-readable structured output (`-j` flag)
 - **🔍 Rich metadata** - Schema, columns, dependencies, config, compiled SQL
-- **📊 JSON output** - Machine-readable format for scripting with `jq`
 - **🌳 Dependency navigation** - Trace upstream/downstream models
 - **🔎 Smart search** - Find models by name or description
 - **🎨 Beautiful UI** - Rich terminal formatting with helpful examples
 - **⚙️ Flexible naming** - Configurable schema and table naming for any project
+- **⚡ Combined flags** - Use `-dj`, `-ajd`, `-jm` for faster typing
 
 ## 📦 Installation
 
@@ -61,30 +62,47 @@ meta --version
 
 ## 🚀 Quick Start
 
+### Simple Mode (no configuration)
+
 ```bash
-# Get production table name (use 'dbt-meta' or shorter 'meta' alias)
-dbt-meta schema jaffle_shop__customers
-# Output: analytics.jaffle_shop.customers
+# Step 1: Compile your dbt project
+dbt compile
 
-# Get column list with types
-meta columns -j jaffle_shop__orders | jq -r '.[] | "\(.name): \(.type)"'
-# Output: order_id: INTEGER, customer_id: INTEGER, order_date: DATE, ...
-
-# Get model dependencies
-meta deps -j jaffle_shop__customers | jq '.refs[]'
-# Output: ["staging__customers", "staging__orders", "staging__payments"]
-
-# View compiled SQL
-meta sql jaffle_shop__customers | less
-
-# Find all models in schema
-meta list jaffle_shop
-
-# Search for models
-meta search "customers"
+# Step 2: Use dbt-meta immediately!
+meta schema customers           # → analytics.customers
+meta columns -j orders          # → JSON array of columns
+meta deps customers             # → Dependencies list
+meta search "customer"          # → Find models
 
 # Get comprehensive help with examples
 meta --help
+```
+
+### Production Mode (with defer workflow)
+
+```bash
+# One-time setup: Set production manifest path
+echo 'export DBT_PROD_MANIFEST_PATH=~/dbt-state/manifest.json' >> ~/.zshrc
+source ~/.zshrc
+
+# Copy production manifest (one-time or via cron)
+cp ~/Projects/my-dbt-project/.dbt-state/manifest.json ~/dbt-state/
+
+# Now works from any directory!
+cd /tmp && meta schema customers  # → Uses production manifest
+
+# For dev models (after defer run):
+defer run --select customers
+meta schema --dev customers      # → personal_USERNAME.customers
+meta columns -dj customers       # → Dev columns with JSON output
+```
+
+### Combined Flags (faster typing)
+
+```bash
+meta schema -dj customers        # → Dev + JSON
+meta parents -ajd model          # → All ancestors + JSON + Dev
+meta columns -jm ~/path.json m   # → JSON + Custom manifest
 ```
 
 ## 🤖 Built for AI Workflows
@@ -106,7 +124,7 @@ Following [Anthropic's recommendation](https://docs.anthropic.com/en/docs/build-
 ✅ **Fast** - Optimized Python with caching, no repeated manifest parsing
 ✅ **Deterministic JSON** - No parsing ambiguity, structured output
 ✅ **Schema validation** - Prevents hallucinations by providing accurate metadata
-✅ **Type-safe** - Mypy strict mode, comprehensive test coverage (95%+)
+✅ **Type-safe** - Mypy strict mode, comprehensive test coverage (91%+)
 
 ### Integration
 
@@ -133,75 +151,127 @@ Anthropic [recommends CLI tools](https://docs.anthropic.com/en/docs/build-with-c
 | Command | Description | Example |
 |---------|-------------|---------|
 | `info <model>` | Model summary (name, schema, table, materialization, tags) | `meta info -j customers` |
-| `schema <model>` | Production table name (database.schema.table) | `meta schema jaffle_shop__orders` |
-| `schema-dev <model>` | Dev table name (personal_USERNAME.filename) | `meta schema-dev jaffle_shop__orders` |
-| `columns <model>` | Column names and types | `meta columns -j customers` |
+| `schema <model>` | BigQuery table name (`--dev` for dev schema) | `meta schema customers`<br>`meta schema --dev customers` |
+| `path <model>` | Relative file path to .sql file | `meta path customers` |
+| `columns <model>` | Column names and types (`--dev` supported) | `meta columns -j customers`<br>`meta columns -dj customers` |
+| `sql <model>` | Compiled SQL (or raw with `--jinja`) | `meta sql customers`<br>`meta sql --jinja customers` |
 | `docs <model>` | Column names, types, and descriptions | `meta docs customers` |
-
-### Advanced Metadata
-
-| Command | Description | Example |
-|---------|-------------|---------|
-| `config <model>` | Full dbt config (29 fields: partition_by, cluster_by, etc.) | `meta config -j model_name` |
-| `deps <model>` | Dependencies by type (refs, sources, macros) | `meta deps -j model_name` |
-| `sql <model> [--jinja]` | Compiled SQL (default) or raw SQL with `--jinja` | `meta sql model_name` |
-| `path <model>` | Relative file path to .sql file | `meta path model_name` |
-| `node <model>` | Full node metadata (all fields) | `meta node -j model_name` |
-
-### Dependency Navigation
-
-| Command | Description | Example |
-|---------|-------------|---------|
-| `parents <model> [--all]` | Upstream dependencies (direct or all ancestors) | `meta parents -j --all model_name` |
-| `children <model> [--all]` | Downstream dependencies (direct or all descendants) | `meta children model_name` |
-
-### Search & Discovery
-
-| Command | Description | Example |
-|---------|-------------|---------|
-| `list [pattern]` | List models (optionally filter by pattern) | `meta list jaffle_shop` |
-| `search <query>` | Search by name or description | `meta search "customers" --json` |
+| `deps <model>` | Dependencies by type (refs, sources, macros) | `meta deps -j customers` |
+| `parents <model>` | Upstream dependencies (`-a` for all ancestors) | `meta parents customers`<br>`meta parents -a customers` |
+| `children <model>` | Downstream dependencies (`-a` for all descendants) | `meta children customers`<br>`meta children -a customers` |
+| `config <model>` | Full dbt config (29 fields: partition_by, cluster_by, etc.) | `meta config -j customers` |
 
 ### Utilities
 
 | Command | Description | Example |
 |---------|-------------|---------|
+| `list [pattern]` | List all models (optionally filter by pattern) | `meta list`<br>`meta list staging` |
+| `search <query>` | Search models by name or description | `meta search "customer"`<br>`meta search "dim_" -j` |
 | `refresh` | Refresh manifest (runs `dbt parse`) | `meta refresh` |
 
-### Global Options
+### Global Flags
 
-| Option | Description |
-|--------|-------------|
-| `--json, -j` | Output in JSON format (supported by all commands) |
-| `--manifest PATH` | Use specific manifest.json file |
-| `--version, -v` | Show version |
-| `--help, -h` | Show help with examples |
+| Flag | Description |
+|------|-------------|
+| `-j, --json` | Output as JSON (AI-friendly structured data) |
+| `-d, --dev` | Use dev manifest and schema |
+| `-m, --manifest PATH` | Explicit path to manifest.json |
+| `-a, --all` | Recursive mode (parents/children only) |
+| `-h, --help` | Show help with examples |
+| `-v, --version` | Show version |
 
-### Command-Specific Options
+**Combined flags**: `-dj`, `-ajd`, `-jm PATH` (order-independent)
 
-| Option | Command | Description |
-|--------|---------|-------------|
-| `--all` | `parents`, `children` | Recursive mode (get all ancestors/descendants) |
-| `--jinja` | `sql` | Show raw SQL with Jinja templates |
+## 💡 Common Use Cases
+
+### Querying BigQuery with Correct Table Names
+
+```bash
+# Get production table name (eliminates AI hallucinations)
+TABLE=$(meta schema -j customers | jq -r '.full_name')
+bq query "SELECT * FROM $TABLE LIMIT 10"
+# → SELECT * FROM analytics.dim_customers LIMIT 10
+```
+
+### Finding All Columns for a Model
+
+```bash
+# Get column list for WHERE clauses
+meta columns -j orders | jq -r '.[] | .name'
+# → order_id, customer_id, order_date, status, amount
+
+# Get column types for schema validation
+meta columns -j orders | jq -r '.[] | "\(.name): \(.data_type)"'
+# → order_id: INTEGER, customer_id: INTEGER, order_date: DATE, ...
+```
+
+### Analyzing Dependencies
+
+```bash
+# Get all upstream models (for CI/CD impact analysis)
+meta parents -aj customers | jq -r '.[] | .path'
+# → staging/customers.sql, staging/orders.sql, staging/payments.sql
+
+# Find downstream impact of model changes
+meta children -a customers
+# → Shows all models that depend on customers
+```
+
+### Working with Dev Models
+
+```bash
+# Build dev model
+defer run --select customers
+
+# Query dev table (not production)
+TABLE=$(meta schema --dev -j customers | jq -r '.full_name')
+bq query "SELECT * FROM $TABLE LIMIT 10"
+# → SELECT * FROM personal_USERNAME.customers LIMIT 10
+```
+
+### Search and Discovery
+
+```bash
+# Find all staging models
+meta list staging
+
+# Search models by description
+meta search "customer dimension" -j | jq -r '.[] | .name'
+
+# Get file path to edit model
+vim $(meta path customers)
+```
 
 ## ⚙️ Configuration
 
-### Environment Variables
+### Simple Mode (Recommended for Single Project)
+
+**No configuration needed!** Just run `dbt compile` and start using:
+
+```bash
+cd ~/my-dbt-project
+dbt compile
+meta schema customers  # ✓ Works immediately with ./target/manifest.json
+```
+
+### Production Mode (Multi-Project / Defer Workflow)
+
+Set production manifest path to work from any directory:
 
 ```bash
 # Add to ~/.bashrc or ~/.zshrc
+export DBT_PROD_MANIFEST_PATH=~/dbt-state/manifest.json
 
-# NOTE: This manifest should be automatically updated regularly (e.g., hourly via cron/CI)
-# to ensure metadata stays in sync with production state
-export DBT_PROD_MANIFEST_PATH={path to your manifest.json}
-
-# Example:
-# export DBT_PROD_MANIFEST_PATH=~/dbt-state/manifest.json
+# Auto-update manifest via cron (recommended)
+# Every hour: copy production manifest to central location
+0 * * * * cp ~/Projects/my-dbt-project/.dbt-state/manifest.json ~/dbt-state/
 ```
 
-### Naming Configuration
+Now `meta` commands work from anywhere and always use production manifest.
 
-**dbt-meta** provides flexible naming configuration to match your project's conventions.
+### Advanced: Naming Configuration
+
+**dbt-meta** provides flexible naming configuration for complex projects.
 
 #### Production Table Naming
 
@@ -263,171 +333,107 @@ Control how dev schema names are generated (4 priority levels):
 ```bash
 # Priority 1: Full schema override (HIGHEST)
 export DBT_DEV_SCHEMA="my_custom_schema"
-meta schema-dev model_name
-# → my_custom_schema.table_name
+meta schema --dev customers
+# → my_custom_schema.customers
 # Ignores all other variables
 
 # Priority 2: Template with {username} placeholder
 export DBT_DEV_SCHEMA_TEMPLATE="dev_{username}"
-meta schema-dev model_name
-# → dev_pavel_filianin.table_name
+meta schema --dev customers
+# → dev_alice.customers
 
 # Template examples:
 export DBT_DEV_SCHEMA_TEMPLATE="{username}_sandbox"
-# → pavel_filianin_sandbox.table_name
+# → alice_sandbox.customers
 
 export DBT_DEV_SCHEMA_TEMPLATE="analytics_{username}_v2"
-# → analytics_pavel_filianin_v2.table_name
+# → analytics_alice_v2.customers
 
 export DBT_DEV_SCHEMA_TEMPLATE="{username}"
-# → pavel_filianin.table_name (no prefix)
+# → alice.customers (no prefix)
 
 # Priority 3: Simple prefix
 export DBT_DEV_SCHEMA_PREFIX="sandbox"
-meta schema-dev model_name
-# → sandbox_pavel_filianin.table_name
+meta schema --dev customers
+# → sandbox_alice.customers
 
 # Empty prefix = no prefix
 export DBT_DEV_SCHEMA_PREFIX=""
-meta schema-dev model_name
-# → pavel_filianin.table_name
+meta schema --dev customers
+# → alice.customers
 
 # Priority 4: Default (LOWEST)
 # Uses "personal_{username}" if nothing else is set
-meta schema-dev model_name
-# → personal_pavel_filianin.table_name
+meta schema --dev customers
+# → personal_alice.customers
 ```
 
 #### Username Configuration
 
 ```bash
 # Default: Uses system $USER
-meta schema-dev model_name
+meta schema --dev customers
 # username = $USER (from system)
 
 # Override username
 export DBT_USER="custom_user"
-meta schema-dev model_name
+meta schema --dev customers
 # username = custom_user
 
 # Dots are automatically replaced with underscores (BigQuery compatibility)
 export DBT_USER="john.doe"
-meta schema-dev model_name
+meta schema --dev customers
 # username = john_doe (dots → underscores)
 ```
 
-#### BigQuery Fallback (Default: Enabled)
+#### Dev Table Naming
 
-**NEW**: `meta schema-dev` now includes **BigQuery fallback** for tables built outside the manifest.
-
-**Use case**: You have a table in `personal_pavel_filianin.conversions_base`, but the model was removed from the project or not yet parsed into `target/manifest.json`.
+Control how dev table names are generated:
 
 ```bash
-# Default behavior (fallback enabled)
-meta schema-dev core_google_ads__conversions_base
-# 1. Checks target/manifest.json first
-# 2. If not found → queries BigQuery: bq show personal_pavel_filianin.conversions_base
-# 3. If table exists → returns schema.table
-# Output: {"schema": "personal_pavel_filianin", "table": "conversions_base", ...}
-# stderr: ⚠️  Model not in manifest, using BigQuery table: personal_pavel_filianin.conversions_base
+# Default: Uses model filename (NOT alias)
+meta schema --dev customers
+# → personal_USERNAME.customers (from customers.sql)
 
-# Disable fallback (strict manifest-only mode)
-export DBT_FALLBACK_BIGQUERY="false"
-meta schema-dev core_google_ads__conversions_base
-# Error: Model 'core_google_ads__conversions_base' not found
+# Use alias instead of filename
+export DBT_DEV_TABLE_PATTERN="alias"
+meta schema --dev customers
+# → personal_USERNAME.dim_customers (from config.alias)
+
+# Custom template with placeholders
+export DBT_DEV_TABLE_PATTERN="{folder}_{name}"
+meta schema --dev staging__customers
+# → personal_USERNAME.staging_customers
 ```
 
-**How fallback works**:
-1. Tries two naming strategies:
-   - Full model name: `core_google_ads__conversions_base` → `personal_pavel.core_google_ads__conversions_base`
-   - Last segment only: `core_google_ads__conversions_base` → `personal_pavel.conversions_base`
-2. Runs `bq show {dev_schema}.{table_name}` for each candidate (10s timeout)
-3. Returns first match, or None if neither exists
+#### Advanced Environment Variables
 
-**Benefits**:
-- ✅ Works with manually created tables in dev schema
-- ✅ Supports tables built before manifest was updated
-- ✅ Gracefully handles deleted models that still have data
-- ✅ No breaking changes (enabled by default)
-
-#### BigQuery Validation (Optional)
-
-**dbt-meta** includes optional BigQuery compatibility validation for schema names. This feature is **opt-in** and won't affect users of other data warehouses (Snowflake, Redshift, etc.).
+All environment variables for manifest discovery and naming:
 
 ```bash
-# Enable BigQuery validation
-export DBT_VALIDATE_BIGQUERY="true"
-meta schema-dev model_name
+# Manifest paths
+export DBT_PROD_MANIFEST_PATH=~/dbt-state/manifest.json  # Production manifest
+export DBT_DEV_MANIFEST_PATH=./target/manifest.json      # Dev manifest (default)
 
-# Validation rules:
-# - Replaces invalid characters (dots, @, spaces, etc.) with underscores
-# - Ensures name starts with letter or underscore
-# - Truncates to 1024 characters max (BigQuery limit)
-# - Prints warnings to stderr when sanitization occurs
+# Dev schema naming (4-level priority)
+export DBT_DEV_SCHEMA="custom_schema"                    # Full override (priority 1)
+export DBT_DEV_SCHEMA_TEMPLATE="dev_{username}"          # Template (priority 2)
+export DBT_DEV_SCHEMA_PREFIX="personal"                  # Prefix (priority 3, default)
+export DBT_USER="custom_username"                        # Username override
+
+# Dev table naming
+export DBT_DEV_TABLE_PATTERN="alias"                     # alias | name | {template}
+
+# Production naming (advanced)
+export DBT_PROD_TABLE_NAME="alias_or_name"              # alias_or_name | name | alias
+export DBT_PROD_SCHEMA_SOURCE="config_or_model"         # config_or_model | model | config
+
+# Validation (optional)
+export DBT_VALIDATE_BIGQUERY="true"                      # Enable BigQuery name validation
 ```
-
-**Example 1: Invalid characters sanitized**
-```bash
-export DBT_VALIDATE_BIGQUERY="true"
-export DBT_USER="user@company.com"
-meta schema-dev core_client__events
-# Output: personal_user_company_com.events
-# Warning: ⚠️  BigQuery validation: Invalid BigQuery characters replaced: '@', '.'
-```
-
-**Example 2: Template with dots**
-```bash
-export DBT_VALIDATE_BIGQUERY="true"
-export DBT_DEV_SCHEMA_TEMPLATE="dev-{username}-v2.0"
-meta schema-dev core_client__events
-# Output: dev-pavel_filianin-v2_0.events
-# Warning: ⚠️  BigQuery validation: Invalid BigQuery characters replaced: '.'
-```
-
-**Example 3: Name starting with number**
-```bash
-export DBT_VALIDATE_BIGQUERY="true"
-export DBT_USER="123user"
-export DBT_DEV_SCHEMA_PREFIX=""
-meta schema-dev core_client__events
-# Output: _123user.events
-# Warning: ⚠️  BigQuery validation: Name must start with letter or underscore
-```
-
-**When to enable BigQuery validation:**
-- ✅ Your data warehouse is BigQuery
-- ✅ You use special characters in usernames (email addresses, dots)
-- ✅ You use custom templates with special characters
-- ❌ Leave disabled for Snowflake, Redshift, or other DWH
-
-**Recognized values for DBT_VALIDATE_BIGQUERY:**
-- Enable: `true`, `True`, `TRUE`, `1`, `yes`, `Yes`, `YES`
-- Disable: `false`, `False`, `0`, `no`, empty string, or unset
-
-#### Configuration Examples
-
-**Example 1: Company uses prefixed dev schemas**
-```bash
-# Setup
-export DBT_DEV_SCHEMA_PREFIX="dev"
-export DBT_PROD_TABLE_NAME="alias_or_name"
 
 # Usage
-meta schema-dev jaffle_shop__customers
-# → dev_pavel_filianin.customers
-
-meta schema jaffle_shop__customers
-# → analytics.jaffle_shop.customers
-```
-
-**Example 2: Personal sandbox without prefix**
-```bash
-# Setup
-export DBT_DEV_SCHEMA_PREFIX=""
-export DBT_USER="alice"
-
-# Usage
-meta schema-dev jaffle_shop__orders
+meta schema --dev jaffle_shop__orders
 # → alice.orders
 ```
 
@@ -438,7 +444,7 @@ export DBT_DEV_SCHEMA_TEMPLATE="analytics_{username}_sandbox"
 export DBT_PROD_TABLE_NAME="name"
 
 # Usage
-meta schema-dev core_client__events
+meta schema --dev core_client__events
 # → analytics_alice_sandbox.events
 
 meta schema core_client__events
@@ -451,307 +457,8 @@ meta schema core_client__events
 export DBT_DEV_SCHEMA="ci_pr_123"
 
 # Usage
-meta schema-dev jaffle_shop__customers
+meta schema --dev jaffle_shop__customers
 # → ci_pr_123.customers (ignores username)
-```
-
-### Environment Variables Summary
-
-| Variable | Purpose | Default | Example |
-|----------|---------|---------|---------|
-| `DBT_PROD_MANIFEST_PATH` | Production manifest path | `~/dbt-state/manifest.json` | `~/prod/manifest.json` |
-| `DBT_DEV_MANIFEST_PATH` | Dev manifest path (used with `--dev`) | `./target/manifest.json` | `./target/manifest.json` |
-| `DBT_USER` | Override username | `$USER` | `alice` |
-| `DBT_DEV_SCHEMA` | Full dev schema (priority 1) | - | `my_dev_schema` |
-| `DBT_DEV_SCHEMA_TEMPLATE` | Schema template (priority 2) | - | `dev_{username}` |
-| `DBT_DEV_SCHEMA_PREFIX` | Schema prefix (priority 3) | `personal` | `sandbox` |
-| `DBT_PROD_TABLE_NAME` | Prod table strategy | `alias_or_name` | `name`, `alias` |
-| `DBT_PROD_SCHEMA_SOURCE` | Prod schema/database strategy | `config_or_model` | `model`, `config` |
-| `DBT_VALIDATE_BIGQUERY` | BigQuery name validation (opt-in) | disabled | `true`, `1`, `yes` |
-| `DBT_FALLBACK_TARGET` | Dev manifest fallback (NEW v0.3.0) | `true` | `false`, `0`, `no` |
-| `DBT_FALLBACK_BIGQUERY` | BigQuery fallback | `true` | `false`, `0`, `no` |
-
-### Manifest Priority (Production vs Dev)
-
-After running `defer build`, **two manifest files** exist:
-
-1. **Production manifest** (preferred)
-   - Configured via `DBT_PROD_MANIFEST_PATH` environment variable
-   - Contains production metadata from latest main branch
-   - Uses table **aliases** from config (e.g., `core_client.client_info`)
-   - **Recommended setup**: Place production manifest in a stable location and set `DBT_PROD_MANIFEST_PATH`
-
-2. **Dev manifest** (`target/manifest.json`)
-   - Configured via `DBT_DEV_MANIFEST_PATH` environment variable (default: `./target/manifest.json`)
-   - Contains dev metadata after `defer build --target dev`
-   - Uses **SQL filename** (e.g., `personal_pavel_filianin.dim_client_info`)
-   - Used automatically when `--dev` flag is provided
-
-**Manifest search order** (3 priority levels):
-
-1. `--manifest PATH` - explicit CLI flag (highest priority, overrides all)
-2. `DBT_DEV_MANIFEST_PATH` - dev manifest when `--dev` flag used (default: `./target/manifest.json`)
-3. `DBT_PROD_MANIFEST_PATH` - production manifest (default: `~/dbt-state/manifest.json`)
-
-**Note**: `DBT_PROD_MANIFEST_PATH` can be configured to point to any location.
-
-**Why this matters:**
-
-```bash
-# ❌ WRONG: Query dev table without schema-dev
-defer build --select core_client__events
-meta schema core_client__events  # Returns PRODUCTION table!
-bq query "SELECT * FROM core_client.events"  # Queries PRODUCTION data
-
-# ✅ CORRECT: Use schema-dev for dev tables
-defer build --select core_client__events
-meta schema-dev core_client__events  # Returns personal_pavel_filianin.events
-bq query "SELECT * FROM personal_pavel_filianin.events"  # Queries YOUR changes
-```
-
-## 🔄 Three-Level Fallback System
-
-**dbt-meta** v0.3.0 introduces a three-level fallback system for maximum flexibility:
-
-```
-LEVEL 1: Production Manifest (.dbt-state/manifest.json)
-         ↓ (model not found)
-LEVEL 2: Dev Manifest (target/manifest.json)
-         ↓ (model not found)
-LEVEL 3: BigQuery Metadata (bq show)
-```
-
-This solves the common problem of working with models built via `defer run` that aren't in production:
-
-```bash
-# You build model in dev
-defer run --select core_client__events
-
-# Production manifest doesn't have it, but target/ does
-meta schema core_client__events
-# ⚠️  Model 'core_client__events' found in dev manifest (target/)
-# Output: {"schema": "personal_pavel_filianin", "table": "events"}
-```
-
-### How It Works
-
-1. **LEVEL 1**: Try production manifest (`.dbt-state/manifest.json`) first
-   - Fast path for unchanged models
-   - Returns production table name (`core_client.events`)
-
-2. **LEVEL 2**: If not found, try dev manifest (`target/manifest.json`)
-   - Enabled by default via `DBT_FALLBACK_TARGET=true`
-   - Finds models built with `defer run`
-   - Returns dev table name (`personal_pavel_filianin.events`)
-   - Prints warning to stderr: `⚠️  Model found in dev manifest (target/)`
-
-3. **LEVEL 3**: If still not found, query BigQuery
-   - Enabled by default via `DBT_FALLBACK_BIGQUERY=true`
-   - Infers table name and queries `bq show`
-   - Returns partial metadata (limited to what BigQuery provides)
-   - Prints warning to stderr: `⚠️  Model not in manifest, using BigQuery`
-
-### Supported Commands
-
-| Command | Level 1 (Prod) | Level 2 (Dev) | Level 3 (BigQuery) | Limitations |
-|---------|----------------|---------------|---------------------|-------------|
-| `schema` | ✅ Full | ✅ Full | ✅ Full | None |
-| `columns` | ✅ Full | ✅ Full | ✅ Full | None |
-| `info` | ✅ Full | ✅ Full | ⚠️ Partial | L3: Missing file path, tags, unique_id |
-| `config` | ✅ Full | ✅ Full | ⚠️ Partial | L3: Missing dbt-specific configs |
-| `path` | ✅ Full | ✅ Full | ⚠️ Conditional | L3: Filesystem search may find wrong file |
-| `deps` | ✅ Full | ✅ Full | ❌ None | L3: Cannot infer dependencies from BigQuery |
-| `sql` | ✅ Full | ✅ Full | ❌ None | L3: Use `path` to find source file |
-| `parents` | ✅ Full | ✅ Full | ❌ None | L3: Lineage only in manifest |
-| `children` | ✅ Full | ✅ Full | ❌ None | L3: Lineage only in manifest |
-
-### Configuration
-
-```bash
-# Configure target/ fallback (default: enabled)
-export DBT_FALLBACK_TARGET="true"    # Enable dev manifest fallback
-export DBT_FALLBACK_TARGET="false"   # Disable (prod manifest only)
-
-# Configure BigQuery fallback (default: enabled)
-export DBT_FALLBACK_BIGQUERY="true"  # Enable BigQuery fallback
-export DBT_FALLBACK_BIGQUERY="false" # Disable (manifest-only mode)
-```
-
-**Recognized values:**
-- Enable: `true`, `True`, `TRUE`, `1`, `yes`, `Yes`, `YES`
-- Disable: `false`, `False`, `FALSE`, `0`, `no`, `No`, `NO`, empty string
-
-### Example Usage
-
-**Model NOT in manifest - fallback to BigQuery:**
-
-```bash
-# Get schema for model not in manifest
-meta schema core_client__new_model
-# ⚠️  Model 'core_client__new_model' not in manifest, using BigQuery table: core_client.new_model
-# Output: {"database": "admirals-bi-dwh", "schema": "core_client", "table": "new_model", ...}
-
-# Get columns from BigQuery directly
-meta columns -j core_client__new_model
-# ⚠️  Model 'core_client__new_model' not in manifest, fetching columns from BigQuery
-# Output: [{"name": "id", "data_type": "int64"}, {"name": "created_at", "data_type": "timestamp"}, ...]
-
-# Get partial config (partition/cluster info)
-meta config -j core_client__partitioned_table
-# ⚠️  Model 'core_client__partitioned_table' not in manifest, using BigQuery config
-# ⚠️  Partial config available (dbt-specific settings unavailable)
-# Output: {"materialized": "table", "partition_by": "created_at", "cluster_by": ["user_id"], ...}
-
-# Get info (basic metadata)
-meta info core_client__new_model
-# ⚠️  Model 'core_client__new_model' not in manifest, using BigQuery metadata
-# ⚠️  Partial metadata available (missing: file path, tags, unique_id)
-# Output: {"name": "core_client__new_model", "database": "admirals-bi-dwh", ...}
-```
-
-**Commands without fallback - improved error messages:**
-
-```bash
-# Try to get dependencies
-meta deps core_client__new_model
-# ❌ Dependencies not available for 'core_client__new_model': model not in manifest
-#    Dependencies are dbt-specific (refs, sources, macros) and cannot be inferred from BigQuery.
-#    Hint: Run 'defer run --select core_client__new_model' to add model to manifest
-
-# Try to get SQL code
-meta sql core_client__new_model
-# ❌ SQL code not available for 'core_client__new_model': model not in manifest
-#    Hint: Use 'meta path core_client__new_model' to locate source file
-```
-
-### When Fallback is Disabled
-
-```bash
-export DBT_FALLBACK_BIGQUERY="false"
-
-# All commands return None immediately if model not in manifest
-meta schema core_client__new_model
-# Output: (empty, returns None)
-
-meta columns core_client__new_model
-# Output: (empty, returns None)
-```
-
-**Use case**: Faster execution when you know all required models are in manifest, or when BigQuery access is not available.
-
-## 💡 Examples
-
-### Before SQL Query Workflow
-
-```bash
-# Get table name and validate columns exist
-MODEL="core_client__client_profiles_events"
-
-# Extract production table name
-BQ_TABLE=$(meta schema -j "$MODEL" | jq -r '"\(.schema).\(.table)"')
-
-# Get column list
-columns=$(meta columns -j "$MODEL")
-
-# Verify column exists
-echo "$columns" | jq -e '.[] | select(.name == "client_id")' > /dev/null || {
-  echo "Error: client_id column not found"
-  exit 1
-}
-
-# Build and execute query
-bq query --format=json --batch --quiet "
-SELECT
-  client_id,
-  event_timestamp,
-  event_name
-FROM $BQ_TABLE
-WHERE DATE(event_timestamp) = CURRENT_DATE()
-LIMIT 1000
-"
-```
-
-### Incremental Model Analysis
-
-```bash
-# Check partition and clustering config
-meta config -j core_client__events | jq '{
-  partition_by,
-  cluster_by,
-  unique_key,
-  incremental_strategy
-}'
-
-# Output:
-# {
-#   "partition_by": "DATE(event_timestamp)",
-#   "cluster_by": ["client_id", "event_name"],
-#   "unique_key": "event_id",
-#   "incremental_strategy": "merge"
-# }
-```
-
-### Lineage Tracing
-
-```bash
-# Find all upstream models (ancestors)
-meta parents -j --all dim_client_info | jq -r '.[]'
-
-# Find all downstream models (descendants)
-meta children -j --all dim_client_info | jq -r '.[]'
-
-# Visualize full lineage
-echo "Upstream models:"
-meta parents --all dim_client_info
-
-echo "\nDownstream models:"
-meta children --all dim_client_info
-```
-
-### Finding Models
-
-```bash
-# List all models in core_client schema
-meta list -j core_client | jq -r '.[]'
-
-# Search for models containing "revenue"
-meta search revenue --json | jq -r '.[] | "\(.name): \(.description)"'
-
-# Find models with specific tag
-meta list | while read model; do
-  meta info -j "$model" | jq -r 'select(.tags | contains(["finance"])) | .name'
-done
-```
-
-### Editing Model Files
-
-```bash
-# Open model in VS Code
-code $(meta path core_client__events)
-
-# View compiled SQL with syntax highlighting
-meta sql core_client__events | bat -l sql
-
-# Compare raw vs compiled SQL
-diff \
-  <(meta sql core_client__events --jinja) \
-  <(meta sql core_client__events)
-```
-
-### Multi-Environment Workflows
-
-```bash
-# Development: Query your personal schema
-export DBT_DEV_SCHEMA_PREFIX="dev"
-export DBT_USER="alice"
-
-defer build --select core_client__events
-DEV_TABLE=$(meta schema-dev -j core_client__events | jq -r .full_name)
-bq query "SELECT COUNT(*) FROM $DEV_TABLE"
-
-# Production: Compare with production data
-PROD_TABLE=$(meta schema -j core_client__events | jq -r .full_name)
-bq query "SELECT COUNT(*) FROM $PROD_TABLE"
 ```
 
 ## 🧪 Development
