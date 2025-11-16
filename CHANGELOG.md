@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+#### `--manifest` CLI Flag
+- **Global `--manifest PATH` flag** - Explicitly specify manifest.json path
+  - Short form: `-m`
+  - Overrides all environment variables
+  - Example: `meta schema --manifest ~/custom.json model_name`
+  - Warning displayed when used with `--dev` flag (--dev is ignored)
+
+#### `DBT_DEV_MANIFEST_PATH` Environment Variable
+- **New environment variable** for dev manifest path
+  - Default: `./target/manifest.json`
+  - Used when `--dev` flag is provided
+  - Example: `export DBT_DEV_MANIFEST_PATH="./target/manifest.json"`
+
+### Changed
+
+#### Manifest Discovery Simplification
+- **Renamed `DBT_PROD_STATE_PATH` → `DBT_PROD_MANIFEST_PATH`**
+  - Changed from directory name to full file path
+  - Old: `DBT_PROD_STATE_PATH=.dbt-state` (directory name)
+  - New: `DBT_PROD_MANIFEST_PATH=~/dbt-state/manifest.json` (file path)
+  - Default changed: `~/.dbt-state/manifest.json` → `~/dbt-state/manifest.json`
+
+- **Simplified 3-level manifest priority**:
+  1. `--manifest PATH` - Explicit CLI flag (highest priority)
+  2. `DBT_DEV_MANIFEST_PATH` - Dev manifest when `--dev` flag used (default: `./target/manifest.json`)
+  3. `DBT_PROD_MANIFEST_PATH` - Production manifest (default: `~/dbt-state/manifest.json`)
+
+### Removed
+
+- **Removed `DBT_MANIFEST_PATH` environment variable** - Use `--manifest` flag or `DBT_PROD_MANIFEST_PATH` instead
+- **Removed upward directory search** - No longer searches parent directories for `target/manifest.json`
+- **Removed `~/Projects/reports/.dbt-state/manifest.json` priority** - Deprecated hardcoded path
+
 ## [0.2.1] - 2025-11-05
 
 ### Added
@@ -153,9 +188,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Replaces invalid characters, ensures proper starting char, length limits
   - Prints warnings when sanitization occurs
 - Manifest priority system:
-  - Automatically prioritizes production manifest (`.dbt-state/manifest.json`)
-  - Configurable via `DBT_PROD_STATE_PATH` (default: `.dbt-state`)
-  - 7-level manifest search order
+  - Automatically prioritizes production manifest (`~/dbt-state/manifest.json`)
+  - Configurable via `DBT_PROD_MANIFEST_PATH` (default: `~/dbt-state/manifest.json`)
+  - 4-level manifest search order
 - Configuration:
   - `DBT_PROJECT_PATH` - Path to dbt project root
   - `DBT_MANIFEST_PATH` - Override manifest.json location (highest priority)

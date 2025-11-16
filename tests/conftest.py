@@ -1,5 +1,6 @@
 """Pytest configuration and fixtures for dbt-meta tests"""
 
+import os
 import pytest
 import json
 from pathlib import Path
@@ -7,8 +8,50 @@ from pathlib import Path
 # Manifest fixtures
 @pytest.fixture
 def prod_manifest():
-    """Production manifest (15MB, 865 models) - for all tests"""
-    return Path(__file__).parent / "fixtures" / "manifests" / "prod_manifest.json"
+    """
+    Production manifest - uses production manifest path
+
+    Priority:
+    1. DBT_MANIFEST_PATH environment variable (explicit override)
+    2. DBT_PROD_MANIFEST_PATH environment variable (default: ~/dbt-state/manifest.json)
+    """
+    # Priority 1: Explicit override
+    env_manifest = os.environ.get('DBT_MANIFEST_PATH')
+    if env_manifest and Path(env_manifest).exists():
+        return Path(env_manifest)
+
+    # Priority 2: Production manifest path (default ~/dbt-state/manifest.json)
+    prod_manifest_path = os.environ.get('DBT_PROD_MANIFEST_PATH', str(Path.home() / "dbt-state" / "manifest.json"))
+    prod_path = Path(prod_manifest_path).expanduser()
+    if prod_path.exists():
+        return prod_path
+
+    pytest.fail(
+        "No production manifest found. Options:\n"
+        "1. Set DBT_MANIFEST_PATH environment variable\n"
+        "2. Place manifest at ~/dbt-state/manifest.json\n"
+        "3. Set DBT_PROD_MANIFEST_PATH to custom location"
+    )
+
+@pytest.fixture
+def prod_manifest_with_compiled():
+    """
+    Production manifest with compiled_code field
+
+    Uses same priority as prod_manifest fixture
+    """
+    # Priority 1: Explicit override
+    env_manifest = os.environ.get('DBT_MANIFEST_PATH')
+    if env_manifest and Path(env_manifest).exists():
+        return Path(env_manifest)
+
+    # Priority 2: Production manifest path
+    prod_manifest_path = os.environ.get('DBT_PROD_MANIFEST_PATH', str(Path.home() / "dbt-state" / "manifest.json"))
+    prod_path = Path(prod_manifest_path).expanduser()
+    if prod_path.exists():
+        return prod_path
+
+    pytest.fail("No production manifest found.")
 
 @pytest.fixture
 def dev_manifest_setup(tmp_path, prod_manifest):
@@ -32,11 +75,14 @@ def dev_manifest_setup(tmp_path, prod_manifest):
     dev_path = target / "manifest.json"
     dev_data = {
         "nodes": {
-            "model.project.core_client__client_profiles_events": {
-                "name": "client_profiles_events",
-                "schema": "core_client",
+            "model.project.test_schema__test_model": {
+                "name": "test_model",
+                "schema": "test_schema",
                 "database": "",
-                "config": {}
+                "config": {},
+                "raw_code": "SELECT * FROM {{ ref('upstream_model') }}",
+                "compiled_code": "SELECT * FROM upstream_table",
+                "original_file_path": "models/test/test_model.sql"
             }
         }
     }
@@ -44,52 +90,27 @@ def dev_manifest_setup(tmp_path, prod_manifest):
 
     return prod_path
 
-# Test models (real production models)
-TEST_MODELS = [
-    "core_client__client_profiles_events",
-]
-
-@pytest.fixture(params=TEST_MODELS)
-def test_model(request):
-    """Parametrized fixture for testing all commands on real models"""
-    return request.param
-
-# Expected outputs fixtures (from bash version)
+# Test model - dynamically selected from manifest
 @pytest.fixture
-def expected_outputs():
-    """Helper for loading expected outputs"""
-    def _load(model_name, command):
-        """Load expected output for model and command"""
-        path = Path(__file__).parent / "fixtures" / "expected_outputs" / f"{model_name}_{command}.json"
-        if not path.exists():
-            pytest.skip(f"Expected output not found: {path}")
-        return json.loads(path.read_text())
-    return _load
+def test_model(prod_manifest):
+    """
+    Select any model from manifest for testing
 
-# Specific expected outputs
-@pytest.fixture
-def expected_info(test_model):
-    """Expected info output for test_model"""
-    path = Path(__file__).parent / "fixtures" / "expected_outputs" / f"{test_model}_info.json"
-    if not path.exists():
-        pytest.skip(f"Expected output not found: {path}")
-    return json.loads(path.read_text())
+    Returns first model found in manifest (anonymous testing)
+    """
+    from dbt_meta.manifest.parser import ManifestParser
 
-@pytest.fixture
-def expected_schema(test_model):
-    """Expected schema output for test_model"""
-    path = Path(__file__).parent / "fixtures" / "expected_outputs" / f"{test_model}_schema.json"
-    if not path.exists():
-        pytest.skip(f"Expected output not found: {path}")
-    return json.loads(path.read_text())
+    parser = ManifestParser(str(prod_manifest))
+    nodes = parser.manifest.get('nodes', {})
 
-@pytest.fixture
-def expected_columns(test_model):
-    """Expected columns output for test_model"""
-    path = Path(__file__).parent / "fixtures" / "expected_outputs" / f"{test_model}_columns.json"
-    if not path.exists():
-        pytest.skip(f"Expected output not found: {path}")
-    return json.loads(path.read_text())
+    # Find first model
+    for node_id in nodes:
+        if node_id.startswith('model.') and nodes[node_id].get('resource_type') == 'model':
+            # Format: "model.project.schema__table" → "schema__table"
+            model_name = node_id.split(".")[-1]
+            return model_name
+
+    pytest.skip("No models found in manifest")
 
 # Mock fixtures
 @pytest.fixture

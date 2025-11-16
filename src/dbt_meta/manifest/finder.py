@@ -1,17 +1,10 @@
 """
-ManifestFinder - Locate dbt manifest.json with 8-level priority search
+ManifestFinder - Locate dbt manifest.json
 
-Priority order (highest to lowest):
-1. DBT_MANIFEST_PATH environment variable (explicit override)
-2. ./{DBT_PROD_STATE_PATH}/manifest.json (production - PREFERRED, default: .dbt-state)
-3. ./target/manifest.json (current directory)
-4. $DBT_PROJECT_PATH/{DBT_PROD_STATE_PATH}/manifest.json (production)
-5. $DBT_PROJECT_PATH/target/manifest.json
-6. Search upward for {DBT_PROD_STATE_PATH}/manifest.json (production)
-7. Search upward for target/manifest.json
-8. target/manifest.json (fallback)
-
-Production manifest directory is configurable via DBT_PROD_STATE_PATH (default: .dbt-state).
+Priority order:
+1. Explicit manifest path (via --manifest flag or function parameter)
+2. DBT_PROD_MANIFEST_PATH (default: ~/dbt-state/manifest.json)
+3. DBT_DEV_MANIFEST_PATH (default: ./target/manifest.json) - only when use_dev=True
 """
 
 import os
@@ -23,9 +16,13 @@ class ManifestFinder:
     """Find dbt manifest.json with production-first priority"""
 
     @staticmethod
-    def find() -> str:
+    def find(explicit_path: Optional[str] = None, use_dev: bool = False) -> str:
         """
-        Find manifest.json using 8-level priority search
+        Find manifest.json using simplified priority search
+
+        Args:
+            explicit_path: Explicit manifest path (from --manifest flag)
+            use_dev: If True, use dev manifest (DBT_DEV_MANIFEST_PATH)
 
         Returns:
             Absolute path to manifest.json
@@ -33,93 +30,50 @@ class ManifestFinder:
         Raises:
             FileNotFoundError: If no manifest found in any location
         """
-        # Get production state path (default: .dbt-state)
-        prod_state_path = os.getenv("DBT_PROD_STATE_PATH", ".dbt-state")
-        project_path = os.getenv("DBT_PROJECT_PATH")
+        # Priority 1: Explicit path from --manifest flag
+        if explicit_path:
+            path = Path(explicit_path).expanduser()
+            if path.exists():
+                return str(path.absolute())
+            raise FileNotFoundError(f"Manifest not found at explicit path: {explicit_path}")
 
-        # Priority 1: DBT_MANIFEST_PATH environment variable
-        if env_path := os.getenv("DBT_MANIFEST_PATH"):
-            if Path(env_path).exists():
-                return str(Path(env_path).absolute())
+        # Priority 2: Dev manifest (if use_dev=True)
+        if use_dev:
+            dev_manifest_path = os.getenv("DBT_DEV_MANIFEST_PATH", "./target/manifest.json")
+            dev_path = Path(dev_manifest_path).expanduser()
+            if dev_path.exists():
+                return str(dev_path.absolute())
+            raise FileNotFoundError(
+                f"Dev manifest not found at: {dev_manifest_path}\n"
+                f"Set DBT_DEV_MANIFEST_PATH or ensure ./target/manifest.json exists"
+            )
 
-        # Priority 2: ./{prod_state_path}/manifest.json (PRODUCTION)
-        cwd_prod = Path.cwd() / prod_state_path / "manifest.json"
-        if cwd_prod.exists():
-            return str(cwd_prod.absolute())
-
-        # Priority 3: ./target/manifest.json (current directory)
-        cwd_dev = Path.cwd() / "target" / "manifest.json"
-        if cwd_dev.exists():
-            return str(cwd_dev.absolute())
-
-        # Priority 4: $DBT_PROJECT_PATH/{prod_state_path}/manifest.json (PRODUCTION)
-        if project_path:
-            project_prod = Path(project_path) / prod_state_path / "manifest.json"
-            if project_prod.exists():
-                return str(project_prod.absolute())
-
-            # Priority 5: $DBT_PROJECT_PATH/target/manifest.json
-            project_dev = Path(project_path) / "target" / "manifest.json"
-            if project_dev.exists():
-                return str(project_dev.absolute())
-
-        # Priority 6-7: Search upward for manifest
-        if upward_path := ManifestFinder._search_upward(prod_state_path):
-            return str(upward_path.absolute())
-
-        # Priority 8: Fallback to target/manifest.json (will likely fail)
-        fallback = Path("target/manifest.json")
-        if fallback.exists():
-            return str(fallback.absolute())
+        # Priority 3: Production manifest (default)
+        prod_manifest_path = os.getenv("DBT_PROD_MANIFEST_PATH", str(Path.home() / "dbt-state" / "manifest.json"))
+        prod_path = Path(prod_manifest_path).expanduser()
+        if prod_path.exists():
+            return str(prod_path.absolute())
 
         # No manifest found - raise error with helpful message
         raise FileNotFoundError(
-            "No manifest.json found. Searched:\n"
-            "  1. DBT_MANIFEST_PATH environment variable\n"
-            f"  2. ./{prod_state_path}/manifest.json (production)\n"
-            "  3. ./target/manifest.json (dev)\n"
-            f"  4. {project_path}/{prod_state_path}/manifest.json (if DBT_PROJECT_PATH set)\n"
-            f"  5. {project_path}/target/manifest.json (if DBT_PROJECT_PATH set)\n"
-            f"  6. Parent directories for {prod_state_path}/manifest.json\n"
-            "  7. Parent directories for target/manifest.json\n"
-            "  8. ./target/manifest.json (fallback)\n"
+            "No production manifest found. Searched:\n"
+            f"  DBT_PROD_MANIFEST_PATH (default: ~/dbt-state/manifest.json)\n"
             "\n"
-            "Make sure you have run 'dbt compile' or 'dbt parse' to generate manifest.json\n"
-            f"Production manifest directory: {prod_state_path} (configure via DBT_PROD_STATE_PATH)"
+            "SETUP REQUIRED:\n"
+            "\n"
+            "1. Set manifest path in ~/.zshrc or ~/.bashrc:\n"
+            "   export DBT_PROD_MANIFEST_PATH=~/dbt-state/manifest.json\n"
+            "\n"
+            "2. Place production manifest at the configured location:\n"
+            "   mkdir -p ~/dbt-state\n"
+            "   cp /path/to/prod/manifest.json ~/dbt-state/\n"
+            "\n"
+            "3. IMPORTANT: Set up automatic manifest updates (e.g., hourly via cron/CI)\n"
+            "   to keep metadata in sync with production state.\n"
+            "\n"
+            "   Example cron job:\n"
+            "   0 * * * * cp /prod/manifest/path/manifest.json ~/dbt-state/manifest.json\n"
+            "\n"
+            "WHY: dbt-meta requires production manifest to extract metadata.\n"
+            "     Without regular updates, metadata becomes stale and queries may fail.\n"
         )
-
-    @staticmethod
-    def _search_upward(prod_state_path: str = ".dbt-state") -> Optional[Path]:
-        """
-        Search upward from current directory for manifest.json
-
-        Searches for {prod_state_path}/manifest.json first (production priority),
-        then target/manifest.json.
-
-        Args:
-            prod_state_path: Production state directory name (default: .dbt-state)
-
-        Returns:
-            Path to manifest if found, None otherwise
-        """
-        current = Path.cwd()
-
-        # Search up to root (max 10 levels to avoid infinite loop)
-        for _ in range(10):
-            # Priority 6: Look for production manifest
-            prod_manifest = current / prod_state_path / "manifest.json"
-            if prod_manifest.exists():
-                return prod_manifest
-
-            # Priority 7: Look for dev manifest
-            dev_manifest = current / "target" / "manifest.json"
-            if dev_manifest.exists():
-                return dev_manifest
-
-            # Move up one directory
-            parent = current.parent
-            if parent == current:  # Reached root
-                break
-            current = parent
-
-        return None

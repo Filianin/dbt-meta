@@ -191,15 +191,12 @@ Anthropic [recommends CLI tools](https://docs.anthropic.com/en/docs/build-with-c
 ```bash
 # Add to ~/.bashrc or ~/.zshrc
 
-# Path to dbt project root (recommended for global access)
-export DBT_PROJECT_PATH=~/Projects/reports
+# NOTE: This manifest should be automatically updated regularly (e.g., hourly via cron/CI)
+# to ensure metadata stays in sync with production state
+export DBT_PROD_MANIFEST_PATH={path to your manifest.json}
 
-# Production manifest directory (default: .dbt-state)
-# If you already download prod manifest for defer functionality, set this path
-export DBT_PROD_STATE_PATH=.dbt-state
-
-# Optional: Override manifest.json location completely (highest priority)
-export DBT_MANIFEST_PATH=/path/to/custom/manifest.json
+# Example:
+# export DBT_PROD_MANIFEST_PATH=~/dbt-state/manifest.json
 ```
 
 ### Naming Configuration
@@ -462,9 +459,8 @@ meta schema-dev jaffle_shop__customers
 
 | Variable | Purpose | Default | Example |
 |----------|---------|---------|---------|
-| `DBT_PROJECT_PATH` | dbt project root directory | - | `~/Projects/reports` |
-| `DBT_PROD_STATE_PATH` | Production manifest directory | `.dbt-state` | `prod-manifest` |
-| `DBT_MANIFEST_PATH` | Full manifest path override | - | `/path/to/manifest.json` |
+| `DBT_PROD_MANIFEST_PATH` | Production manifest path | `~/dbt-state/manifest.json` | `~/prod/manifest.json` |
+| `DBT_DEV_MANIFEST_PATH` | Dev manifest path (used with `--dev`) | `./target/manifest.json` | `./target/manifest.json` |
 | `DBT_USER` | Override username | `$USER` | `alice` |
 | `DBT_DEV_SCHEMA` | Full dev schema (priority 1) | - | `my_dev_schema` |
 | `DBT_DEV_SCHEMA_TEMPLATE` | Schema template (priority 2) | - | `dev_{username}` |
@@ -479,29 +475,25 @@ meta schema-dev jaffle_shop__customers
 
 After running `defer build`, **two manifest files** exist:
 
-1. **`{DBT_PROD_STATE_PATH}/manifest.json`** (PRODUCTION - preferred, default: `.dbt-state`)
+1. **Production manifest** (preferred)
+   - Configured via `DBT_PROD_MANIFEST_PATH` environment variable
    - Contains production metadata from latest main branch
    - Uses table **aliases** from config (e.g., `core_client.client_info`)
-   - Synced automatically by defer script
-   - **If you already download prod manifest for defer**, configure the path via `DBT_PROD_STATE_PATH`
+   - **Recommended setup**: Place production manifest in a stable location and set `DBT_PROD_MANIFEST_PATH`
 
-2. **`target/manifest.json`** (DEV)
+2. **Dev manifest** (`target/manifest.json`)
+   - Configured via `DBT_DEV_MANIFEST_PATH` environment variable (default: `./target/manifest.json`)
    - Contains dev metadata after `defer build --target dev`
    - Uses **SQL filename** (e.g., `personal_pavel_filianin.dim_client_info`)
-   - Only use with `meta schema-dev`
+   - Used automatically when `--dev` flag is provided
 
-**Manifest search order** (8 priority levels):
+**Manifest search order** (3 priority levels):
 
-1. `DBT_MANIFEST_PATH` environment variable (explicit override)
-2. `./{DBT_PROD_STATE_PATH}/manifest.json` **(PRODUCTION - preferred)**
-3. `./target/manifest.json` (current directory dev)
-4. `$DBT_PROJECT_PATH/{DBT_PROD_STATE_PATH}/manifest.json` **(PRODUCTION)**
-5. `$DBT_PROJECT_PATH/target/manifest.json`
-6. Search upward for `{DBT_PROD_STATE_PATH}/manifest.json` **(PRODUCTION)**
-7. Search upward for `target/manifest.json`
-8. `./target/manifest.json` (fallback)
+1. `--manifest PATH` - explicit CLI flag (highest priority, overrides all)
+2. `DBT_DEV_MANIFEST_PATH` - dev manifest when `--dev` flag used (default: `./target/manifest.json`)
+3. `DBT_PROD_MANIFEST_PATH` - production manifest (default: `~/dbt-state/manifest.json`)
 
-**Note**: `DBT_PROD_STATE_PATH` defaults to `.dbt-state` but can be configured for your project's needs.
+**Note**: `DBT_PROD_MANIFEST_PATH` can be configured to point to any location.
 
 **Why this matters:**
 

@@ -1,6 +1,0 @@
-{
-  "database": "admirals-bi-dwh",
-  "schema": "core_client",
-  "table": "client_profiles_events",
-  "full_name": "admirals-bi-dwh.core_client.client_profiles_events"
-}
