@@ -158,7 +158,7 @@ class TestColumnsCommand:
         Critical: 64% of models don't have columns in manifest.
         """
         # Mock is_modified to avoid git calls
-        mocker.patch('dbt_meta.commands.is_modified', return_value=False)
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
 
         # Mock subprocess to simulate bq command
         mock_run = mocker.patch('subprocess.run')
@@ -964,7 +964,7 @@ class TestColumnsWithDevFlag:
         monkeypatch.setenv('DBT_USER', 'test')
         monkeypatch.setenv('DBT_FALLBACK_BIGQUERY', 'true')
 
-        with patch('dbt_meta.commands._fetch_columns_from_bigquery_direct') as mock_fetch:
+        with patch('dbt_meta.command_impl.columns._fetch_columns_from_bigquery_direct') as mock_fetch:
             mock_fetch.return_value = [
                 {'name': 'id', 'data_type': 'INTEGER'},
                 {'name': 'name', 'data_type': 'STRING'}

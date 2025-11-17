@@ -20,6 +20,7 @@ from rich import print as rprint
 
 from dbt_meta.manifest.finder import ManifestFinder
 from dbt_meta import commands
+from dbt_meta.errors import DbtMetaError
 
 # Create Typer app
 app = typer.Typer(
@@ -39,6 +40,30 @@ STYLE_HEADER = "bold green"
 STYLE_ERROR = "red"
 STYLE_DIM = "dim"
 STYLE_GREEN = "green"
+
+
+def handle_error(error: DbtMetaError) -> None:
+    """Display formatted error message with suggestion and exit.
+
+    Args:
+        error: DbtMetaError instance with message and optional suggestion
+
+    This function formats errors with Rich console for better readability:
+    - Error message in red
+    - Suggestion in yellow (if available)
+    - Exits with code 1
+    """
+    error_console = Console(stderr=True)
+
+    # Display error message
+    error_console.print(f"\n[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] {error.message}")
+
+    # Display suggestion if available
+    if error.suggestion:
+        error_console.print(f"[yellow]Suggestion:[/yellow] {error.suggestion}")
+
+    error_console.print()  # Empty line for better readability
+    raise typer.Exit(code=1)
 
 
 def _build_tree_recursive(parent_tree: Tree, nodes: List[Dict[str, Any]]) -> None:
@@ -371,31 +396,35 @@ def info(
         meta info -j customers               # Production
         meta info --dev -j customers         # Dev (personal_USERNAME)
     """
-    manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-    result = commands.info(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
+    try:
+        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+        result = commands.info(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
 
-    if not result:
-        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
-        raise typer.Exit(code=1)
+        if not result:
+            console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
+            raise typer.Exit(code=1)
 
-    if json_output:
-        print(json.dumps(result, indent=2))
-    else:
-        # Rich table output with blank line first
-        print()
-        table = Table(title=f"[bold green not italic]Model: {result['name']}[/bold green not italic]", show_header=False)
-        table.add_column("Field", style=STYLE_COMMAND, no_wrap=True)
-        table.add_column("Value", style="white")
+        if json_output:
+            print(json.dumps(result, indent=2))
+        else:
+            # Rich table output with blank line first
+            print()
+            table = Table(title=f"[bold green not italic]Model: {result['name']}[/bold green not italic]", show_header=False)
+            table.add_column("Field", style=STYLE_COMMAND, no_wrap=True)
+            table.add_column("Value", style="white")
 
-        table.add_row("Database:", result['database'])
-        table.add_row("Schema:", result['schema'])
-        table.add_row("Table:", result['table'])
-        table.add_row("Full Name:", result['full_name'])
-        table.add_row("Materialized:", result['materialized'])
-        table.add_row("File:", result['file'])
-        table.add_row("Tags:", ', '.join(result['tags']) if result['tags'] else '(none)')
+            table.add_row("Database:", result['database'])
+            table.add_row("Schema:", result['schema'])
+            table.add_row("Table:", result['table'])
+            table.add_row("Full Name:", result['full_name'])
+            table.add_row("Materialized:", result['materialized'])
+            table.add_row("File:", result['file'])
+            table.add_row("Tags:", ', '.join(result['tags']) if result['tags'] else '(none)')
 
-        console.print(table)
+            console.print(table)
+
+    except DbtMetaError as e:
+        handle_error(e)
 
 
 @app.command()
@@ -412,29 +441,33 @@ def schema(
         meta schema jaffle_shop__orders            # Production
         meta schema --dev jaffle_shop__orders      # Dev (personal_USERNAME)
     """
-    manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-    result = commands.schema(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
+    try:
+        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+        result = commands.schema(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
 
-    if not result:
-        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
-        raise typer.Exit(code=1)
+        if not result:
+            console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
+            raise typer.Exit(code=1)
 
-    if json_output:
-        print(json.dumps(result, indent=2))
-    else:
-        # Rich table output with blank line first
-        print()
-        table = Table(title=f"[bold green not italic]Schema: {model_name}[/bold green not italic]", show_header=False)
-        table.add_column("Field", style=STYLE_COMMAND, no_wrap=True)
-        table.add_column("Value", style="white")
+        if json_output:
+            print(json.dumps(result, indent=2))
+        else:
+            # Rich table output with blank line first
+            print()
+            table = Table(title=f"[bold green not italic]Schema: {model_name}[/bold green not italic]", show_header=False)
+            table.add_column("Field", style=STYLE_COMMAND, no_wrap=True)
+            table.add_column("Value", style="white")
 
-        if 'database' in result and result['database']:
-            table.add_row("Database:", result['database'])
-        table.add_row("Schema:", result['schema'])
-        table.add_row("Table:", result['table'])
-        table.add_row("Full:", result['full_name'])
+            if 'database' in result and result['database']:
+                table.add_row("Database:", result['database'])
+            table.add_row("Schema:", result['schema'])
+            table.add_row("Table:", result['table'])
+            table.add_row("Full:", result['full_name'])
 
-        console.print(table)
+            console.print(table)
+
+    except DbtMetaError as e:
+        handle_error(e)
 
 
 @app.command()
@@ -451,26 +484,30 @@ def columns(
         meta columns -j customers                # Production
         meta columns --dev -j customers          # Dev
     """
-    manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-    result = commands.columns(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
+    try:
+        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+        result = commands.columns(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
 
-    if not result:
-        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
-        raise typer.Exit(code=1)
+        if not result:
+            console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
+            raise typer.Exit(code=1)
 
-    if json_output:
-        print(json.dumps(result, indent=2))
-    else:
-        # Rich table output with blank line first
-        print()
-        table = Table(title=f"[bold green not italic]Columns: {model_name}[/bold green not italic]", header_style="bold green")
-        table.add_column("Name", style=STYLE_COMMAND, no_wrap=True)
-        table.add_column("Type", style="white")
+        if json_output:
+            print(json.dumps(result, indent=2))
+        else:
+            # Rich table output with blank line first
+            print()
+            table = Table(title=f"[bold green not italic]Columns: {model_name}[/bold green not italic]", header_style="bold green")
+            table.add_column("Name", style=STYLE_COMMAND, no_wrap=True)
+            table.add_column("Type", style="white")
 
-        for col in result:
-            table.add_row(col['name'], col['data_type'])
+            for col in result:
+                table.add_row(col['name'], col['data_type'])
 
-        console.print(table)
+            console.print(table)
+
+    except DbtMetaError as e:
+        handle_error(e)
 
 
 @app.command()
@@ -487,26 +524,30 @@ def config(
         meta config -j model_name              # Production
         meta config --dev -j model_name        # Dev (personal_USERNAME)
     """
-    manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-    result = commands.config(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
+    try:
+        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+        result = commands.config(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
 
-    if result is None:
-        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
-        raise typer.Exit(code=1)
+        if result is None:
+            console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
+            raise typer.Exit(code=1)
 
-    if json_output:
-        print(json.dumps(result, indent=2))
-    else:
-        # Rich table output with blank line first
-        print()
-        table = Table(title=f"[bold green not italic]Config: {model_name}[/bold green not italic]", header_style="bold green")
-        table.add_column("Key", style=STYLE_COMMAND, no_wrap=True)
-        table.add_column("Value", style="white")
+        if json_output:
+            print(json.dumps(result, indent=2))
+        else:
+            # Rich table output with blank line first
+            print()
+            table = Table(title=f"[bold green not italic]Config: {model_name}[/bold green not italic]", header_style="bold green")
+            table.add_column("Key", style=STYLE_COMMAND, no_wrap=True)
+            table.add_column("Value", style="white")
 
-        for key, value in result.items():
-            table.add_row(key, str(value))
+            for key, value in result.items():
+                table.add_row(key, str(value))
 
-        console.print(table)
+            console.print(table)
+
+    except DbtMetaError as e:
+        handle_error(e)
 
 
 @app.command()
@@ -523,44 +564,48 @@ def deps(
         meta deps -j model_name              # Production
         meta deps --dev -j model_name        # Dev (personal_USERNAME)
     """
-    manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-    result = commands.deps(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
+    try:
+        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+        result = commands.deps(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
 
-    if result is None:
-        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
-        raise typer.Exit(code=1)
+        if result is None:
+            console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
+            raise typer.Exit(code=1)
 
-    if json_output:
-        print(json.dumps(result, indent=2))
-    else:
-        # Rich table output with blank line first
-        print()
-
-        # Refs table
-        if result['refs']:
-            table_refs = Table(title=f"[bold green not italic]Refs ({len(result['refs'])})[/bold green not italic]", header_style="bold green")
-            table_refs.add_column("Ref", style=STYLE_COMMAND)
-            for ref in result['refs']:
-                table_refs.add_row(ref)
-            console.print(table_refs)
+        if json_output:
+            print(json.dumps(result, indent=2))
+        else:
+            # Rich table output with blank line first
             print()
 
-        # Sources table
-        if result['sources']:
-            table_sources = Table(title=f"[bold green not italic]Sources ({len(result['sources'])})[/bold green not italic]", header_style="bold green")
-            table_sources.add_column("Source", style=STYLE_COMMAND)
-            for source in result['sources']:
-                table_sources.add_row(source)
-            console.print(table_sources)
-            print()
+            # Refs table
+            if result['refs']:
+                table_refs = Table(title=f"[bold green not italic]Refs ({len(result['refs'])})[/bold green not italic]", header_style="bold green")
+                table_refs.add_column("Ref", style=STYLE_COMMAND)
+                for ref in result['refs']:
+                    table_refs.add_row(ref)
+                console.print(table_refs)
+                print()
 
-        # Macros table
-        if result.get('macros'):
-            table_macros = Table(title=f"[bold green not italic]Macros ({len(result.get('macros', []))})[/bold green not italic]", header_style="bold green")
-            table_macros.add_column("Macro", style=STYLE_COMMAND)
-            for macro in result.get('macros', []):
-                table_macros.add_row(macro)
-            console.print(table_macros)
+            # Sources table
+            if result['sources']:
+                table_sources = Table(title=f"[bold green not italic]Sources ({len(result['sources'])})[/bold green not italic]", header_style="bold green")
+                table_sources.add_column("Source", style=STYLE_COMMAND)
+                for source in result['sources']:
+                    table_sources.add_row(source)
+                console.print(table_sources)
+                print()
+
+            # Macros table
+            if result.get('macros'):
+                table_macros = Table(title=f"[bold green not italic]Macros ({len(result.get('macros', []))})[/bold green not italic]", header_style="bold green")
+                table_macros.add_column("Macro", style=STYLE_COMMAND)
+                for macro in result.get('macros', []):
+                    table_macros.add_row(macro)
+                console.print(table_macros)
+
+    except DbtMetaError as e:
+        handle_error(e)
 
 
 @app.command()
@@ -579,32 +624,36 @@ def sql(
         meta sql --dev model_name            # Dev (personal_USERNAME)
         meta sql --jinja model_name          # Raw SQL with Jinja
     """
-    manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-    result = commands.sql(manifest_path, model_name, use_dev=effective_use_dev, raw=jinja, json_output=json_output)
+    try:
+        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+        result = commands.sql(manifest_path, model_name, use_dev=effective_use_dev, raw=jinja, json_output=json_output)
 
-    if result is None:
-        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
-        raise typer.Exit(code=1)
-
-    if not result:
-        if not jinja:
-            console.print(f"[{STYLE_ERROR}]Compiled code not found for model '{model_name}'[/{STYLE_ERROR}]")
-            console.print("Note: Compiled code is only available in .dbt-state/manifest.json")
-            console.print(f"Tip: Use 'meta sql {model_name} --jinja' to get raw SQL with Jinja templates")
+        if result is None:
+            console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
             raise typer.Exit(code=1)
+
+        if not result:
+            if not jinja:
+                console.print(f"[{STYLE_ERROR}]Compiled code not found for model '{model_name}'[/{STYLE_ERROR}]")
+                console.print("Note: Compiled code is only available in .dbt-state/manifest.json")
+                console.print(f"Tip: Use 'meta sql {model_name} --jinja' to get raw SQL with Jinja templates")
+                raise typer.Exit(code=1)
+            else:
+                console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Raw SQL not found for model '{model_name}'")
+                raise typer.Exit(code=1)
+
+        if json_output:
+            output = {
+                "model_name": model_name,
+                "sql": result,
+                "type": "raw" if jinja else "compiled"
+            }
+            print(json.dumps(output, indent=2))
         else:
-            console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Raw SQL not found for model '{model_name}'")
-            raise typer.Exit(code=1)
+            print(result)
 
-    if json_output:
-        output = {
-            "model_name": model_name,
-            "sql": result,
-            "type": "raw" if jinja else "compiled"
-        }
-        print(json.dumps(output, indent=2))
-    else:
-        print(result)
+    except DbtMetaError as e:
+        handle_error(e)
 
 
 @app.command()
@@ -621,22 +670,26 @@ def path(
         meta path model_name              # Production
         meta path --dev model_name        # Dev (personal_USERNAME)
     """
-    manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-    result = commands.path(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
+    try:
+        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+        result = commands.path(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
 
-    if result is None:
-        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
-        raise typer.Exit(code=1)
+        if result is None:
+            console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
+            raise typer.Exit(code=1)
 
-    if json_output:
-        output = {
-            "model_name": model_name,
-            "path": result
-        }
-        print(json.dumps(output, indent=2))
-    else:
-        print()
-        print(result)
+        if json_output:
+            output = {
+                "model_name": model_name,
+                "path": result
+            }
+            print(json.dumps(output, indent=2))
+        else:
+            print()
+            print(result)
+
+    except DbtMetaError as e:
+        handle_error(e)
 
 
 @app.command("list")
@@ -650,25 +703,29 @@ def list_cmd(
 
     Example: meta list jaffle_shop
     """
-    manifest_path, _ = get_manifest_path(manifest)
-    result = commands.list_models(manifest_path, pattern)
+    try:
+        manifest_path, _ = get_manifest_path(manifest)
+        result = commands.list_models(manifest_path, pattern)
 
-    if json_output:
-        print(json.dumps(result, indent=2))
-    else:
-        # Rich table output with blank line first
-        print()
-        title = f"Models ({len(result)})"
-        if pattern:
-            title = f"Models matching '{pattern}' ({len(result)})"
+        if json_output:
+            print(json.dumps(result, indent=2))
+        else:
+            # Rich table output with blank line first
+            print()
+            title = f"Models ({len(result)})"
+            if pattern:
+                title = f"Models matching '{pattern}' ({len(result)})"
 
-        table = Table(title=f"[bold green not italic]{title}[/bold green not italic]", header_style="bold green")
-        table.add_column("Model", style=STYLE_COMMAND)
+            table = Table(title=f"[bold green not italic]{title}[/bold green not italic]", header_style="bold green")
+            table.add_column("Model", style=STYLE_COMMAND)
 
-        for model in result:
-            table.add_row(model)
+            for model in result:
+                table.add_row(model)
 
-        console.print(table)
+            console.print(table)
+
+    except DbtMetaError as e:
+        handle_error(e)
 
 
 @app.command()
@@ -682,23 +739,27 @@ def search(
 
     Example: meta search "customers" --json
     """
-    manifest_path, _ = get_manifest_path(manifest)
-    result = commands.search(manifest_path, query)
+    try:
+        manifest_path, _ = get_manifest_path(manifest)
+        result = commands.search(manifest_path, query)
 
-    if json_output:
-        print(json.dumps(result, indent=2))
-    else:
-        # Rich table output with blank line first
-        print()
-        table = Table(title=f"[bold green not italic]Search results for '{query}' ({len(result)})[/bold green not italic]", header_style="bold green")
-        table.add_column("Model", style=STYLE_COMMAND, no_wrap=True)
-        table.add_column("Description", style="white")
+        if json_output:
+            print(json.dumps(result, indent=2))
+        else:
+            # Rich table output with blank line first
+            print()
+            table = Table(title=f"[bold green not italic]Search results for '{query}' ({len(result)})[/bold green not italic]", header_style="bold green")
+            table.add_column("Model", style=STYLE_COMMAND, no_wrap=True)
+            table.add_column("Description", style="white")
 
-        for model in result:
-            desc = model['description'] or ""
-            table.add_row(model['name'], desc)
+            for model in result:
+                desc = model['description'] or ""
+                table.add_row(model['name'], desc)
 
-        console.print(table)
+            console.print(table)
+
+    except DbtMetaError as e:
+        handle_error(e)
 
 
 @app.command()
@@ -717,34 +778,38 @@ def parents(
         meta parents -a model_name                    # Tree view
         meta parents -a -j model_name                 # Nested JSON (<=20) or flat array (>20)
     """
-    manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-    result = commands.parents(manifest_path, model_name, use_dev=effective_use_dev, recursive=all_ancestors, json_output=json_output)
+    try:
+        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+        result = commands.parents(manifest_path, model_name, use_dev=effective_use_dev, recursive=all_ancestors, json_output=json_output)
 
-    if result is None:
-        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
-        raise typer.Exit(code=1)
+        if result is None:
+            console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
+            raise typer.Exit(code=1)
 
-    if json_output:
-        print(json.dumps(result, indent=2))
-    else:
-        print()
-        if all_ancestors and result and isinstance(result[0], dict) and 'children' in result[0]:
-            # Hierarchical tree output
-            tree = Tree(f"[bold green]📊 All ancestors: {model_name}[/bold green]")
-            _build_tree_recursive(tree, result)
-            console.print(tree)
+        if json_output:
+            print(json.dumps(result, indent=2))
         else:
-            # Flat table output
-            mode = "All ancestors" if all_ancestors else "Direct parents"
-            table = Table(title=f"[bold green not italic]{mode} for {model_name} ({len(result)})[/bold green not italic]", header_style="bold green")
-            table.add_column("Path", style=STYLE_COMMAND)
-            table.add_column("Table", style="white", min_width=30)
-            table.add_column("Type", style="white", min_width=8)
+            print()
+            if all_ancestors and result and isinstance(result[0], dict) and 'children' in result[0]:
+                # Hierarchical tree output
+                tree = Tree(f"[bold green]📊 All ancestors: {model_name}[/bold green]")
+                _build_tree_recursive(tree, result)
+                console.print(tree)
+            else:
+                # Flat table output
+                mode = "All ancestors" if all_ancestors else "Direct parents"
+                table = Table(title=f"[bold green not italic]{mode} for {model_name} ({len(result)})[/bold green not italic]", header_style="bold green")
+                table.add_column("Path", style=STYLE_COMMAND)
+                table.add_column("Table", style="white", min_width=30)
+                table.add_column("Type", style="white", min_width=8)
 
-            for parent in result:
-                table.add_row(parent['path'], parent['table'], parent.get('type', ''))
+                for parent in result:
+                    table.add_row(parent['path'], parent['table'], parent.get('type', ''))
 
-            console.print(table)
+                console.print(table)
+
+    except DbtMetaError as e:
+        handle_error(e)
 
 
 @app.command()
@@ -763,34 +828,38 @@ def children(
         meta children -a model_name                 # Tree view
         meta children -a -j model_name              # Nested JSON (<=20) or flat array (>20)
     """
-    manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-    result = commands.children(manifest_path, model_name, use_dev=effective_use_dev, recursive=all_descendants, json_output=json_output)
+    try:
+        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+        result = commands.children(manifest_path, model_name, use_dev=effective_use_dev, recursive=all_descendants, json_output=json_output)
 
-    if result is None:
-        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
-        raise typer.Exit(code=1)
+        if result is None:
+            console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
+            raise typer.Exit(code=1)
 
-    if json_output:
-        print(json.dumps(result, indent=2))
-    else:
-        print()
-        if all_descendants and result and isinstance(result[0], dict) and 'children' in result[0]:
-            # Hierarchical tree output
-            tree = Tree(f"[bold green]📊 All descendants: {model_name}[/bold green]")
-            _build_tree_recursive(tree, result)
-            console.print(tree)
+        if json_output:
+            print(json.dumps(result, indent=2))
         else:
-            # Flat table output
-            mode = "All descendants" if all_descendants else "Direct children"
-            table = Table(title=f"[bold green not italic]{mode} for {model_name} ({len(result)})[/bold green not italic]", header_style="bold green")
-            table.add_column("Path", style=STYLE_COMMAND)
-            table.add_column("Table", style="white", min_width=30)
-            table.add_column("Type", style="white", min_width=8)
+            print()
+            if all_descendants and result and isinstance(result[0], dict) and 'children' in result[0]:
+                # Hierarchical tree output
+                tree = Tree(f"[bold green]📊 All descendants: {model_name}[/bold green]")
+                _build_tree_recursive(tree, result)
+                console.print(tree)
+            else:
+                # Flat table output
+                mode = "All descendants" if all_descendants else "Direct children"
+                table = Table(title=f"[bold green not italic]{mode} for {model_name} ({len(result)})[/bold green not italic]", header_style="bold green")
+                table.add_column("Path", style=STYLE_COMMAND)
+                table.add_column("Table", style="white", min_width=30)
+                table.add_column("Type", style="white", min_width=8)
 
-            for child in result:
-                table.add_row(child['path'], child['table'], child.get('type', ''))
+                for child in result:
+                    table.add_row(child['path'], child['table'], child.get('type', ''))
 
-            console.print(table)
+                console.print(table)
+
+    except DbtMetaError as e:
+        handle_error(e)
 
 
 @app.command()
@@ -803,6 +872,8 @@ def refresh():
     try:
         commands.refresh()
         console.print("[green]✓ Manifest refreshed successfully[/green]")
+    except DbtMetaError as e:
+        handle_error(e)
     except Exception as e:
         console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Failed to refresh manifest: {str(e)}")
         raise typer.Exit(code=1)
@@ -822,28 +893,32 @@ def docs(
         meta docs customers              # Production
         meta docs --dev customers        # Dev (personal_USERNAME)
     """
-    manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-    result = commands.docs(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
+    try:
+        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+        result = commands.docs(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
 
-    if not result:
-        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
-        raise typer.Exit(code=1)
+        if not result:
+            console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
+            raise typer.Exit(code=1)
 
-    if json_output:
-        print(json.dumps(result, indent=2))
-    else:
-        # Rich table output with blank line first
-        print()
-        table = Table(title=f"[bold green not italic]Column Documentation: {model_name}[/bold green not italic]", header_style="bold green")
-        table.add_column("Name", style=STYLE_COMMAND, no_wrap=True)
-        table.add_column("Type", style="white")
-        table.add_column("Description", style=STYLE_DESCRIPTION)
+        if json_output:
+            print(json.dumps(result, indent=2))
+        else:
+            # Rich table output with blank line first
+            print()
+            table = Table(title=f"[bold green not italic]Column Documentation: {model_name}[/bold green not italic]", header_style="bold green")
+            table.add_column("Name", style=STYLE_COMMAND, no_wrap=True)
+            table.add_column("Type", style="white")
+            table.add_column("Description", style=STYLE_DESCRIPTION)
 
-        for col in result:
-            desc = col.get('description', '') or "(no description)"
-            table.add_row(col['name'], col['data_type'], desc)
+            for col in result:
+                desc = col.get('description', '') or "(no description)"
+                table.add_row(col['name'], col['data_type'], desc)
 
-        console.print(table)
+            console.print(table)
+
+    except DbtMetaError as e:
+        handle_error(e)
 
 
 if __name__ == "__main__":

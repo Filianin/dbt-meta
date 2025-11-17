@@ -31,6 +31,12 @@ mypy src/dbt_meta && ruff check src/dbt_meta
 src/dbt_meta/
 ├── cli.py                # Typer CLI + Rich formatting
 ├── commands.py           # Command implementations + BigQuery fallback
+├── errors.py             # Exception hierarchy (v0.3.0+)
+├── config.py             # Configuration management (v0.3.0+)
+├── fallback.py           # 3-level fallback strategy (v0.3.0+)
+├── utils/                # Utility modules (v0.3.0+)
+│   ├── __init__.py       # Parser caching, warnings
+│   └── git.py            # Git operations
 └── manifest/
     ├── parser.py         # Fast manifest parsing (orjson + caching)
     └── finder.py         # 4-level manifest discovery
@@ -95,6 +101,156 @@ if not model:
 
 Location: `commands.py:979-998`
 
+#### 5. Exception Hierarchy
+
+**Consistent error handling with typed exceptions** (Added in v0.3.0):
+
+```python
+# src/dbt_meta/errors.py
+
+DbtMetaError (base)
+├── ModelNotFoundError        # Model not in manifest/BigQuery
+├── ManifestNotFoundError     # manifest.json not found
+├── ManifestParseError        # Invalid JSON in manifest
+├── BigQueryError             # BigQuery operation failed
+├── GitOperationError         # Git command failed
+└── ConfigurationError        # Invalid configuration
+```
+
+**All exceptions include:**
+- `message`: Human-readable error description
+- `suggestion`: Actionable fix (optional)
+- Structured data for programmatic handling
+
+**CLI error handling** (`cli.py:45-66`):
+```python
+try:
+    result = commands.schema(manifest_path, model_name)
+    # ... handle result
+except DbtMetaError as e:
+    handle_error(e)  # Rich formatted output with suggestion
+```
+
+**Example error output:**
+```
+Error: Model 'core__clients' not found
+
+Suggestion: Searched in: production manifest, dev manifest
+Try: meta list core
+```
+
+**Benefits:**
+- Consistent error messages across all commands
+- Actionable suggestions for users
+- Easy to catch and handle in tests
+- AI-friendly structured errors
+
+#### 6. Configuration Management
+
+**Centralized configuration with validation** (Added in v0.3.0):
+
+```python
+# src/dbt_meta/config.py
+
+from dbt_meta.config import Config
+
+# Load configuration from environment variables
+config = Config.from_env()
+
+# Access configuration
+config.prod_manifest_path       # ~/dbt-state/manifest.json
+config.dev_manifest_path        # ./target/manifest.json
+config.fallback_dev_enabled     # True/False
+config.fallback_bigquery_enabled # True/False
+config.dev_dataset              # personal_username
+config.prod_table_name_strategy # alias_or_name | name | alias
+config.prod_schema_source       # config_or_model | model | config
+
+# Validate configuration
+warnings = config.validate()
+for warning in warnings:
+    print(f"Warning: {warning}")
+```
+
+**Key features:**
+- Single source of truth for all environment variables
+- Automatic path expansion (~ to home directory)
+- Boolean parsing with sensible defaults
+- Validation with helpful warnings
+- Type-safe dataclass with full type hints
+
+**Dev schema resolution** (simplified to 2-level):
+```python
+# Priority 1: Direct schema name
+DBT_DEV_DATASET = "my_custom_dev_schema"
+
+# Priority 2: Default with username (fallback)
+# personal_{username} (from USER env var)
+```
+
+Location: `config.py:24-139`
+
+#### 7. Fallback Strategy
+
+**3-level fallback system with clean interface** (Added in v0.3.0):
+
+```python
+# src/dbt_meta/fallback.py
+
+from dbt_meta.fallback import FallbackStrategy, FallbackLevel, FallbackResult
+from dbt_meta.config import Config
+
+config = Config.from_env()
+strategy = FallbackStrategy(config)
+
+# Try to get model with automatic fallback
+result = strategy.get_model(
+    model_name="core__clients",
+    prod_parser=parser,
+    allowed_levels=[
+        FallbackLevel.PROD_MANIFEST,
+        FallbackLevel.DEV_MANIFEST,
+        FallbackLevel.BIGQUERY  # Optional - exclude for deps/sql commands
+    ]
+)
+
+if result.found:
+    print(f"Found in: {result.level.value}")
+    print(f"Data: {result.data}")
+
+    # Show warnings (e.g., "Using dev manifest")
+    for warning in result.warnings:
+        print(f"Warning: {warning}")
+else:
+    # ModelNotFoundError raised if not found
+    pass
+```
+
+**Fallback levels (in priority order):**
+1. `PROD_MANIFEST` - Production manifest (default source)
+2. `DEV_MANIFEST` - Dev manifest (if enabled via `DBT_FALLBACK_TARGET`)
+3. `BIGQUERY` - BigQuery metadata (if enabled via `DBT_FALLBACK_BIGQUERY`)
+
+**Key features:**
+- Consolidates logic previously duplicated across 10+ commands
+- Automatic warning collection at each level
+- Configurable allowed levels per command
+- Clean error handling with `ModelNotFoundError`
+- Type-safe enums and dataclasses
+
+**Usage pattern for commands:**
+```python
+# commands with BigQuery support (schema, columns, info, config)
+allowed_levels = [FallbackLevel.PROD_MANIFEST, FallbackLevel.DEV_MANIFEST, FallbackLevel.BIGQUERY]
+
+# commands without BigQuery support (deps, sql, parents, children)
+allowed_levels = [FallbackLevel.PROD_MANIFEST, FallbackLevel.DEV_MANIFEST]
+```
+
+Location: `fallback.py:18-198`
+
+**Note:** BigQuery fallback (`_fetch_from_bigquery`) is currently a placeholder (returns None). Full implementation will be added when refactoring `commands.py` in Task 3.
+
 ## Adding a New Command
 
 ### 1. Add command function in `commands.py`
@@ -150,6 +306,9 @@ Add to `_build_commands_panel()` if needed.
 **Test structure:**
 - `test_commands.py` - Command implementations
 - `test_infrastructure.py` - Manifest discovery + warnings
+- `test_errors.py` - Exception hierarchy (v0.3.0+)
+- `test_config.py` - Configuration management (v0.3.0+)
+- `test_fallback.py` - Fallback strategy (v0.3.0+)
 - `conftest.py` - Shared fixtures (uses dynamic `test_model` fixture)
 
 **Excluded from coverage:**
@@ -160,30 +319,40 @@ Add to `_build_commands_panel()` if needed.
 
 | Feature | Location |
 |---------|----------|
+| Exception hierarchy | `errors.py:13-203` |
+| Error handler (CLI) | `cli.py:45-66` |
+| Configuration management | `config.py:12-139` |
+| Fallback strategy | `fallback.py:18-198` |
 | Manifest discovery | `manifest/finder.py:26-89` |
 | Parser caching | `commands.py:20-34`, `manifest/parser.py:28-58` |
 | BigQuery fallback | `commands.py:399-446` |
-| Dev schema resolution | `commands.py:934-1042` |
+| Dev schema resolution | `commands.py:934-1042` (deprecated, use `config.py`) |
 | Prod table naming | `commands.py:452-493` |
 | Lineage traversal | `commands.py:773-805` |
 | Help formatting | `cli.py:43-157` |
 
 ## Environment Variables
 
+**Preferred access:** Use `Config.from_env()` (v0.3.0+) for centralized configuration management with validation.
+
 **Manifest:**
-- `DBT_PROD_MANIFEST_PATH` - Production manifest path (default: `~/dbt-state/manifest.json`)
+- `DBT_PROD_MANIFEST_PATH` - Production manifest path (default: `~/.dbt-state/manifest.json`)
 - `DBT_DEV_MANIFEST_PATH` - Dev manifest path (default: `./target/manifest.json`)
+
+**Fallback control:**
+- `DBT_FALLBACK_TARGET` - Enable dev manifest fallback (default: `true`)
+- `DBT_FALLBACK_BIGQUERY` - Enable BigQuery fallback (default: `true`)
 
 **Naming:**
 - `DBT_PROD_TABLE_NAME` - `alias_or_name` (default), `name`, `alias`
 - `DBT_PROD_SCHEMA_SOURCE` - `config_or_model` (default), `model`, `config`
-- `DBT_DEV_SCHEMA` - Full dev schema override
-- `DBT_DEV_SCHEMA_TEMPLATE` - Template with `{username}`
-- `DBT_DEV_SCHEMA_PREFIX` - Prefix (default: `personal`)
-- `DBT_USER` - Override username
+- `DBT_DEV_DATASET` - Direct dev schema name (overrides default `personal_{username}`)
+- `DBT_USER` - Override username for dev schema (default: `$USER`)
 
-**BigQuery:**
-- `DBT_FALLBACK_BIGQUERY` - Enable fallback (default: `true`)
+**Deprecated (v0.3.0+):**
+- `DBT_DEV_SCHEMA` - Use `DBT_DEV_DATASET` instead
+- `DBT_DEV_SCHEMA_TEMPLATE` - Use `DBT_DEV_DATASET` instead
+- `DBT_DEV_SCHEMA_PREFIX` - Use `DBT_DEV_DATASET` instead
 
 ## Type Checking
 

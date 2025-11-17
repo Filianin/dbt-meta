@@ -10,6 +10,8 @@ from pathlib import Path
 from functools import cached_property
 from typing import Dict, List, Optional, Any
 
+from dbt_meta.errors import ManifestNotFoundError, ManifestParseError
+
 
 class ManifestParser:
     """Parse dbt manifest.json with lazy loading and fast orjson"""
@@ -38,23 +40,21 @@ class ManifestParser:
             Parsed manifest dictionary
 
         Raises:
-            FileNotFoundError: If manifest doesn't exist
-            ValueError: If manifest contains invalid JSON
+            ManifestNotFoundError: If manifest doesn't exist
+            ManifestParseError: If manifest contains invalid JSON
         """
         manifest_file = Path(self.manifest_path)
 
         if not manifest_file.exists():
-            raise FileNotFoundError(
-                f"Manifest not found at: {self.manifest_path}"
-            )
+            raise ManifestNotFoundError(searched_paths=[self.manifest_path])
 
         try:
             with open(manifest_file, 'rb') as f:
                 return orjson.loads(f.read())
         except orjson.JSONDecodeError as e:
-            raise ValueError(
-                f"Invalid JSON in manifest: {self.manifest_path}\n"
-                f"Error: {str(e)}"
+            raise ManifestParseError(
+                path=self.manifest_path,
+                parse_error=str(e)
             )
 
     def get_model(self, model_name: str) -> Optional[Dict[str, Any]]:

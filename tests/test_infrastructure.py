@@ -22,6 +22,7 @@ from dbt_meta.commands import (
     schema, columns, info, config, deps, sql, path, docs, parents, children,
     _check_manifest_git_mismatch, _print_warnings, is_modified
 )
+from dbt_meta.errors import ManifestNotFoundError, ManifestParseError
 
 
 # ============================================================================
@@ -308,19 +309,21 @@ class TestManifestParser:
 
     def test_manifest_not_found_raises_error(self, tmp_path):
         """
-        Should raise FileNotFoundError for non-existent manifest
+        Should raise ManifestNotFoundError for non-existent manifest
 
         Clear error message with path.
         """
         non_existent = tmp_path / "not_found.json"
 
-        with pytest.raises(FileNotFoundError, match="Manifest not found"):
+        with pytest.raises(ManifestNotFoundError) as exc_info:
             parser = ManifestParser(str(non_existent))
             _ = parser.manifest  # Access triggers loading
 
+        assert str(non_existent) in exc_info.value.searched_paths
+
     def test_invalid_json_raises_error(self, tmp_path):
         """
-        Should raise clear error for invalid JSON
+        Should raise ManifestParseError for invalid JSON
 
         orjson raises JSONDecodeError, wrap with helpful message.
         """
@@ -329,8 +332,10 @@ class TestManifestParser:
 
         parser = ManifestParser(str(invalid_manifest))
 
-        with pytest.raises(ValueError, match="Invalid JSON"):
+        with pytest.raises(ManifestParseError) as exc_info:
             _ = parser.manifest
+
+        assert str(invalid_manifest) in exc_info.value.path
 
     def test_search_models_by_pattern(self, prod_manifest):
         """
@@ -378,7 +383,7 @@ class TestCheckManifestGitMismatch:
 
     def test_git_mismatch_warning_when_modified_without_dev_flag(self, mocker):
         """Should warn when model is modified but querying production"""
-        mocker.patch('dbt_meta.commands.is_modified', return_value=True)
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=True)
 
         warnings = _check_manifest_git_mismatch("test_model", use_dev=False)
 
@@ -391,7 +396,7 @@ class TestCheckManifestGitMismatch:
 
     def test_dev_without_changes_warning_when_using_dev_for_unchanged_model(self, mocker):
         """Should warn when using --dev flag but model not modified"""
-        mocker.patch('dbt_meta.commands.is_modified', return_value=False)
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
 
         # Pass dev_manifest_found to avoid dev_manifest_missing warning
         warnings = _check_manifest_git_mismatch(
@@ -408,7 +413,7 @@ class TestCheckManifestGitMismatch:
 
     def test_dev_manifest_missing_warning(self, mocker):
         """Should warn when using --dev but dev manifest not found"""
-        mocker.patch('dbt_meta.commands.is_modified', return_value=False)
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
 
         warnings = _check_manifest_git_mismatch(
             "test_model",
@@ -424,7 +429,7 @@ class TestCheckManifestGitMismatch:
 
     def test_no_warnings_when_git_matches_command(self, mocker):
         """Should return empty list when git status matches command"""
-        mocker.patch('dbt_meta.commands.is_modified', return_value=False)
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
 
         warnings = _check_manifest_git_mismatch("test_model", use_dev=False)
 
@@ -432,7 +437,7 @@ class TestCheckManifestGitMismatch:
 
     def test_no_warnings_when_modified_and_using_dev(self, mocker):
         """Should return empty list when model modified and using --dev"""
-        mocker.patch('dbt_meta.commands.is_modified', return_value=True)
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=True)
 
         warnings = _check_manifest_git_mismatch(
             "test_model",
@@ -564,7 +569,7 @@ class TestCommandsWithJsonOutput:
 
     def test_schema_accepts_json_output_parameter(self, prod_manifest, test_model, mocker):
         """schema() should accept json_output parameter"""
-        mocker.patch('dbt_meta.commands.is_modified', return_value=False)
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
         mocker.patch('dbt_meta.commands._print_warnings')
 
         # Should not raise TypeError
@@ -574,7 +579,7 @@ class TestCommandsWithJsonOutput:
 
     def test_columns_accepts_json_output_parameter(self, prod_manifest, test_model, mocker):
         """columns() should accept json_output parameter"""
-        mocker.patch('dbt_meta.commands.is_modified', return_value=False)
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
         mocker.patch('dbt_meta.commands._print_warnings')
 
         result = columns(str(prod_manifest), test_model,
@@ -583,7 +588,7 @@ class TestCommandsWithJsonOutput:
 
     def test_info_accepts_json_output_parameter(self, prod_manifest, test_model, mocker):
         """info() should accept json_output parameter"""
-        mocker.patch('dbt_meta.commands.is_modified', return_value=False)
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
         mocker.patch('dbt_meta.commands._print_warnings')
 
         result = info(str(prod_manifest), test_model,
@@ -592,7 +597,7 @@ class TestCommandsWithJsonOutput:
 
     def test_config_accepts_json_output_parameter(self, prod_manifest, test_model, mocker):
         """config() should accept json_output parameter"""
-        mocker.patch('dbt_meta.commands.is_modified', return_value=False)
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
         mocker.patch('dbt_meta.commands._print_warnings')
 
         result = config(str(prod_manifest), test_model,
@@ -601,7 +606,7 @@ class TestCommandsWithJsonOutput:
 
     def test_deps_accepts_json_output_parameter(self, prod_manifest, test_model, mocker):
         """deps() should accept json_output parameter"""
-        mocker.patch('dbt_meta.commands.is_modified', return_value=False)
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
         mocker.patch('dbt_meta.commands._print_warnings')
 
         result = deps(str(prod_manifest), test_model,
@@ -610,7 +615,7 @@ class TestCommandsWithJsonOutput:
 
     def test_sql_accepts_json_output_parameter(self, prod_manifest, test_model, mocker):
         """sql() should accept json_output parameter"""
-        mocker.patch('dbt_meta.commands.is_modified', return_value=False)
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
         mocker.patch('dbt_meta.commands._print_warnings')
 
         result = sql(str(prod_manifest), test_model,
@@ -619,7 +624,7 @@ class TestCommandsWithJsonOutput:
 
     def test_path_accepts_json_output_parameter(self, prod_manifest, test_model, mocker):
         """path() should accept json_output parameter"""
-        mocker.patch('dbt_meta.commands.is_modified', return_value=False)
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
         mocker.patch('dbt_meta.commands._print_warnings')
 
         result = path(str(prod_manifest), test_model,
@@ -628,7 +633,7 @@ class TestCommandsWithJsonOutput:
 
     def test_docs_accepts_json_output_parameter(self, prod_manifest, test_model, mocker):
         """docs() should accept json_output parameter"""
-        mocker.patch('dbt_meta.commands.is_modified', return_value=False)
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
         mocker.patch('dbt_meta.commands._print_warnings')
 
         result = docs(str(prod_manifest), test_model,
@@ -637,7 +642,7 @@ class TestCommandsWithJsonOutput:
 
     def test_parents_accepts_json_output_parameter(self, prod_manifest, test_model, mocker):
         """parents() should accept json_output parameter"""
-        mocker.patch('dbt_meta.commands.is_modified', return_value=False)
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
         mocker.patch('dbt_meta.commands._print_warnings')
 
         result = parents(str(prod_manifest), test_model,
@@ -646,7 +651,7 @@ class TestCommandsWithJsonOutput:
 
     def test_children_accepts_json_output_parameter(self, prod_manifest, test_model, mocker):
         """children() should accept json_output parameter"""
-        mocker.patch('dbt_meta.commands.is_modified', return_value=False)
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
         mocker.patch('dbt_meta.commands._print_warnings')
 
         result = children(str(prod_manifest), test_model,
@@ -664,8 +669,8 @@ class TestWarningsWithCommands:
 
     def test_schema_calls_git_check_and_prints_warnings(self, prod_manifest, test_model, mocker):
         """schema() should check git and print warnings"""
-        mocker.patch('dbt_meta.commands.is_modified', return_value=True)
-        mock_print_warnings = mocker.patch('dbt_meta.commands._print_warnings')
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=True)
+        mock_print_warnings = mocker.patch('dbt_meta.command_impl.base._print_warnings')
 
         schema(str(prod_manifest), test_model,
               use_dev=False, json_output=True)
@@ -683,8 +688,8 @@ class TestWarningsWithCommands:
 
     def test_columns_calls_git_check_and_prints_warnings(self, prod_manifest, test_model, mocker):
         """columns() should check git and print warnings"""
-        mocker.patch('dbt_meta.commands.is_modified', return_value=True)
-        mock_print_warnings = mocker.patch('dbt_meta.commands._print_warnings')
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=True)
+        mock_print_warnings = mocker.patch('dbt_meta.command_impl.base._print_warnings')
 
         columns(str(prod_manifest), test_model,
                use_dev=False, json_output=True)
@@ -693,8 +698,8 @@ class TestWarningsWithCommands:
 
     def test_info_calls_git_check_and_prints_warnings(self, prod_manifest, test_model, mocker):
         """info() should check git and print warnings"""
-        mocker.patch('dbt_meta.commands.is_modified', return_value=True)
-        mock_print_warnings = mocker.patch('dbt_meta.commands._print_warnings')
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=True)
+        mock_print_warnings = mocker.patch('dbt_meta.command_impl.base._print_warnings')
 
         info(str(prod_manifest), test_model,
             use_dev=False, json_output=True)
@@ -703,8 +708,8 @@ class TestWarningsWithCommands:
 
     def test_config_calls_git_check_and_prints_warnings(self, prod_manifest, test_model, mocker):
         """config() should check git and print warnings"""
-        mocker.patch('dbt_meta.commands.is_modified', return_value=True)
-        mock_print_warnings = mocker.patch('dbt_meta.commands._print_warnings')
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=True)
+        mock_print_warnings = mocker.patch('dbt_meta.command_impl.base._print_warnings')
 
         config(str(prod_manifest), test_model,
               use_dev=False, json_output=True)
@@ -769,7 +774,7 @@ class TestWarningStructure:
 
     def test_git_warning_has_required_fields(self, mocker):
         """Git warnings should have type, severity, message, detail, suggestion"""
-        mocker.patch('dbt_meta.commands.is_modified', return_value=True)
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=True)
 
         warnings = _check_manifest_git_mismatch("test_model", use_dev=False)
 
@@ -812,12 +817,12 @@ class TestWarningStructure:
         ]
 
         # Test git_mismatch
-        mocker.patch('dbt_meta.commands.is_modified', return_value=True)
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=True)
         warnings = _check_manifest_git_mismatch("test", use_dev=False)
         assert warnings[0]['type'] in valid_types
 
         # Test dev_without_changes
-        mocker.patch('dbt_meta.commands.is_modified', return_value=False)
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
         warnings = _check_manifest_git_mismatch("test", use_dev=True)
         assert warnings[0]['type'] in valid_types
 
@@ -833,7 +838,7 @@ class TestWarningEdgeCases:
     def test_very_long_model_name_in_warning(self, mocker):
         """Should handle very long model names gracefully"""
         long_name = "a" * 200
-        mocker.patch('dbt_meta.commands.is_modified', return_value=True)
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=True)
 
         warnings = _check_manifest_git_mismatch(long_name, use_dev=False)
 
@@ -843,7 +848,7 @@ class TestWarningEdgeCases:
     def test_special_characters_in_model_name_warning(self, mocker):
         """Should handle special characters in model names"""
         special_name = "model__with-dash_and.dot"
-        mocker.patch('dbt_meta.commands.is_modified', return_value=True)
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=True)
 
         warnings = _check_manifest_git_mismatch(special_name, use_dev=False)
 
@@ -852,7 +857,7 @@ class TestWarningEdgeCases:
 
     def test_multiple_warnings_different_types(self, mocker):
         """Should handle multiple warnings of different types"""
-        mocker.patch('dbt_meta.commands.is_modified', return_value=False)
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
 
         warnings = _check_manifest_git_mismatch(
             "test",
@@ -887,7 +892,7 @@ class TestWarningEdgeCases:
 
     def test_warning_with_none_dev_manifest(self, mocker):
         """Should handle None dev_manifest_found parameter"""
-        mocker.patch('dbt_meta.commands.is_modified', return_value=True)
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=True)
 
         # Should not raise AttributeError
         warnings = _check_manifest_git_mismatch(
