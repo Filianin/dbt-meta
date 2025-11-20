@@ -32,7 +32,6 @@ from dbt_meta.utils.bigquery import (
     fetch_table_metadata_from_bigquery as _fetch_table_metadata_from_bigquery,
     run_bq_command as _run_bq_command,
     fetch_columns_from_bigquery_direct as _fetch_columns_from_bigquery_direct,
-    fetch_columns_from_bigquery as _fetch_columns_from_bigquery,
 )
 
 # Command classes (v0.3.0+)
@@ -449,7 +448,8 @@ def docs(manifest_path: str, model_name: str, use_dev: bool = False, json_output
                         })
 
                     return result
-            except Exception:  # pragma: no cover
+            except (FileNotFoundError, OSError, IOError, KeyError):  # pragma: no cover
+                # Dev manifest not available or structure different - continue
                 pass
 
         # No BigQuery fallback for docs (descriptions are manifest-only)

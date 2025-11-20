@@ -128,7 +128,7 @@ class TestFallbackStrategy:
         assert exc_info.value.searched_locations == ['production manifest', 'BigQuery']
         assert 'dev manifest' not in exc_info.value.searched_locations
 
-    def test_fallback_dev_manifest_not_found(self, mock_config, mock_prod_parser, tmp_path):
+    def test_fallback_dev_manifest_not_found(self, enable_fallbacks, mock_config, mock_prod_parser, tmp_path):
         """Test fallback continues when dev manifest doesn't exist."""
         mock_prod_parser.get_model.return_value = None
 
@@ -179,7 +179,7 @@ class TestFallbackStrategy:
         # Should only search production
         assert exc_info.value.searched_locations == ['production manifest']
 
-    def test_allowed_levels_exclude_bigquery(self, mock_config, mock_prod_parser, tmp_path):
+    def test_allowed_levels_exclude_bigquery(self, enable_fallbacks, mock_config, mock_prod_parser, tmp_path):
         """Test excluding BigQuery level (e.g., for deps command)."""
         mock_prod_parser.get_model.return_value = None
 

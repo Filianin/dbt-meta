@@ -32,8 +32,8 @@ class TestCalculateDevSchema:
     """Test dev schema calculation."""
 
     def test_uses_dbt_dev_dataset_if_set(self, monkeypatch):
-        """Test that DBT_DEV_DATASET takes priority."""
-        monkeypatch.setenv('DBT_DEV_DATASET', 'custom_dev_schema')
+        """Test that DBT_DEV_SCHEMA takes priority."""
+        monkeypatch.setenv('DBT_DEV_SCHEMA', 'custom_dev_schema')
         monkeypatch.setenv('USER', 'alice')
 
         result = _calculate_dev_schema()
@@ -42,7 +42,7 @@ class TestCalculateDevSchema:
 
     def test_defaults_to_personal_username(self, monkeypatch):
         """Test default naming: personal_{username}."""
-        monkeypatch.delenv('DBT_DEV_DATASET', raising=False)
+        monkeypatch.delenv('DBT_DEV_SCHEMA', raising=False)
         monkeypatch.setenv('USER', 'alice')
 
         result = _calculate_dev_schema()
@@ -51,7 +51,7 @@ class TestCalculateDevSchema:
 
     def test_handles_missing_user_env(self, monkeypatch):
         """Test fallback when USER env not set."""
-        monkeypatch.delenv('DBT_DEV_DATASET', raising=False)
+        monkeypatch.delenv('DBT_DEV_SCHEMA', raising=False)
         monkeypatch.delenv('USER', raising=False)
 
         result = _calculate_dev_schema()
@@ -67,7 +67,7 @@ class TestConfigFromEnv:
         # Clear all relevant env vars
         for var in ['DBT_PROD_MANIFEST_PATH', 'DBT_DEV_MANIFEST_PATH',
                     'DBT_FALLBACK_TARGET', 'DBT_FALLBACK_BIGQUERY',
-                    'DBT_DEV_DATASET', 'DBT_PROD_TABLE_NAME', 'DBT_PROD_SCHEMA_SOURCE']:
+                    'DBT_DEV_SCHEMA', 'DBT_PROD_TABLE_NAME', 'DBT_PROD_SCHEMA_SOURCE']:
             monkeypatch.delenv(var, raising=False)
 
         monkeypatch.setenv('USER', 'alice')
@@ -92,7 +92,7 @@ class TestConfigFromEnv:
         monkeypatch.setenv('DBT_DEV_MANIFEST_PATH', str(dev_path))
         monkeypatch.setenv('DBT_FALLBACK_TARGET', 'false')
         monkeypatch.setenv('DBT_FALLBACK_BIGQUERY', '0')
-        monkeypatch.setenv('DBT_DEV_DATASET', 'my_dev_dataset')
+        monkeypatch.setenv('DBT_DEV_SCHEMA', 'my_dev_dataset')
         monkeypatch.setenv('DBT_PROD_TABLE_NAME', 'name')
         monkeypatch.setenv('DBT_PROD_SCHEMA_SOURCE', 'model')
 

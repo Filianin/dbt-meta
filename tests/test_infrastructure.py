@@ -447,6 +447,175 @@ class TestCheckManifestGitMismatch:
 
         assert warnings == []
 
+    def test_new_model_committed_in_feature_branch(self, tmp_path, mocker):
+        """Should detect NEW model when committed to feature branch (not in prod manifest).
+
+        Scenario: Model committed to feature branch but not merged to master.
+        - Git status: clean (no uncommitted changes)
+        - Prod manifest: model NOT present
+        - Dev manifest: model present
+
+        Expected: Should trigger 'new_model' error (regardless of git status)
+        """
+        import json
+        from dbt_meta.manifest.parser import ManifestParser
+
+        # Setup manifests
+        prod_manifest = tmp_path / ".dbt-state" / "manifest.json"
+        dev_manifest = tmp_path / "target" / "manifest.json"
+
+        prod_manifest.parent.mkdir(parents=True)
+        dev_manifest.parent.mkdir(parents=True)
+
+        # Production manifest: model NOT present
+        prod_manifest.write_text(json.dumps({
+            "metadata": {},
+            "nodes": {}
+        }))
+
+        # Dev manifest: model IS present
+        dev_manifest.write_text(json.dumps({
+            "metadata": {},
+            "nodes": {
+                "model.test_project.core_appsflyer__upload_log": {
+                    "name": "core_appsflyer__upload_log",
+                    "schema": "personal_testuser",
+                    "alias": "upload_log",
+                    "database": "test-project",
+                    "columns": {"col1": {"name": "col1", "data_type": "string"}},
+                    "config": {"materialized": "table"}
+                }
+            }
+        }))
+
+        # Mock git: clean (no uncommitted changes, model committed in feature branch)
+        # Since modified=False, no warning will be generated (defer fallback scenario)
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
+
+        prod_parser = ManifestParser(str(prod_manifest))
+        dev_parser = ManifestParser(str(dev_manifest))
+
+        warnings = _check_manifest_git_mismatch(
+            model_name='core_appsflyer__upload_log',
+            use_dev=False,
+            dev_manifest_found=str(dev_manifest),
+            prod_parser=prod_parser,
+            dev_parser=dev_parser
+        )
+
+        # When file is committed (modified=False), no warning
+        # This allows defer workflow fallback to proceed
+        assert len(warnings) == 0
+
+    def test_new_model_uncommitted_in_feature_branch(self, tmp_path, mocker):
+        """Should warn about NEW model candidate when modified and only in dev.
+
+        Scenario: Model being developed, uncommitted changes.
+        - Git status: modified (uncommitted changes)
+        - Prod manifest: model NOT present
+        - Dev manifest: model present
+
+        Expected: Should warn 'new_model_candidate' but allow fallback to proceed
+        """
+        import json
+        from dbt_meta.manifest.parser import ManifestParser
+
+        # Setup manifests
+        prod_manifest = tmp_path / ".dbt-state" / "manifest.json"
+        dev_manifest = tmp_path / "target" / "manifest.json"
+
+        prod_manifest.parent.mkdir(parents=True)
+        dev_manifest.parent.mkdir(parents=True)
+
+        prod_manifest.write_text(json.dumps({"metadata": {}, "nodes": {}}))
+        dev_manifest.write_text(json.dumps({
+            "metadata": {},
+            "nodes": {
+                "model.test_project.core_appsflyer__upload_log": {
+                    "name": "core_appsflyer__upload_log",
+                    "schema": "personal_testuser",
+                    "alias": "upload_log",
+                    "database": "test-project",
+                    "columns": {"col1": {"name": "col1", "data_type": "string"}},
+                    "config": {"materialized": "table"}
+                }
+            }
+        }))
+
+        # Mock git: modified (uncommitted changes)
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=True)
+
+        prod_parser = ManifestParser(str(prod_manifest))
+        dev_parser = ManifestParser(str(dev_manifest))
+
+        warnings = _check_manifest_git_mismatch(
+            model_name='core_appsflyer__upload_log',
+            use_dev=False,
+            dev_manifest_found=str(dev_manifest),
+            prod_parser=prod_parser,
+            dev_parser=dev_parser
+        )
+
+        # Should warn but not block fallback
+        # Two warnings: new_model_candidate + git_mismatch (both suggest --dev)
+        assert len(warnings) == 2
+
+        # First warning: new_model_candidate
+        assert warnings[0]['type'] == 'new_model_candidate'
+        assert warnings[0]['severity'] == 'warning'
+        assert 'exists in dev manifest but NOT in production' in warnings[0]['message']
+
+        # Second warning: git_mismatch (model is modified)
+        assert warnings[1]['type'] == 'git_mismatch'
+        assert warnings[1]['severity'] == 'warning'
+        assert 'IS modified in git' in warnings[1]['message']
+
+    def test_file_exists_but_not_compiled_into_manifest(self, tmp_path, mocker):
+        """Should detect file that exists but NOT compiled into manifest.
+
+        Scenario: User created model file, but dbt compile failed (SQL error, missing deps, etc.)
+        - Git status: modified (file exists in git)
+        - Prod manifest: model NOT present
+        - Dev manifest: model NOT present (compilation failed!)
+
+        Expected: Should trigger 'file_not_compiled' error with helpful suggestion
+        """
+        import json
+        from dbt_meta.manifest.parser import ManifestParser
+
+        # Setup manifests (model in neither)
+        prod_manifest = tmp_path / ".dbt-state" / "manifest.json"
+        dev_manifest = tmp_path / "target" / "manifest.json"
+
+        prod_manifest.parent.mkdir(parents=True)
+        dev_manifest.parent.mkdir(parents=True)
+
+        prod_manifest.write_text(json.dumps({"metadata": {}, "nodes": {}}))
+        dev_manifest.write_text(json.dumps({"metadata": {}, "nodes": {}}))
+
+        # Mock git: file modified/new (detected in git)
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=True)
+
+        prod_parser = ManifestParser(str(prod_manifest))
+        dev_parser = ManifestParser(str(dev_manifest))
+
+        warnings = _check_manifest_git_mismatch(
+            model_name='stg_appsflyer__in_app_events_postbacks',
+            use_dev=False,
+            dev_manifest_found=str(dev_manifest),
+            prod_parser=prod_parser,
+            dev_parser=dev_parser
+        )
+
+        # Should detect file_not_compiled error
+        assert len(warnings) == 1
+        assert warnings[0]['type'] == 'file_not_compiled'
+        assert warnings[0]['severity'] == 'error'
+        assert 'file detected' in warnings[0]['message'].lower()
+        assert 'NOT in manifest' in warnings[0]['message']
+        assert 'dbt compile' in warnings[0]['suggestion']
+        assert 'SQL syntax error' in warnings[0]['suggestion']  # Mentions possible causes
+
 
 # ============================================================================
 # SECTION 2: Warning Output Format Tests (JSON vs Text)

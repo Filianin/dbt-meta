@@ -20,7 +20,7 @@ from dbt_meta.utils.dev import (
     find_dev_manifest as _find_dev_manifest,
     calculate_dev_schema as _calculate_dev_schema,
 )
-from dbt_meta.errors import ModelNotFoundError
+from dbt_meta.errors import ModelNotFoundError, ManifestNotFoundError, ManifestParseError
 
 
 class BaseCommand(ABC):
@@ -118,10 +118,33 @@ class BaseCommand(ABC):
             - Collects warnings in self.warnings
             - Emits warnings via emit_warnings()
         """
-        # Check git status and collect warnings
-        dev_manifest = _find_dev_manifest(self.manifest_path) if self.use_dev else None
-        git_warnings = _check_manifest_git_mismatch(self.model_name, self.use_dev, dev_manifest)
+        # Get parsers for both prod and dev (for new model detection)
+        prod_parser = _get_cached_parser(self.manifest_path)
+        dev_parser = None
+        dev_manifest = _find_dev_manifest(self.manifest_path)
+        if dev_manifest:
+            try:
+                dev_parser = _get_cached_parser(dev_manifest)
+            except (ManifestNotFoundError, ManifestParseError):  # pragma: no cover
+                # Dev manifest not available or invalid - this is acceptable
+                pass
+
+        # Check git status and collect warnings (with parsers for new model detection)
+        git_warnings = _check_manifest_git_mismatch(
+            self.model_name,
+            self.use_dev,
+            dev_manifest,
+            prod_parser=prod_parser,
+            dev_parser=dev_parser
+        )
         _print_warnings(git_warnings, self.json_output)
+
+        # CRITICAL: If critical errors detected, fail early
+        # - file_not_compiled: File exists but compilation failed
+        # - model_not_in_dev: Using --dev but model not built in dev
+        # Note: We don't block on "new_model_candidate" to allow defer workflow fallback
+        if any(w.get('type') in ('file_not_compiled', 'model_not_in_dev') for w in git_warnings):
+            return None
 
         # Dev mode: prioritize dev manifest first
         if self.use_dev and self.SUPPORTS_DEV:
@@ -143,8 +166,16 @@ class BaseCommand(ABC):
                 parser = _get_cached_parser(dev_manifest)
                 model = parser.get_model(self.model_name)
                 if model:
+                    # CRITICAL: Override schema to dev schema when using --dev
+                    # Dev manifest may contain production schema (from dbt compile)
+                    # but at runtime we want to use dev schema for BigQuery queries
+                    from dbt_meta.utils.dev import calculate_dev_schema
+                    dev_schema = calculate_dev_schema()
+                    model = model.copy()  # Don't modify cached model
+                    model['schema'] = dev_schema  # Override with dev schema
                     return model
-            except Exception:  # pragma: no cover
+            except (ManifestNotFoundError, ManifestParseError):  # pragma: no cover
+                # Dev manifest not available or invalid - continue to BigQuery fallback
                 pass
 
         # Fallback to BigQuery for dev (if supported and enabled)

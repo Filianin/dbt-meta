@@ -8,7 +8,35 @@ import sys
 import re
 import subprocess
 import json as json_lib
+import time
 from typing import Optional, List, Dict, Tuple
+
+
+def _should_retry(attempt: int, max_retries: int, error_msg: str) -> bool:
+    """Handle retry logic with exponential backoff.
+
+    Args:
+        attempt: Current attempt number (0-indexed)
+        max_retries: Maximum number of retry attempts
+        error_msg: Debug message to print during retry
+
+    Returns:
+        True if should retry (sleep executed), False if final attempt
+
+    Example:
+        >>> if not _should_retry(0, 3, "Query failed"):
+        ...     return None  # Was final attempt
+        >>> # else: continue to next attempt
+    """
+    if attempt < max_retries - 1:
+        # Retry with exponential backoff (2^0=1s, 2^1=2s, 2^2=4s)
+        wait_time = 2 ** attempt
+        if os.environ.get('DBT_META_DEBUG'):
+            print(f"⚠️  {error_msg}, retrying in {wait_time}s...", file=sys.stderr)
+        time.sleep(wait_time)
+        return True
+    # Final attempt - no retry
+    return False
 
 
 def sanitize_bigquery_name(name: str, name_type: str = "dataset") -> Tuple[str, List[str]]:
@@ -196,126 +224,91 @@ def run_bq_command(args: List[str], timeout: int = 10) -> subprocess.CompletedPr
 def fetch_columns_from_bigquery_direct(
     dataset: str,
     table: str,
-    database: Optional[str] = None
+    database: Optional[str] = None,
+    max_retries: int = 3
 ) -> Optional[List[Dict[str, str]]]:
     """
-    Fetch columns directly from BigQuery without requiring model in manifest.
+    Fetch columns directly from BigQuery with retry logic and performance tracking.
+
+    Performance: ~2.5s per query (acceptable for accuracy).
+
+    Retry strategy:
+    - Attempt 1: immediate
+    - Attempt 2: wait 2s
+    - Attempt 3: wait 4s
 
     Args:
         dataset: BigQuery dataset name (schema)
         table: BigQuery table name
         database: Optional project ID (if None, uses default project)
+        max_retries: Maximum number of retry attempts (default: 3)
 
     Returns:
         List of {name, data_type} dictionaries
-        None if BigQuery fetch fails
+        None if BigQuery fetch fails after all retries
+
+    Environment Variables:
+        DBT_META_DEBUG: If set, prints performance timing to stderr
     """
+    start_time = time.time()
+
     # Construct full table name
     if database:  # pragma: no cover
         full_table = f"{database}:{dataset}.{table}"
     else:
         full_table = f"{dataset}.{table}"
 
-    # Check if bq command is available
+    # Check if bq command is available (only once, no retry)
     try:
         run_bq_command(['version'], timeout=5)
     except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):  # pragma: no cover
         print(f"Error: bq command not found. Install Google Cloud SDK.", file=sys.stderr)
         return None
 
-    # Fetch schema from BigQuery
-    try:
-        result = run_bq_command(
-            ['show', '--schema', '--format=prettyjson', full_table],
-            timeout=10
-        )
+    # Fetch schema from BigQuery with retry
+    for attempt in range(max_retries):
+        try:
+            result = run_bq_command(
+                ['show', '--schema', '--format=prettyjson', full_table],
+                timeout=10
+            )
 
-        # Parse JSON output
-        bq_schema = json_lib.loads(result.stdout)
+            # Parse JSON output
+            bq_schema = json_lib.loads(result.stdout)
 
-        # Convert to our format
-        columns = [
-            {
-                'name': col['name'],
-                'data_type': col['type'].lower()
-            }
-            for col in bq_schema
-        ]
+            # Convert to our format
+            columns = [
+                {
+                    'name': col['name'],
+                    'data_type': col['type'].lower()
+                }
+                for col in bq_schema
+            ]
 
-        return columns
+            # Performance tracking (optional)
+            elapsed = time.time() - start_time
+            if os.environ.get('DBT_META_DEBUG'):
+                print(f"🔍 BigQuery query took {elapsed:.2f}s", file=sys.stderr)
 
-    except subprocess.CalledProcessError:  # pragma: no cover
-        print(f"Error: Failed to fetch columns from BigQuery for table: {full_table}", file=sys.stderr)
-        return None
-    except (json_lib.JSONDecodeError, subprocess.TimeoutExpired):  # pragma: no cover
-        print(f"Error: Invalid response from BigQuery", file=sys.stderr)
-        return None
+            return columns
 
+        except subprocess.CalledProcessError as e:  # pragma: no cover
+            if _should_retry(attempt, max_retries, "BigQuery query failed"):
+                continue
+            # Final attempt failed
+            print(f"Error: Failed to fetch columns from BigQuery for table: {full_table}", file=sys.stderr)
+            return None
 
-def fetch_columns_from_bigquery(manifest_path: str, model_name: str) -> Optional[List[Dict[str, str]]]:
-    """
-    Fallback: fetch columns from BigQuery when not in manifest
+        except subprocess.TimeoutExpired:  # pragma: no cover
+            if _should_retry(attempt, max_retries, "BigQuery timeout"):
+                continue
+            # Final attempt timed out
+            print(f"Error: BigQuery request timed out after {max_retries} attempts", file=sys.stderr)
+            return None
 
-    Args:
-        manifest_path: Path to manifest.json
-        model_name: Model name
+        except json_lib.JSONDecodeError:  # pragma: no cover
+            # JSON parse error - no point retrying
+            print(f"Error: Invalid JSON response from BigQuery", file=sys.stderr)
+            return None
 
-    Returns:
-        List of {name, data_type} dictionaries
-        None if BigQuery fetch fails
-
-    Note: Prints warning to stderr about fallback
-    """
-    from dbt_meta.utils import get_cached_parser
-
-    parser = get_cached_parser(manifest_path)
-    model = parser.get_model(model_name)
-
-    if not model:
-        return None
-
-    # Get full table name (database:schema.table format for bq)
-    database = model.get('database', '')
-    schema_name = model.get('schema', '')
-    config = model.get('config', {})
-    table_name = config.get('alias', model.get('name', ''))
-
-    full_table = f"{database}:{schema_name}.{table_name}"
-
-    # Print warning to stderr (like bash version)
-    print(f"⚠️  No columns documented in manifest, fetching from BigQuery...", file=sys.stderr)
-
-    # Check if bq command is available
-    try:
-        run_bq_command(['version'], timeout=5)
-    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):  # pragma: no cover
-        print(f"Error: bq command not found. Install Google Cloud SDK.", file=sys.stderr)
-        return None
-
-    # Fetch schema from BigQuery
-    try:
-        result = run_bq_command(
-            ['show', '--schema', '--format=prettyjson', full_table],
-            timeout=10
-        )
-
-        # Parse JSON output
-        bq_schema = json_lib.loads(result.stdout)
-
-        # Convert to our format
-        columns = [
-            {
-                'name': col['name'],
-                'data_type': col['type'].lower()
-            }
-            for col in bq_schema
-        ]
-
-        return columns
-
-    except subprocess.CalledProcessError:  # pragma: no cover
-        print(f"Error: Failed to fetch columns from BigQuery for table: {full_table}", file=sys.stderr)
-        return None
-    except (json_lib.JSONDecodeError, subprocess.TimeoutExpired):  # pragma: no cover
-        print(f"Error: Invalid response from BigQuery", file=sys.stderr)
-        return None
+    return None

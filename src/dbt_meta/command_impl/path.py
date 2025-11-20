@@ -5,6 +5,7 @@ import os
 
 from dbt_meta.command_impl.base import BaseCommand
 from dbt_meta.fallback import FallbackLevel
+from dbt_meta.errors import ManifestNotFoundError, ManifestParseError
 
 
 class PathCommand(BaseCommand):
@@ -84,7 +85,8 @@ class PathCommand(BaseCommand):
 
         try:
             parser_dev = _get_cached_parser(dev_manifest)
-        except Exception:
+        except (ManifestNotFoundError, ManifestParseError):
+            # Dev manifest not available or invalid - cannot search
             return None
 
         # Parse BigQuery format: schema.table
@@ -140,7 +142,8 @@ class PathCommand(BaseCommand):
 
         try:
             parser = _get_cached_parser(self.manifest_path)
-        except Exception:
+        except (ManifestNotFoundError, ManifestParseError):
+            # Manifest not available or invalid - cannot search
             return None
 
         # Parse BigQuery format: schema.table or project.schema.table

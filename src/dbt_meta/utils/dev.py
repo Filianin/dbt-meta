@@ -48,7 +48,8 @@ def find_dev_manifest(prod_manifest_path: str) -> Optional[str]:
 
         return None
 
-    except Exception:  # pragma: no cover
+    except (OSError, IOError, PermissionError):  # pragma: no cover
+        # Filesystem access issues - return None to indicate dev manifest not available
         return None
 
 
@@ -57,9 +58,9 @@ def calculate_dev_schema() -> str:
     Calculate dev schema/dataset name for development tables.
 
     Environment variables (simplified priority):
-    1. DBT_DEV_DATASET - Full dataset name (REQUIRED, e.g., "personal_alice")
+    1. DBT_DEV_SCHEMA - Full dataset name (REQUIRED, e.g., "personal_alice")
     2. Legacy fallback for backward compatibility:
-       - DBT_DEV_SCHEMA (alias for DBT_DEV_DATASET)
+       - DBT_DEV_DATASET (deprecated alias for DBT_DEV_SCHEMA)
        - DBT_DEV_SCHEMA_TEMPLATE with {username} placeholder
        - DBT_DEV_SCHEMA_PREFIX + username
 
@@ -70,26 +71,26 @@ def calculate_dev_schema() -> str:
         ValueError: If no dev dataset is configured
 
     Example:
-        export DBT_DEV_DATASET="personal_alice"
+        export DBT_DEV_SCHEMA="personal_alice"
         meta schema --dev model_name  # → personal_alice.table_name
     """
     # Get username for templates
     username = os.environ.get('DBT_USER') or os.environ.get('USER') or getpass.getuser()
     username = username.replace('.', '_')
 
-    # Primary: DBT_DEV_DATASET (recommended)
-    dev_dataset = os.environ.get('DBT_DEV_DATASET')
-
-    if dev_dataset:
-        # Validate and return
-        return validate_dev_dataset(dev_dataset)
-
-    # Legacy support: DBT_DEV_SCHEMA (deprecated, use DBT_DEV_DATASET)
+    # Primary: DBT_DEV_SCHEMA (recommended)
     dev_schema = os.environ.get('DBT_DEV_SCHEMA')
 
     if dev_schema:
-        print("⚠️  DBT_DEV_SCHEMA is deprecated, use DBT_DEV_DATASET instead", file=sys.stderr)
+        # Validate and return
         return validate_dev_dataset(dev_schema)
+
+    # Legacy support: DBT_DEV_DATASET (deprecated, use DBT_DEV_SCHEMA)
+    dev_dataset = os.environ.get('DBT_DEV_DATASET')
+
+    if dev_dataset:
+        print("⚠️  DBT_DEV_DATASET is deprecated, use DBT_DEV_SCHEMA instead", file=sys.stderr)
+        return validate_dev_dataset(dev_dataset)
 
     # Legacy template/prefix support (for backward compatibility)
     has_template = 'DBT_DEV_SCHEMA_TEMPLATE' in os.environ
@@ -97,7 +98,7 @@ def calculate_dev_schema() -> str:
 
     if has_template:
         template = os.environ.get('DBT_DEV_SCHEMA_TEMPLATE', '')
-        print("⚠️  DBT_DEV_SCHEMA_TEMPLATE is deprecated, use DBT_DEV_DATASET instead", file=sys.stderr)
+        print("⚠️  DBT_DEV_SCHEMA_TEMPLATE is deprecated, use DBT_DEV_SCHEMA instead", file=sys.stderr)
         if template:
             result = template.format(username=username)
             return validate_dev_dataset(result)
@@ -106,7 +107,7 @@ def calculate_dev_schema() -> str:
 
     if has_prefix:
         prefix = os.environ.get('DBT_DEV_SCHEMA_PREFIX', '')
-        print("⚠️  DBT_DEV_SCHEMA_PREFIX is deprecated, use DBT_DEV_DATASET instead", file=sys.stderr)
+        print("⚠️  DBT_DEV_SCHEMA_PREFIX is deprecated, use DBT_DEV_SCHEMA instead", file=sys.stderr)
         result = f"{prefix}_{username}" if prefix else username
         return validate_dev_dataset(result)
 
@@ -145,15 +146,15 @@ def build_dev_table_name(model: dict, model_name: str) -> str:
         DBT_DEV_TABLE_PATTERN - Table naming pattern (default: "name")
 
     Predefined patterns:
-        - "name" (default): Use model filename
-        - "alias": Use alias (fallback to name)
+        - "name" (default): Use full SQL filename with __ (e.g., "stg_appsflyer__in_app_events_postbacks")
+        - "alias": Use alias from config (fallback to full filename)
 
     Custom patterns with placeholders:
-        - {name}: Model filename (e.g., "client_events")
-        - {alias}: Model alias from config (fallback to name)
+        - {name}: Full SQL filename with __ (e.g., "stg_appsflyer__in_app_events_postbacks")
+        - {alias}: Model alias from config (fallback to full filename)
         - {username}: Current user (DBT_USER or $USER)
-        - {model_name}: Full model name with __ (e.g., "core_client__events")
-        - {folder}: Model folder (e.g., "core_client")
+        - {model_name}: Same as {name} - full model name (e.g., "core_client__events")
+        - {folder}: Model folder prefix (e.g., "core_client" from "core_client__events")
         - {date}: Current date YYYYMMDD (e.g., "20250205")
 
     Args:
@@ -164,25 +165,25 @@ def build_dev_table_name(model: dict, model_name: str) -> str:
         Table name for dev environment
 
     Examples:
-        # Simple patterns
-        DBT_DEV_TABLE_PATTERN="name"
-        → "client_events"  (filename, default)
+        # Simple patterns (for model "stg_appsflyer__in_app_events_postbacks")
+        DBT_DEV_TABLE_PATTERN="name"  (default)
+        → "stg_appsflyer__in_app_events_postbacks"  (full SQL filename)
 
         DBT_DEV_TABLE_PATTERN="alias"
-        → "events"  (from config.alias, or filename if no alias)
+        → "in_app_events_postbacks"  (from config.alias, or full filename if no alias)
 
         # Custom patterns with placeholders
         DBT_DEV_TABLE_PATTERN="{username}_{name}"
-        → "pavel_client_events"
+        → "pavel_filianin_stg_appsflyer__in_app_events_postbacks"
 
         DBT_DEV_TABLE_PATTERN="tmp_{name}"
-        → "tmp_client_events"  (temporary dev table)
+        → "tmp_stg_appsflyer__in_app_events_postbacks"  (temporary dev table)
 
-        DBT_DEV_TABLE_PATTERN="{folder}_{name}"
-        → "core_client_client_events"  (avoid name collisions)
+        DBT_DEV_TABLE_PATTERN="{folder}_{date}"
+        → "stg_appsflyer_20250119"  (folder + date, no full name)
 
         DBT_DEV_TABLE_PATTERN="{name}_{date}"
-        → "client_events_20250205"  (date-stamped)
+        → "stg_appsflyer__in_app_events_postbacks_20250119"  (date-stamped)
 
     Use cases:
         - Standard dev: "name" (default)
@@ -194,7 +195,9 @@ def build_dev_table_name(model: dict, model_name: str) -> str:
     pattern = os.environ.get('DBT_DEV_TABLE_PATTERN', 'name')
 
     # Extract values
-    name = model.get('name', model_name)
+    # CRITICAL: Use full model_name (SQL filename) as default, NOT model.name from manifest
+    # This matches dbt --target dev behavior where tables use full filename
+    name = model_name  # Full SQL filename (e.g., "stg_appsflyer__in_app_events_postbacks")
     alias = model.get('config', {}).get('alias', '')
     username = os.environ.get('DBT_USER') or os.environ.get('USER') or getpass.getuser()
     username = username.replace('.', '_')

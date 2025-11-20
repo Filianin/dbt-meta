@@ -25,14 +25,14 @@ def _calculate_dev_schema() -> str:
     """Calculate dev schema name using environment variables.
 
     Priority (simplified from 4-level to 2-level):
-    1. DBT_DEV_DATASET - Direct schema name (highest priority)
+    1. DBT_DEV_SCHEMA - Direct schema name (highest priority)
     2. Default: personal_{username}
 
     Returns:
         Dev schema name (e.g., 'personal_alice')
     """
     # Priority 1: Direct schema name
-    if dev_dataset := os.getenv('DBT_DEV_DATASET'):
+    if dev_dataset := os.getenv('DBT_DEV_SCHEMA'):
         return dev_dataset
 
     # Priority 2: Default with username
@@ -84,7 +84,7 @@ class Config:
             DBT_DEV_MANIFEST_PATH: Dev manifest path
             DBT_FALLBACK_TARGET: Enable dev manifest fallback (default: true)
             DBT_FALLBACK_BIGQUERY: Enable BigQuery fallback (default: true)
-            DBT_DEV_DATASET: Dev schema name
+            DBT_DEV_SCHEMA: Dev schema name
             DBT_PROD_TABLE_NAME: Table naming strategy
             DBT_PROD_SCHEMA_SOURCE: Schema source
         """

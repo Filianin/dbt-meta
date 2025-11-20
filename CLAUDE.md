@@ -90,16 +90,18 @@ if not model:
 **Supported:** `schema`, `columns`, `info`, `config`
 **Not supported:** `deps`, `sql`, `parents`, `children` (dbt-specific)
 
-#### 4. Dev Schema Resolution (4-level priority)
+#### 4. Dev Schema Resolution (2-level priority)
+
+**Simplified from 4-level to 2-level in v0.3.0:**
 
 ```python
-1. DBT_DEV_SCHEMA - Full override
-2. DBT_DEV_SCHEMA_TEMPLATE - Template with {username} placeholder
-3. DBT_DEV_SCHEMA_PREFIX - Simple prefix (default: "personal")
-4. Default: "personal_{username}"
+1. DBT_DEV_SCHEMA - Direct schema name (highest priority)
+2. Default: "personal_{username}"
 ```
 
-Location: `commands.py:979-998`
+**Backward compatibility:** Old variables (`DBT_DEV_DATASET`, `DBT_DEV_SCHEMA_TEMPLATE`, `DBT_DEV_SCHEMA_PREFIX`) show deprecation warning.
+
+Location: `config.py:28-35`, `utils/dev.py:81-93`
 
 #### 5. Exception Hierarchy
 
@@ -182,7 +184,7 @@ for warning in warnings:
 **Dev schema resolution** (simplified to 2-level):
 ```python
 # Priority 1: Direct schema name
-DBT_DEV_DATASET = "my_custom_dev_schema"
+DBT_DEV_SCHEMA = "my_custom_dev_schema"
 
 # Priority 2: Default with username (fallback)
 # personal_{username} (from USER env var)
@@ -346,13 +348,13 @@ Add to `_build_commands_panel()` if needed.
 **Naming:**
 - `DBT_PROD_TABLE_NAME` - `alias_or_name` (default), `name`, `alias`
 - `DBT_PROD_SCHEMA_SOURCE` - `config_or_model` (default), `model`, `config`
-- `DBT_DEV_DATASET` - Direct dev schema name (overrides default `personal_{username}`)
+- `DBT_DEV_SCHEMA` - Direct dev schema name (overrides default `personal_{username}`)
 - `DBT_USER` - Override username for dev schema (default: `$USER`)
 
 **Deprecated (v0.3.0+):**
-- `DBT_DEV_SCHEMA` - Use `DBT_DEV_DATASET` instead
-- `DBT_DEV_SCHEMA_TEMPLATE` - Use `DBT_DEV_DATASET` instead
-- `DBT_DEV_SCHEMA_PREFIX` - Use `DBT_DEV_DATASET` instead
+- `DBT_DEV_DATASET` - Use `DBT_DEV_SCHEMA` instead (backward compatible with warning)
+- `DBT_DEV_SCHEMA_TEMPLATE` - Use `DBT_DEV_SCHEMA` instead (no longer supported)
+- `DBT_DEV_SCHEMA_PREFIX` - Use `DBT_DEV_SCHEMA` instead (no longer supported)
 
 ## Type Checking
 
@@ -369,6 +371,25 @@ def search(manifest_path: str, query: str) -> List[Dict[str, str]]:
     """Always returns list (empty if no results)"""
     ...
 ```
+
+## Data Source Decision Logic
+
+For understanding how dbt-meta determines which data source to use (prod/dev manifest, BigQuery fallback):
+
+**Reference documentation:**
+- `.qa/decision_tree_visual.txt` - Visual decision tree with 5 critical scenarios
+- `.qa/data_source_logic.md` - Detailed logic specification
+
+**Key principle:**
+When BigQuery fallback is needed (empty columns), ALWAYS use schema from the FOUND model:
+- Model found in dev manifest → use dev schema (`personal_user`)
+- Model found in prod manifest → use prod schema
+- Never re-search production manifest after model is found
+
+**Implementation:**
+- `command_impl/base.py:107-151` - Main fallback orchestration
+- `command_impl/columns.py:71-87` - BigQuery fallback with correct schema
+- `utils/git.py:77-169` - Git status detection and warnings
 
 ## Publishing Checklist
 

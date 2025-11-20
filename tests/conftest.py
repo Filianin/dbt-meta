@@ -5,6 +5,33 @@ import pytest
 import json
 from pathlib import Path
 
+# Disable fallbacks by default in tests
+@pytest.fixture(autouse=True)
+def _setup_test_env(request, monkeypatch):
+    """
+    Setup test environment - disable fallbacks by default unless enable_fallbacks fixture is used.
+
+    This prevents tests from trying to access ./target/manifest.json
+    (which doesn't exist in test environment) when testing nonexistent models.
+    """
+    # Check if test requests enable_fallbacks fixture
+    if 'enable_fallbacks' not in request.fixturenames:
+        monkeypatch.setenv('DBT_FALLBACK_TARGET', 'false')
+        monkeypatch.setenv('DBT_FALLBACK_BIGQUERY', 'false')
+
+@pytest.fixture
+def enable_fallbacks(monkeypatch):
+    """
+    Enable fallbacks for tests that specifically need them.
+
+    Usage:
+        def test_with_fallbacks(enable_fallbacks):
+            # Fallbacks are enabled in this test
+            ...
+    """
+    monkeypatch.setenv('DBT_FALLBACK_TARGET', 'true')
+    monkeypatch.setenv('DBT_FALLBACK_BIGQUERY', 'true')
+
 # Manifest fixtures
 @pytest.fixture
 def prod_manifest():

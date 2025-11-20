@@ -5,6 +5,7 @@ import sys
 
 from dbt_meta.command_impl.base import BaseCommand
 from dbt_meta.fallback import FallbackLevel
+from dbt_meta.errors import ModelNotFoundError
 from dbt_meta.utils.dev import (
     calculate_dev_schema as _calculate_dev_schema,
     build_dev_schema_result as _build_dev_schema_result,
@@ -112,8 +113,8 @@ class SchemaCommand(BaseCommand):
 
             return result.data
 
-        except Exception:
-            from dbt_meta.errors import ModelNotFoundError
+        except ModelNotFoundError:
+            # Model not found in any fallback level - expected error
             return None
 
     def process_model(self, model: dict, level: Optional[FallbackLevel] = None) -> Dict[str, str]:

@@ -6,13 +6,14 @@ Implements 3-level fallback system:
 3. BigQuery (if enabled)
 """
 
+import subprocess
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
 from dbt_meta.manifest.parser import ManifestParser
-from dbt_meta.errors import ModelNotFoundError
+from dbt_meta.errors import ModelNotFoundError, ManifestNotFoundError, ManifestParseError
 
 
 class FallbackLevel(Enum):
@@ -133,9 +134,15 @@ class FallbackStrategy:
                         level=FallbackLevel.DEV_MANIFEST,
                         warnings=result.warnings
                     )
-            except Exception as e:
+            except (FileNotFoundError, OSError, IOError, KeyError, ValueError, ManifestNotFoundError, ManifestParseError) as e:
                 # Dev manifest not available, continue to next level
-                result.warnings.append(f"Dev manifest not available: {str(e)}")
+                # FileNotFoundError: manifest file doesn't exist
+                # OSError/IOError: file system issues
+                # KeyError: manifest structure issues
+                # ValueError: JSON parsing issues
+                # ManifestNotFoundError: manifest not found (from _get_dev_parser)
+                # ManifestParseError: invalid JSON in dev manifest
+                result.warnings.append(f"Dev manifest not available: {e.__class__.__name__}")
 
         # Level 3: BigQuery
         if FallbackLevel.BIGQUERY in allowed_levels and self.config.fallback_bigquery_enabled:
@@ -151,8 +158,13 @@ class FallbackStrategy:
                         level=FallbackLevel.BIGQUERY,
                         warnings=result.warnings
                     )
-            except Exception as e:
-                result.warnings.append(f"BigQuery fallback failed: {str(e)}")
+            except (ImportError, subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError) as e:
+                # BigQuery fallback failed
+                # ImportError: BigQuery utils not available
+                # CalledProcessError: bq command failed
+                # TimeoutExpired: bq command timed out
+                # ValueError: parsing issues
+                result.warnings.append(f"BigQuery fallback failed: {e.__class__.__name__}")
 
         # Not found in any level
         raise ModelNotFoundError(
@@ -201,17 +213,20 @@ class FallbackStrategy:
             - Schema, table, columns (available)
             - Lineage, SQL, dependencies (NOT available)
         """
-        # Import BigQuery functions from commands module
+        # Import BigQuery functions from utils module
         try:
-            from dbt_meta.commands import _fetch_table_metadata_from_bigquery, _infer_table_parts
+            from dbt_meta.utils.bigquery import (
+                infer_table_parts,
+                fetch_table_metadata_from_bigquery
+            )
         except ImportError:
             return None
 
         # Infer dataset and table from model name
-        dataset, table = _infer_table_parts(model_name)
+        dataset, table = infer_table_parts(model_name)
 
         # Fetch metadata from BigQuery
-        metadata = _fetch_table_metadata_from_bigquery(dataset, table)
+        metadata = fetch_table_metadata_from_bigquery(dataset, table)
 
         if not metadata:
             return None

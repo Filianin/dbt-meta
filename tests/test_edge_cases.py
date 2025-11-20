@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 from dbt_meta.config import Config, _parse_bool, _calculate_dev_schema
 from dbt_meta.fallback import FallbackStrategy, FallbackLevel
-from dbt_meta.errors import ModelNotFoundError, ConfigurationError
+from dbt_meta.errors import ModelNotFoundError, ConfigurationError, ManifestParseError
 
 
 class TestConfigEdgeCases:
@@ -14,7 +14,7 @@ class TestConfigEdgeCases:
     def test_empty_env_var_values(self, monkeypatch):
         """Test that empty env vars are handled correctly."""
         monkeypatch.setenv('DBT_PROD_MANIFEST_PATH', '')
-        monkeypatch.setenv('DBT_DEV_DATASET', '')
+        monkeypatch.setenv('DBT_DEV_SCHEMA', '')
         monkeypatch.setenv('USER', 'testuser')
 
         config = Config.from_env()
@@ -26,7 +26,7 @@ class TestConfigEdgeCases:
 
     def test_whitespace_only_env_vars(self, monkeypatch):
         """Test whitespace-only env vars."""
-        monkeypatch.setenv('DBT_DEV_DATASET', '   ')
+        monkeypatch.setenv('DBT_DEV_SCHEMA', '   ')
         monkeypatch.setenv('USER', 'alice')
 
         config = Config.from_env()
@@ -86,7 +86,7 @@ class TestConfigEdgeCases:
 
     def test_calculate_dev_schema_empty_username(self, monkeypatch):
         """Test dev schema calculation with empty username."""
-        monkeypatch.delenv('DBT_DEV_DATASET', raising=False)
+        monkeypatch.delenv('DBT_DEV_SCHEMA', raising=False)
         monkeypatch.setenv('USER', '')
 
         schema = _calculate_dev_schema()
@@ -94,7 +94,7 @@ class TestConfigEdgeCases:
 
     def test_calculate_dev_schema_special_chars(self, monkeypatch):
         """Test dev schema with special characters in username."""
-        monkeypatch.delenv('DBT_DEV_DATASET', raising=False)
+        monkeypatch.delenv('DBT_DEV_SCHEMA', raising=False)
         monkeypatch.setenv('USER', 'user@example.com')
 
         schema = _calculate_dev_schema()
@@ -247,8 +247,8 @@ class TestFallbackEdgeCases:
         """Test BigQuery fetch with invalid metadata structure."""
         strategy = FallbackStrategy(mock_config)
 
-        with patch('dbt_meta.commands._fetch_table_metadata_from_bigquery') as mock_bq:
-            with patch('dbt_meta.commands._infer_table_parts') as mock_infer:
+        with patch('dbt_meta.utils.bigquery.fetch_table_metadata_from_bigquery') as mock_bq:
+            with patch('dbt_meta.utils.bigquery.infer_table_parts') as mock_infer:
                 mock_infer.return_value = ('dataset', 'table')
                 # Return metadata without expected fields
                 mock_bq.return_value = {'unexpected': 'structure'}
@@ -260,8 +260,8 @@ class TestFallbackEdgeCases:
                 assert result['database'] == ''  # Missing projectId
                 assert result['config']['materialized'] == 'view'  # Default when type missing
 
-    def test_fallback_dev_parser_with_corrupted_manifest(self, mock_config, tmp_path):
-        """Test dev parser when manifest is corrupted."""
+    def test_fallback_dev_parser_with_corrupted_manifest(self, enable_fallbacks, mock_config, tmp_path):
+        """Test dev parser when manifest is corrupted - should continue to next fallback level."""
         # Corrupt dev manifest
         dev_manifest = Path(mock_config.dev_manifest_path)
         dev_manifest.write_text('{ invalid json }')
@@ -273,9 +273,15 @@ class TestFallbackEdgeCases:
 
         strategy = FallbackStrategy(mock_config)
 
-        # Should handle corrupted manifest gracefully
-        with pytest.raises(ModelNotFoundError):
+        # Should handle corrupted manifest gracefully by continuing to BigQuery
+        # Eventually raises ModelNotFoundError after all levels exhausted
+        with pytest.raises(ModelNotFoundError) as exc_info:
             strategy.get_model('test_model', parser)
+
+        # Should have tried all three levels
+        assert 'production manifest' in str(exc_info.value.searched_locations)
+        assert 'dev manifest' in str(exc_info.value.searched_locations)
+        assert 'BigQuery' in str(exc_info.value.searched_locations)
 
     def test_fallback_all_levels_disabled(self, mock_config, monkeypatch):
         """Test fallback when all fallback levels are disabled."""
@@ -328,6 +334,78 @@ class TestFallbackEdgeCases:
         # Should have warning about dev manifest
         assert len(result.warnings) > 0
         assert any('dev manifest' in w.lower() for w in result.warnings)
+
+
+class TestColumnsCommandEdgeCases:
+    """Edge cases for columns command with BigQuery fallback."""
+
+    def test_columns_fallback_uses_model_schema_not_production(self, tmp_path, monkeypatch):
+        """Test that columns BigQuery fallback uses schema from FOUND model, not production manifest.
+
+        This is a critical bug fix: when model is found in dev manifest but has no columns,
+        fallback should query BigQuery using dev schema (personal_*), not production schema.
+        """
+        import json
+        from dbt_meta.commands import columns
+        from unittest.mock import patch
+
+        # Setup manifests
+        prod_manifest = tmp_path / ".dbt-state" / "manifest.json"
+        dev_manifest = tmp_path / "target" / "manifest.json"
+
+        prod_manifest.parent.mkdir(parents=True)
+        dev_manifest.parent.mkdir(parents=True)
+
+        # Production manifest: model NOT in production
+        prod_manifest.write_text(json.dumps({
+            "metadata": {},
+            "nodes": {}
+        }))
+
+        # Dev manifest: model exists but NO columns documented
+        dev_manifest.write_text(json.dumps({
+            "metadata": {},
+            "nodes": {
+                "model.test_project.core_appsflyer__upload_log": {
+                    "name": "core_appsflyer__upload_log",
+                    "alias": "core_appsflyer__upload_log",
+                    "schema": "personal_testuser",
+                    "database": "test-project",
+                    "columns": {},  # EMPTY columns!
+                    "config": {"materialized": "table"}
+                }
+            }
+        }))
+
+        monkeypatch.setenv('DBT_PROD_MANIFEST_PATH', str(prod_manifest))
+        monkeypatch.setenv('DBT_DEV_MANIFEST_PATH', str(dev_manifest))
+        monkeypatch.setenv('DBT_FALLBACK_TARGET', 'true')
+        monkeypatch.setenv('DBT_FALLBACK_BIGQUERY', 'true')
+        monkeypatch.setenv('DBT_DEV_SCHEMA', 'personal_testuser')  # Match expected dev schema
+
+        # Mock BigQuery fetch to verify correct schema is used
+        # NOTE: Patch where function is USED, not where it's defined
+        with patch('dbt_meta.command_impl.columns._fetch_columns_from_bigquery_direct') as mock_bq:
+            mock_bq.return_value = [
+                {'name': 'col1', 'data_type': 'string'},
+                {'name': 'col2', 'data_type': 'integer'}
+            ]
+
+            # Run columns command with --dev flag
+            result = columns(str(prod_manifest), 'core_appsflyer__upload_log', use_dev=True, json_output=True)
+
+            # Verify BigQuery was called with DEV schema, not production
+            mock_bq.assert_called_once()
+            call_args = mock_bq.call_args
+
+            # Should use dev schema from model (positional args: schema, table, database)
+            assert call_args[0][0] == 'personal_testuser', "Should use dev schema from found model"
+            assert call_args[0][1] == 'core_appsflyer__upload_log', "Should use correct table name"
+            assert call_args[0][2] == 'test-project', "Should use correct database"
+
+            # Verify columns returned correctly
+            assert result is not None
+            assert len(result) == 2
 
 
 class TestIntegrationEdgeCases:

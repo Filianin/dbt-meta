@@ -202,20 +202,30 @@ class TestColumnsCommand:
         # Should return None
         assert result is None
 
-    def test_columns_fallback_bq_table_not_found(self, prod_manifest, mocker):
+    def test_columns_fallback_bq_table_not_found(self, enable_fallbacks, prod_manifest, mocker):
         """
         Should return None if BigQuery table doesn't exist
 
         Handles case when manifest references non-existent table.
         """
-        # Mock subprocess
+        # Mock git status (not testing git here - testing BigQuery fallback)
+        mock_git_check = mocker.patch('dbt_meta.command_impl.base._check_manifest_git_mismatch')
+        mock_git_check.return_value = []  # No warnings
+
+        # Mock subprocess for both git and BigQuery calls
         mock_run = mocker.patch('subprocess.run')
 
-        # bq version check succeeds, but bq show fails
         import subprocess as sp
+
+        # Create proper mock responses
+        git_mock = mocker.Mock(returncode=0, stdout='')  # git returns empty
+        bq_version_mock = mocker.Mock(returncode=0)  # bq version succeeds
+
         mock_run.side_effect = [
-            mocker.Mock(returncode=0),  # bq version
-            sp.CalledProcessError(1, 'bq show')  # table not found
+            git_mock,  # git diff call (from any git checks)
+            git_mock,  # git status call (from any git checks)
+            bq_version_mock,  # bq version check
+            sp.CalledProcessError(1, 'bq show')  # bq show fails - table not found
         ]
 
         model_name = "sugarcrm_px_customerstages"
@@ -764,7 +774,7 @@ class TestSchemaWithDevFlag:
         dev_data = {
             "nodes": {
                 "model.project.test_schema__events": {
-                    "name": "events",  # filename, not alias
+                    "name": "test_schema__events",  # Full SQL filename
                     "schema": "personal_test",
                     "database": "",
                     "config": {}
@@ -781,7 +791,7 @@ class TestSchemaWithDevFlag:
 
         assert result is not None
         assert result['schema'] == 'personal_test_user'  # Dev schema
-        assert result['table'] == 'events'  # Filename, not alias
+        assert result['table'] == 'test_schema__events'  # Full SQL filename (matches dbt --target dev)
         # Dev result doesn't include database key
         assert 'full_name' in result
 
@@ -911,7 +921,7 @@ class TestColumnsWithDevFlag:
     """Test columns() with use_dev parameter"""
 
     def test_columns_with_dev_prioritizes_dev_manifest(self, tmp_path, monkeypatch):
-        """With use_dev=True, should get columns from dev manifest"""
+        """With use_dev=True, should ALWAYS use BigQuery (not manifest columns)"""
         project_root = tmp_path / "project"
         project_root.mkdir()
         dbt_state = project_root / ".dbt-state"
@@ -927,10 +937,9 @@ class TestColumnsWithDevFlag:
             "nodes": {
                 "model.project.test_model": {
                     "name": "test_model",
-                    "columns": {
-                        "col1": {"name": "col1", "data_type": "STRING"},
-                        "col2": {"name": "col2", "data_type": "INTEGER"}
-                    }
+                    "schema": "personal_test",
+                    "database": "test-project",
+                    "config": {}
                 }
             }
         }
@@ -938,7 +947,17 @@ class TestColumnsWithDevFlag:
 
         monkeypatch.setenv('DBT_FALLBACK_BIGQUERY', 'false')
 
-        result = columns(str(prod_manifest), "test_model", use_dev=True)
+        # Mock BigQuery - ALWAYS called now (never uses manifest columns)
+        with patch('dbt_meta.command_impl.columns._fetch_columns_from_bigquery_direct') as mock_bq:
+            mock_bq.return_value = [
+                {'name': 'col1', 'data_type': 'STRING'},
+                {'name': 'col2', 'data_type': 'INTEGER'}
+            ]
+
+            result = columns(str(prod_manifest), "test_model", use_dev=True)
+
+            # Verify BigQuery was called (ALWAYS, not just as fallback)
+            assert mock_bq.called
 
         assert result is not None
         assert len(result) == 2
@@ -948,7 +967,7 @@ class TestColumnsWithDevFlag:
         assert result[1]['data_type'] == 'INTEGER'
 
     def test_columns_with_dev_falls_back_to_bigquery(self, tmp_path, monkeypatch):
-        """With use_dev=True and no columns in dev, should try BigQuery"""
+        """With use_dev=True and model not in manifest, should try BigQuery"""
         project_root = tmp_path / "project"
         project_root.mkdir()
         dbt_state = project_root / ".dbt-state"
@@ -964,22 +983,34 @@ class TestColumnsWithDevFlag:
         monkeypatch.setenv('DBT_USER', 'test')
         monkeypatch.setenv('DBT_FALLBACK_BIGQUERY', 'true')
 
-        with patch('dbt_meta.command_impl.columns._fetch_columns_from_bigquery_direct') as mock_fetch:
-            mock_fetch.return_value = [
-                {'name': 'id', 'data_type': 'INTEGER'},
-                {'name': 'name', 'data_type': 'STRING'}
-            ]
+        # Mock git at the import level in columns.py
+        with patch('dbt_meta.command_impl.columns.get_model_git_status') as mock_git:
+            from dbt_meta.utils.git import GitStatus
+            mock_git.return_value = GitStatus(
+                exists=True,
+                is_tracked=False,
+                is_modified=True,
+                is_committed=False,
+                is_deleted=False,
+                is_new=True
+            )
 
-            # Use proper dbt model name with __ so _infer_table_parts() works
-            result = columns(str(prod_manifest), "test_schema__test_model", use_dev=True)
+            with patch('dbt_meta.command_impl.columns._fetch_columns_from_bigquery_direct') as mock_fetch:
+                mock_fetch.return_value = [
+                    {'name': 'id', 'data_type': 'INTEGER'},
+                    {'name': 'name', 'data_type': 'STRING'}
+                ]
 
-            assert mock_fetch.called
-            # Should call with dev schema
-            call_args = mock_fetch.call_args[0]
-            assert 'personal_test' in call_args[0]  # dev schema
+                # Use proper dbt model name with __ so _infer_table_parts() works
+                result = columns(str(prod_manifest), "test_schema__test_model", use_dev=True)
+
+                assert mock_fetch.called
+                # Should call with dev schema
+                call_args = mock_fetch.call_args[0]
+                assert 'personal_test' in call_args[0]  # dev schema
 
     def test_columns_without_dev_uses_production(self, tmp_path):
-        """Without use_dev, should use production manifest"""
+        """Without use_dev, should ALWAYS use BigQuery (not manifest columns)"""
         project_root = tmp_path / "project"
         project_root.mkdir()
         dbt_state = project_root / ".dbt-state"
@@ -990,15 +1021,24 @@ class TestColumnsWithDevFlag:
             "nodes": {
                 "model.project.test_model": {
                     "name": "test_model",
-                    "columns": {
-                        "prod_col": {"name": "prod_col", "data_type": "STRING"}
-                    }
+                    "schema": "prod_schema",
+                    "database": "test-project",
+                    "config": {}
                 }
             }
         }
         prod_manifest.write_text(json.dumps(prod_data))
 
-        result = columns(str(prod_manifest), "test_model", use_dev=False)
+        # Mock BigQuery - ALWAYS called now (never uses manifest columns)
+        with patch('dbt_meta.command_impl.columns._fetch_columns_from_bigquery_direct') as mock_bq:
+            mock_bq.return_value = [
+                {'name': 'prod_col', 'data_type': 'STRING'}
+            ]
+
+            result = columns(str(prod_manifest), "test_model", use_dev=False)
+
+            # Verify BigQuery was called
+            assert mock_bq.called
 
         assert result is not None
         assert len(result) == 1
@@ -1161,7 +1201,7 @@ class TestDevTablePatternPredefined:
         }
         dev_path.write_text(json.dumps(dev_data))
 
-        monkeypatch.setenv('DBT_DEV_DATASET', 'test_dataset')
+        monkeypatch.setenv('DBT_DEV_SCHEMA', 'test_dataset')
         monkeypatch.setenv('DBT_DEV_TABLE_PATTERN', 'alias')
 
         result = schema(str(prod_path), "test_schema__events", use_dev=True)
@@ -1197,7 +1237,7 @@ class TestDevTablePatternErrorHandling:
         dev_path.write_text(json.dumps(dev_data))
 
         monkeypatch.setenv('DBT_DEV_MANIFEST_PATH', str(dev_path))
-        monkeypatch.setenv('DBT_DEV_DATASET', 'test_ds')
+        monkeypatch.setenv('DBT_DEV_SCHEMA', 'test_ds')
         monkeypatch.setenv('DBT_DEV_TABLE_PATTERN', '{invalid_placeholder}')  # Invalid!
 
         result = schema(str(dev_path), 'test_model', use_dev=True, json_output=False)
@@ -1232,7 +1272,7 @@ class TestDevTablePatternErrorHandling:
         dev_path.write_text(json.dumps(dev_data))
 
         monkeypatch.setenv('DBT_DEV_MANIFEST_PATH', str(dev_path))
-        monkeypatch.setenv('DBT_DEV_DATASET', 'test_ds')
+        monkeypatch.setenv('DBT_DEV_SCHEMA', 'test_ds')
         monkeypatch.setenv('DBT_DEV_TABLE_PATTERN', 'custom_literal_name')  # Literal
 
         result = schema(str(dev_path), 'test_model', use_dev=True, json_output=False)
@@ -1271,7 +1311,7 @@ class TestDevTablePatternIntegration:
         }
         dev_path.write_text(json.dumps(dev_data))
 
-        monkeypatch.setenv('DBT_DEV_DATASET', 'test_dataset')
+        monkeypatch.setenv('DBT_DEV_SCHEMA', 'test_dataset')
         monkeypatch.setenv('DBT_DEV_TABLE_PATTERN', '{folder}_{name}')
 
         result = schema(str(prod_path), "simple_model", use_dev=True)
@@ -1436,7 +1476,7 @@ class TestColumnsTargetFallback:
     """Test columns() command with target/ fallback"""
 
     def test_columns_falls_back_to_target(self, tmp_path, monkeypatch):
-        """Test that columns() falls back to target/ when model not in production"""
+        """Test that columns() falls back to target/ and ALWAYS uses BigQuery"""
         project_root = tmp_path / "project"
         project_root.mkdir()
         dbt_state = project_root / ".dbt-state"
@@ -1448,16 +1488,15 @@ class TestColumnsTargetFallback:
         prod_manifest = dbt_state / "manifest.json"
         prod_manifest.write_text('{"nodes": {}}')
 
-        # Dev manifest with model and columns
+        # Dev manifest with model (columns no longer used from manifest)
         dev_manifest = target / "manifest.json"
         dev_manifest_data = {
             "nodes": {
                 "model.my_project.test_schema__events": {
                     "name": "test_schema__events",
-                    "columns": {
-                        "event_id": {"name": "event_id", "data_type": "STRING"},
-                        "created_at": {"name": "created_at", "data_type": "TIMESTAMP"}
-                    }
+                    "schema": "personal_test",
+                    "database": "test-project",
+                    "config": {}
                 }
             }
         }
@@ -1466,7 +1505,17 @@ class TestColumnsTargetFallback:
         monkeypatch.setenv('DBT_FALLBACK_TARGET', 'true')
         monkeypatch.setenv('DBT_FALLBACK_BIGQUERY', 'false')
 
-        result = columns(str(prod_manifest), "test_schema__events")
+        # Mock BigQuery - ALWAYS called now
+        with patch('dbt_meta.command_impl.columns._fetch_columns_from_bigquery_direct') as mock_bq:
+            mock_bq.return_value = [
+                {"name": "event_id", "data_type": "STRING"},
+                {"name": "created_at", "data_type": "TIMESTAMP"}
+            ]
+
+            result = columns(str(prod_manifest), "test_schema__events")
+
+            # Verify BigQuery was called
+            assert mock_bq.called
 
         assert result is not None
         assert len(result) == 2
@@ -1695,7 +1744,7 @@ class TestBigQueryValidation:
         dev_path.write_text(json.dumps(dev_data))
 
         monkeypatch.setenv('DBT_DEV_MANIFEST_PATH', str(dev_path))
-        monkeypatch.setenv('DBT_DEV_DATASET', 'invalid.name@test')  # Invalid chars
+        monkeypatch.setenv('DBT_DEV_SCHEMA', 'invalid.name@test')  # Invalid chars
         monkeypatch.setenv('DBT_VALIDATE_BIGQUERY', 'true')  # Enable validation
 
         result = schema(str(dev_path), 'test_model', use_dev=True, json_output=False)
@@ -1731,7 +1780,7 @@ class TestBigQueryValidation:
         dev_path.write_text(json.dumps(dev_data))
 
         monkeypatch.setenv('DBT_DEV_MANIFEST_PATH', str(dev_path))
-        monkeypatch.setenv('DBT_DEV_DATASET', 'invalid.name@test')  # Invalid chars
+        monkeypatch.setenv('DBT_DEV_SCHEMA', 'invalid.name@test')  # Invalid chars
         # DBT_VALIDATE_BIGQUERY not set - validation disabled
 
         result = schema(str(dev_path), 'test_model', use_dev=True, json_output=False)

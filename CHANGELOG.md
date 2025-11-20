@@ -7,6 +7,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+#### Environment Variable Naming Consistency
+- **Renamed `DBT_DEV_DATASET` → `DBT_DEV_SCHEMA`** for consistency with dbt terminology
+  - dbt uses "schema" for BigQuery datasets (via `generate_schema_name()` macro)
+  - Old name `DBT_DEV_DATASET` deprecated but still works with warning
+  - Impact: All documentation and code now use consistent "schema" terminology
+  - Migration: Update `export DBT_DEV_DATASET=...` → `export DBT_DEV_SCHEMA=...` in your setup
+  - Backward compatible: Old variable still works until v1.0.0
+
+### Fixed
+
+#### Test Suite Improvements
+- **Improved test coverage from 87% → 93%** (+6 percentage points)
+  - Fixed all 16 failing tests caused by fallback fixture conflicts
+  - Added 32 new tests covering edge cases and error handling
+  - Tests: 344 passing → **376 passing** (all passing, 0 failures)
+  - New test files:
+    - `test_path_bigquery_coverage.py` - Path BigQuery format search edge cases
+    - `test_git_edge_coverage.py` - Git filesystem errors & status detection
+    - `test_bigquery_final_coverage.py` - BigQuery utility retry logic & sanitization
+    - `test_columns_deps_final.py` - Columns & deps command edge cases
+    - `test_final_95_push.py` - Schema, lineage, info, config command tests
+  - Key improvements:
+    - bigquery.py: 79% → 90% coverage
+    - git.py: improved error handling coverage
+    - path.py: improved BigQuery format search coverage
+    - Fixed conditional fixture usage (`enable_fallbacks` opt-in pattern)
+
+#### Improved NEW Model Detection for Feature Branch Workflow
+- **Fixed NEW model detection** for models committed to feature branch but not merged to master
+  - Previously: Only detected NEW models with uncommitted changes (git modified)
+  - Now: Allows defer workflow fallback while warning about potential new models
+  - Impact: Models in feature branch work with fallback, users get helpful warnings
+  - Changes:
+    - `new_model_candidate` warning (instead of blocking error) for models in dev only
+    - `file_not_compiled` error for files that exist but failed compilation
+    - `model_not_in_dev` error when using --dev but model not built in dev
+  - Behavior: Defer workflow fallback proceeds with warnings, not blocked
+  - Related: `test_new_model_committed_in_feature_branch`, `test_file_exists_but_not_compiled` added
+
+#### BigQuery Fallback for Dev Models Without Columns
+- **Fixed incorrect schema in BigQuery fallback** when model found in dev manifest without documented columns
+  - Previously: Fallback searched production manifest → used production schema
+  - Now: Fallback uses schema from FOUND model (dev or prod)
+  - Impact: `meta columns --dev model_name` now correctly queries `personal_user.table` instead of `schema.table`
+  - Affects: New models and models without schema.yml documentation
+  - Related: `test_columns_fallback_uses_model_schema_not_production` added to test suite
+
+#### Dev Mode Uses Full Model Name for BigQuery Fallback
+- **Fixed incorrect table name in dev mode BigQuery fallback** when columns missing from manifest
+  - Previously: Used `alias` or `name` from manifest (e.g., `in_app_events_postbacks`)
+  - Now: Uses full model name in dev mode (e.g., `stg_appsflyer__in_app_events_postbacks`)
+  - Impact: `meta columns --dev model_name` correctly finds dev tables built with full filename
+  - Affects: All dev models without documented columns in manifest
+  - Technical: `columns.py:80-83` - conditional table name selection based on `use_dev` flag
+
+#### Dev Table Naming Matches dbt --target dev Behavior
+- **Changed dev table naming to use full SQL filename** instead of model.name from manifest
+  - Previously: `build_dev_table_name()` used `model.get('name')` → `in_app_events_postbacks`
+  - Now: Uses `model_name` (full SQL filename) → `stg_appsflyer__in_app_events_postbacks`
+  - Impact: `meta schema --dev` and all dev commands now match actual table names in BigQuery
+  - Root cause: dbt builds dev tables with full filename when using `--target dev`
+  - Affects: All dev commands (`schema`, `columns`, `info` with `--dev` flag)
+  - Technical: `utils/dev.py:199` - changed `name = model_name` instead of `model.get('name', model_name)`
+  - Breaking: Existing code expecting short table names will need update
+  - Environment variable: `DBT_DEV_TABLE_PATTERN="name"` now returns full filename (default behavior)
+
 ### Added
 
 #### Simple Mode Support (Works Out-of-Box)
@@ -133,8 +201,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Short form: `-d`
 
 #### Simplified Dev Naming Configuration
-- **`DBT_DEV_DATASET`** - Simple constant for dev dataset name
-  - Example: `export DBT_DEV_DATASET="personal_alice"`
+- **`DBT_DEV_SCHEMA`** - Simple constant for dev dataset name
+  - Example: `export DBT_DEV_SCHEMA="personal_alice"`
   - Replaces complex 4-level priority system
 
 - **`DBT_DEV_TABLE_PATTERN`** - Flexible table naming (default: `name`)
@@ -182,7 +250,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Manifest parser: LRU cache increased from 1 to 2 entries
 
 ### Deprecated
-- `DBT_DEV_SCHEMA`, `DBT_DEV_SCHEMA_TEMPLATE`, `DBT_DEV_SCHEMA_PREFIX` → use `DBT_DEV_DATASET`
+- `DBT_DEV_SCHEMA`, `DBT_DEV_SCHEMA_TEMPLATE`, `DBT_DEV_SCHEMA_PREFIX` → use `DBT_DEV_SCHEMA`
 - These still work with deprecation warnings
 
 ### Testing
