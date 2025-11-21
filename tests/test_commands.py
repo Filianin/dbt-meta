@@ -151,12 +151,15 @@ class TestColumnsCommand:
         assert len(result) >= 1
         assert all('name' in col and 'data_type' in col for col in result)
 
-    def test_columns_fallback_to_bigquery_when_empty(self, prod_manifest, mocker):
+    def test_columns_fallback_to_bigquery_when_empty(self, prod_manifest, mocker, monkeypatch):
         """
         Should fallback to BigQuery when columns not in manifest
 
         Critical: 64% of models don't have columns in manifest.
         """
+        # Disable catalog fallback to test BigQuery fallback
+        monkeypatch.setenv('DBT_FALLBACK_CATALOG', 'false')
+
         # Mock is_modified to avoid git calls
         mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
 
@@ -186,12 +189,15 @@ class TestColumnsCommand:
         assert result[0]['name'] == 'id'
         assert result[0]['data_type'] == 'integer'
 
-    def test_columns_fallback_bq_not_installed(self, prod_manifest, mocker):
+    def test_columns_fallback_bq_not_installed(self, prod_manifest, mocker, monkeypatch):
         """
         Should return None if bq not installed
 
         Graceful degradation when BigQuery SDK not available.
         """
+        # Disable catalog fallback to test BigQuery fallback
+        monkeypatch.setenv('DBT_FALLBACK_CATALOG', 'false')
+
         # Mock subprocess to simulate bq not found
         mock_run = mocker.patch('subprocess.run')
         mock_run.side_effect = FileNotFoundError("bq not found")
@@ -202,12 +208,15 @@ class TestColumnsCommand:
         # Should return None
         assert result is None
 
-    def test_columns_fallback_bq_table_not_found(self, enable_fallbacks, prod_manifest, mocker):
+    def test_columns_fallback_bq_table_not_found(self, enable_fallbacks, prod_manifest, mocker, monkeypatch):
         """
         Should return None if BigQuery table doesn't exist
 
         Handles case when manifest references non-existent table.
         """
+        # Disable catalog fallback to test BigQuery fallback
+        monkeypatch.setenv('DBT_FALLBACK_CATALOG', 'false')
+
         # Mock git status (not testing git here - testing BigQuery fallback)
         mock_git_check = mocker.patch('dbt_meta.command_impl.base._check_manifest_git_mismatch')
         mock_git_check.return_value = []  # No warnings
@@ -651,27 +660,49 @@ class TestChildrenCommand:
 
 
 class TestRefreshCommand:
-    """Test refresh command - runs dbt parse"""
+    """Test refresh command - syncs production or parses dev"""
 
-    def test_refresh_calls_dbt_parse(self, mocker):
-        """Should call subprocess.run with dbt parse"""
+    def test_refresh_production_mode(self, mocker):
+        """Should call sync-artifacts.sh with --force in production mode"""
         mock_run = mocker.patch('subprocess.run')
+        mock_exists = mocker.patch('pathlib.Path.exists', return_value=True)
 
-        refresh()
+        refresh(use_dev=False)
 
-        # Verify dbt parse was called
+        # Verify sync-artifacts.sh was called with --force
         mock_run.assert_called_once()
         call_args = mock_run.call_args[0][0]
-        assert call_args == ['dbt', 'parse']
+        assert len(call_args) == 2
+        assert call_args[0].endswith('sync-artifacts.sh')
+        assert call_args[1] == '--force'
 
-    def test_refresh_raises_on_error(self, mocker):
-        """Should raise exception if dbt parse fails"""
+    def test_refresh_dev_mode(self, mocker):
+        """Should call dbt parse --target dev in dev mode"""
+        mock_run = mocker.patch('subprocess.run')
+
+        refresh(use_dev=True)
+
+        # Verify dbt parse --target dev was called
+        mock_run.assert_called_once()
+        call_args = mock_run.call_args[0][0]
+        assert call_args == ['dbt', 'parse', '--target', 'dev']
+
+    def test_refresh_script_not_found(self, mocker):
+        """Should raise DbtMetaError if sync script missing"""
+        from dbt_meta.errors import DbtMetaError
+        mocker.patch('pathlib.Path.exists', return_value=False)
+
+        with pytest.raises(DbtMetaError, match="Sync script not found"):
+            refresh(use_dev=False)
+
+    def test_refresh_raises_on_subprocess_error(self, mocker):
+        """Should raise exception if subprocess fails"""
         import subprocess as sp
         mock_run = mocker.patch('subprocess.run')
         mock_run.side_effect = sp.CalledProcessError(1, 'dbt parse')
 
         with pytest.raises(sp.CalledProcessError):
-            refresh()
+            refresh(use_dev=True)
 
 
 class TestDocsCommand:

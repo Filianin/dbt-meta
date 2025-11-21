@@ -119,7 +119,7 @@ def _build_commands_panel() -> Panel:
     table.add_row("[bold cyan]Utilities:[/bold cyan]", "")
     table.add_row("  [cyan]list[/cyan]", "List models (optionally filter by pattern)")
     table.add_row("  [cyan]search[/cyan]", "Search by name or description")
-    table.add_row("  [cyan]refresh[/cyan]", "Refresh manifest (runs dbt parse)")
+    table.add_row("  [cyan]refresh[/cyan]", "Sync prod artifacts (or parse local with --dev)")
 
     return Panel(table, title="[bold white]📊 Commands[/bold white]", title_align="left", border_style="white", padding=(0, 1))
 
@@ -863,19 +863,34 @@ def children(
 
 
 @app.command()
-def refresh():
+def refresh(
+    dev: bool = typer.Option(False, "--dev", "-d", help="Parse local project instead of syncing from remote"),
+):
     """
-    Refresh manifest (runs dbt parse)
+    Refresh dbt artifacts (manifest.json + catalog.json)
 
-    Updates manifest.json with latest model definitions
+    Production mode (default):
+      Downloads latest artifacts to ~/dbt-state/
+      - manifest.json (metadata for all models)
+      - catalog.json (column types from database)
+      Always runs with --force (immediate sync)
+
+    Dev mode (--dev):
+      Parses local dbt project to ./target/manifest.json
+      Runs: dbt parse --target dev
+      Use after: Editing models, schema.yml, dbt_project.yml
+
+    Examples:
+      meta refresh              # Sync production artifacts from remote storage
+      meta refresh --dev        # Parse local project (dev mode)
     """
     try:
-        commands.refresh()
-        console.print("[green]✓ Manifest refreshed successfully[/green]")
+        commands.refresh(use_dev=dev)
+        console.print("[green]✓ Artifacts refreshed successfully[/green]")
     except DbtMetaError as e:
         handle_error(e)
     except Exception as e:
-        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Failed to refresh manifest: {str(e)}")
+        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Failed to refresh artifacts: {str(e)}")
         raise typer.Exit(code=1)
 
 

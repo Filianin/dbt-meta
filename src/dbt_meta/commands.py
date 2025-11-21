@@ -12,9 +12,11 @@ import os
 import re
 import glob
 from functools import lru_cache
+from pathlib import Path
 from typing import Dict, List, Optional, Any
 from dbt_meta.manifest.parser import ManifestParser
 from dbt_meta.manifest.finder import ManifestFinder
+from dbt_meta.errors import DbtMetaError
 from dbt_meta.utils import get_cached_parser as _get_cached_parser
 from dbt_meta.utils import print_warnings as _print_warnings
 from dbt_meta.utils.git import is_modified
@@ -386,18 +388,35 @@ def children(manifest_path: str, model_name: str, use_dev: bool = False, recursi
     return command.execute()
 
 
-def refresh() -> None:
+def refresh(use_dev: bool = False) -> None:
     """
-    Refresh manifest by running dbt parse
+    Refresh dbt artifacts (manifest.json + catalog.json)
 
-    Executes: dbt parse
+    Args:
+        use_dev: If True, parse local project (dbt parse --target dev)
+                If False, sync production artifacts from remote storage
 
     Raises:
-        subprocess.CalledProcessError: If dbt parse fails
+        DbtMetaError: If sync script not found or command fails
+        subprocess.CalledProcessError: If subprocess fails
     """
-    print("Refreshing manifest...")
-    subprocess.run(['dbt', 'parse'], check=True)
-    print("✓ Manifest refreshed")
+    if use_dev:
+        # Dev mode: parse local project
+        print("Parsing local dbt project...")
+        subprocess.run(['dbt', 'parse', '--target', 'dev'], check=True)
+        print("✓ Local manifest refreshed (./target/manifest.json)")
+    else:
+        # Production mode: sync from remote storage with --force
+        script_path = Path.home() / '.claude' / 'scripts' / 'sync-artifacts.sh'
+        if not script_path.exists():
+            raise DbtMetaError(
+                f"Sync script not found: {script_path}",
+                suggestion="Install sync-artifacts.sh in ~/.claude/scripts/"
+            )
+
+        print("Syncing production artifacts from remote storage...")
+        subprocess.run([str(script_path), '--force'], check=True)
+        print("✓ Production artifacts synced (~/dbt-state/)")
 
 
 def docs(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[List[Dict[str, str]]]:

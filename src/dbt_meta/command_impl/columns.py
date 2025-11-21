@@ -6,6 +6,7 @@ Manifest columns are unreliable (64.2% missing, 35.8% stale).
 Always fetches fresh, accurate data from BigQuery.
 """
 
+import os
 import sys
 from typing import Optional, List, Dict
 
@@ -106,8 +107,31 @@ class ColumnsCommand(BaseCommand):
             file_path=file_path
         )
 
-        # ALWAYS fetch from BigQuery (based on state)
+        # Strategy based on model state:
+        # - MODIFIED/NEW → ALWAYS BigQuery (skip catalog, need fresh data)
+        # - STABLE → Try catalog first (fast), then BigQuery (accurate)
+
+        if state in [
+            ModelState.MODIFIED_UNCOMMITTED,
+            ModelState.MODIFIED_COMMITTED,
+            ModelState.MODIFIED_IN_DEV,
+            ModelState.NEW_UNCOMMITTED,
+            ModelState.NEW_COMMITTED,
+            ModelState.NEW_IN_DEV,
+        ]:
+            # Changed models → SKIP catalog, go directly to BigQuery
+            if model:
+                return self._fetch_from_bigquery_with_model(model, state)
+            else:
+                return self._fetch_from_bigquery_without_model(state)
+
+        # Stable models → Try catalog first
         if model:
+            columns = self._try_fetch_from_catalog(model, state)
+            if columns:
+                return columns  # Success from catalog
+
+            # Catalog failed → fallback to BigQuery
             return self._fetch_from_bigquery_with_model(model, state)
         else:
             return self._fetch_from_bigquery_without_model(state)
@@ -198,6 +222,104 @@ class ColumnsCommand(BaseCommand):
             print(f"   defer run --select {self.model_name}", file=sys.stderr)
 
         return None
+
+    def _try_fetch_from_catalog(
+        self,
+        model: dict,
+        state: ModelState
+    ) -> Optional[List[Dict[str, str]]]:
+        """Try to fetch columns from catalog.json with fallback to BigQuery.
+
+        Args:
+            model: Model data from manifest
+            state: Detected model state
+
+        Returns:
+            List of columns if found in catalog, None for BigQuery fallback
+
+        Fallback scenarios (returns None = use BigQuery):
+            1. Catalog fallback disabled (DBT_FALLBACK_CATALOG=false)
+            2. Catalog path not configured
+            3. Catalog file doesn't exist
+            4. Catalog too old (>24h)
+            5. Model not in catalog
+            6. Catalog parse error
+        """
+        # Check if catalog fallback is enabled
+        if not self.config.fallback_catalog_enabled:
+            if os.environ.get('DBT_META_DEBUG'):
+                print(f"\n💡 Catalog disabled (DBT_FALLBACK_CATALOG=false), using BigQuery", file=sys.stderr)
+            return None
+
+        # Determine catalog path (prod or dev)
+        catalog_path = self.config.prod_catalog_path if not self.use_dev else self.config.dev_catalog_path
+
+        # Fallback: catalog path not configured
+        if not catalog_path:
+            if os.environ.get('DBT_META_DEBUG'):
+                mode = "dev" if self.use_dev else "prod"
+                print(f"\n💡 Catalog path not configured (DBT_{mode.upper()}_CATALOG_PATH), using BigQuery", file=sys.stderr)
+            return None
+
+        # Fallback: catalog file doesn't exist
+        if not os.path.exists(catalog_path):
+            if os.environ.get('DBT_META_DEBUG'):
+                print(f"\n💡 Catalog not found ({catalog_path}), using BigQuery", file=sys.stderr)
+            return None
+
+        try:
+            from dbt_meta.catalog.parser import CatalogParser
+
+            parser = CatalogParser(catalog_path)
+
+            # Check if catalog is too stale
+            age_hours = parser.get_age_hours()
+            if age_hours and age_hours > 24:
+                # Catalog older than 24h - skip and use BigQuery
+                print(f"\n⚠️  Catalog is {age_hours:.1f}h old (>24h), using BigQuery for fresh data", file=sys.stderr)
+                return None
+
+            # Fetch columns from catalog
+            columns = parser.get_columns(self.model_name)
+
+            if columns:
+                # Success - print message
+                self._print_catalog_message(state, len(columns), age_hours)
+                return columns
+
+            # Fallback: model not in catalog
+            if os.environ.get('DBT_META_DEBUG'):
+                print(f"\n💡 Model not in catalog, using BigQuery", file=sys.stderr)
+            return None
+
+        except Exception as e:
+            # Fallback: catalog parse failed
+            if os.environ.get('DBT_META_DEBUG'):
+                print(f"\n⚠️  Catalog read failed ({e}), using BigQuery", file=sys.stderr)
+            return None
+
+    def _print_catalog_message(self, state: ModelState, column_count: int, age_hours: Optional[float]):
+        """Print message when using catalog.json.
+
+        Args:
+            state: Model state
+            column_count: Number of columns retrieved
+            age_hours: Catalog age in hours
+        """
+        import sys
+
+        # State message
+        state_messages = {
+            ModelState.PROD_STABLE: f"✅ Model '{self.model_name}' found in production",
+            ModelState.DELETED_LOCALLY: f"⚠️  Model '{self.model_name}' is DELETED locally",
+        }
+        message = state_messages.get(state, f"Model '{self.model_name}' state: {state.value}")
+        print(f"\n{message}", file=sys.stderr)
+
+        # Catalog info
+        age_str = f" (cached {age_hours:.1f}h ago)" if age_hours else ""
+        print(f"\n✅ Retrieved {column_count} columns from catalog.json{age_str}", file=sys.stderr)
+        print(f"\nData source: catalog.json (fast)", file=sys.stderr)
 
     def _print_state_message(self, state: ModelState, searching: bool = False):
         """Print state-aware message to stderr.

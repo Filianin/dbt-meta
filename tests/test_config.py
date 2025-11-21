@@ -75,7 +75,7 @@ class TestConfigFromEnv:
         config = Config.from_env()
 
         # Check defaults (Path.expanduser() normalizes ./ to nothing)
-        assert config.prod_manifest_path.endswith('.dbt-state/manifest.json')
+        assert config.prod_manifest_path.endswith('dbt-state/manifest.json')
         assert config.dev_manifest_path == 'target/manifest.json'
         assert config.fallback_dev_enabled is True
         assert config.fallback_bigquery_enabled is True

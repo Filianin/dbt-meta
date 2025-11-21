@@ -23,6 +23,15 @@ pytest --cov=dbt_meta
 mypy src/dbt_meta && ruff check src/dbt_meta
 ```
 
+## Development Guidelines
+
+### File Management
+
+- **NO temporary files in `/tmp/`** - Save all files in project root instead
+- Temporary files should be visible in git (easy to review and discard)
+- Test scripts, debug files, analysis files - all go in project root
+- Example: `./test_catalog_fallback.sh` instead of `/tmp/test_catalog_fallback.sh`
+
 ## Architecture
 
 ### Module Structure
