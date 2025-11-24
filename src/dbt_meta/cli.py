@@ -21,6 +21,7 @@ from rich import print as rprint
 from dbt_meta.manifest.finder import ManifestFinder
 from dbt_meta import commands
 from dbt_meta.errors import DbtMetaError
+from dbt_meta.config import Config
 
 # Create Typer app
 app = typer.Typer(
@@ -29,6 +30,10 @@ app = typer.Typer(
     add_completion=True,
     # Note: help is enabled for subcommands, custom help only for main app
 )
+
+# Create settings management subcommand group
+settings_app = typer.Typer(help="CLI settings management")
+app.add_typer(settings_app, name="settings")
 
 # Rich console for formatted output
 console = Console()
@@ -120,8 +125,16 @@ def _build_commands_panel() -> Panel:
     table.add_row("  [cyan]list[/cyan]", "List models (optionally filter by pattern)")
     table.add_row("  [cyan]search[/cyan]", "Search by name or description")
     table.add_row("  [cyan]refresh[/cyan]", "Sync prod artifacts (or parse local with --dev)")
+    table.add_row("", "")
 
-    return Panel(table, title="[bold white]📊 Commands[/bold white]", title_align="left", border_style="white", padding=(0, 1))
+    # Settings management (magenta)
+    table.add_row("[bold magenta]Settings:[/bold magenta]", "")
+    table.add_row("  [magenta]settings init[/magenta]", "Create config file from template")
+    table.add_row("  [magenta]settings show[/magenta]", "Display current configuration")
+    table.add_row("  [magenta]settings validate[/magenta]", "Validate config file")
+    table.add_row("  [magenta]settings path[/magenta]", "Show path to active config file")
+
+    return Panel(table, title="[bold white]🚀 Commands[/bold white]", title_align="left", border_style="white", padding=(0, 1))
 
 
 def _build_flags_panel() -> Panel:
@@ -167,83 +180,61 @@ def _build_examples_panel() -> Panel:
     table.add_row("  meta parents -ajd model", "All + JSON + Dev")
     table.add_row("  meta columns -jm ~/custom.json model", "JSON + Custom manifest")
     table.add_row("", "")
-    table.add_row("[bold]Works from anywhere:[/bold]", "")
-    table.add_row("  cd /tmp && meta list", "Uses $DBT_PROD_MANIFEST_PATH")
-    table.add_row("  meta schema -m ~/custom.json model", "Use custom manifest")
+    table.add_row("[bold]Configuration:[/bold]", "")
+    table.add_row("  meta settings init", "Create config file")
+    table.add_row("  meta settings show -j", "View current settings as JSON")
+    table.add_row("  meta -m ~/custom.json list", "Use custom manifest")
 
     return Panel(table, title="[bold white]💡 Examples[/bold white]", title_align="left", border_style="white", padding=(0, 1))
 
 
 def _build_configuration_panel() -> Panel:
-    """Build unified Configuration panel (Simple + Production setups)"""
-    from rich.console import Group
+    """Build Configuration panel with TOML-based setup"""
+    table = Table(show_header=False, box=None, padding=(0, 1))
+    table.add_column(style="white", no_wrap=False)
 
-    # Part 1: Setup instructions (single column)
-    setup_table = Table(show_header=False, box=None, padding=(0, 1))
-    setup_table.add_column(style="white", no_wrap=False)
+    # Quick Start
+    table.add_row("[bold cyan]Quick Start (zero config):[/bold cyan]")
+    table.add_row("Just run [cyan]dbt compile[/cyan] and start using meta commands")
+    table.add_row("Works out of the box with sensible defaults")
+    table.add_row("")
 
-    # Simple Setup
-    setup_table.add_row("[bold cyan][1] Simple Setup (single project, no defer):[/bold cyan]")
-    setup_table.add_row("Just run: [cyan]dbt compile[/cyan]")
-    setup_table.add_row("Commands automatically use [cyan]./target/manifest.json[/cyan]")
-    setup_table.add_row("[bold cyan]No configuration needed![/bold cyan]")
-    setup_table.add_row("")
-    setup_table.add_row("Example:")
-    setup_table.add_row("  dbt compile")
-    setup_table.add_row("  meta schema customers                       → Uses ./target/manifest.json")
-    setup_table.add_row("")
-    setup_table.add_row("[dim]Note: Without production manifest, falls back to ./target/[/dim]")
-    setup_table.add_row("[dim]      For clarity, use --dev flag explicitly[/dim]")
-    setup_table.add_row("")
+    # TOML Configuration
+    table.add_row("[bold cyan]Configuration File (recommended):[/bold cyan]")
+    table.add_row("1. Create config:    [cyan]meta settings init[/cyan]")
+    table.add_row("2. Edit config:      [cyan]~/.config/dbt-meta/config.toml[/cyan]")
+    table.add_row("3. Validate:         [cyan]meta settings validate[/cyan]")
+    table.add_row("4. View settings:    [cyan]meta settings show[/cyan]")
+    table.add_row("")
 
-    # Production Setup
-    setup_table.add_row("[bold cyan][2] Production Setup (with defer workflow):[/bold cyan]")
-    setup_table.add_row("1. Set production manifest path in ~/.zshrc:")
-    setup_table.add_row("   export DBT_PROD_MANIFEST_PATH=~/dbt-state/manifest.json")
-    setup_table.add_row("")
-    setup_table.add_row("2. Auto-update production manifest (hourly cron):")
-    setup_table.add_row("   0 * * * * cp <project>/.dbt-state/manifest.json ~/dbt-state/")
-    setup_table.add_row("")
-    setup_table.add_row("3. Use [cyan]--dev[/cyan] flag for dev models:")
-    setup_table.add_row("   defer run --select customers")
-    setup_table.add_row("   meta schema --dev customers                → Uses ./target/manifest.json")
-    setup_table.add_row("")
+    # Config Locations
+    table.add_row("[bold cyan]Config File Locations (priority order):[/bold cyan]")
+    table.add_row("  1. [cyan]./.dbt-meta.toml[/cyan]              → Project-local config")
+    table.add_row("  2. [cyan]~/.config/dbt-meta/config.toml[/cyan] → User config (XDG)")
+    table.add_row("  3. [cyan]~/.dbt-meta.toml[/cyan]               → Fallback")
+    table.add_row("")
 
-    # Part 2: Reference info (two columns)
-    ref_table = Table(show_header=False, box=None, padding=(0, 1))
-    ref_table.add_column(style="white", no_wrap=False, width=45)
-    ref_table.add_column(style="white", no_wrap=False)
+    # What to Configure
+    table.add_row("[bold cyan]Common Settings:[/bold cyan]")
+    table.add_row("  • Manifest paths (prod/dev)")
+    table.add_row("  • Catalog paths (prod/dev)")
+    table.add_row("  • Fallback behavior")
+    table.add_row("  • BigQuery settings")
+    table.add_row("  • Output formatting")
+    table.add_row("")
 
-    # Manifest Discovery
-    ref_table.add_row("[bold cyan]Manifest Discovery (priority order):[/bold cyan]", "")
-    ref_table.add_row("Without --dev:", "")
-    ref_table.add_row("  1. [cyan]-m/--manifest PATH[/cyan]", "Explicit override")
-    ref_table.add_row("  2. [cyan]DBT_PROD_MANIFEST_PATH[/cyan]", "Production")
-    ref_table.add_row("  3. [cyan]./target/manifest.json[/cyan]", "Simple mode")
-    ref_table.add_row("", "")
-    ref_table.add_row("With --dev:", "")
-    ref_table.add_row("  1. [cyan]-m/--manifest PATH[/cyan]", "Override")
-    ref_table.add_row("  2. [cyan]DBT_DEV_MANIFEST_PATH[/cyan]", "Dev manifest")
-    ref_table.add_row("", "")
+    # Environment Variables (alternative)
+    table.add_row("[bold cyan]Environment Variables (alternative to TOML):[/bold cyan]")
+    table.add_row("  [cyan]DBT_PROD_MANIFEST_PATH[/cyan]  → Production manifest path")
+    table.add_row("  [cyan]DBT_DEV_MANIFEST_PATH[/cyan]   → Dev manifest path")
+    table.add_row("  [cyan]DBT_DEV_SCHEMA[/cyan]          → Dev schema override")
+    table.add_row("  [cyan]DBT_FALLBACK_TARGET[/cyan]     → Enable dev manifest fallback")
+    table.add_row("")
 
-    # Environment Variables
-    ref_table.add_row("[bold cyan]Environment Variables:[/bold cyan]", "")
-    ref_table.add_row("", "")
-    ref_table.add_row("Manifest:", "")
-    ref_table.add_row("  [cyan]DBT_PROD_MANIFEST_PATH[/cyan]", "Production manifest path")
-    ref_table.add_row("  [cyan]DBT_DEV_MANIFEST_PATH[/cyan]", "Dev manifest path")
-    ref_table.add_row("", "")
-    ref_table.add_row("Dev Workflow:", "")
-    ref_table.add_row("  Uses schema/table from target/manifest.json", "(dbt-compiled values)")
-    ref_table.add_row("  Fallback: DBT_DEV_SCHEMA.{alias|name}", "When not in manifest")
-    ref_table.add_row("", "")
-    ref_table.add_row("Naming Strategy (advanced):", "")
-    ref_table.add_row("  [cyan]DBT_PROD_TABLE_NAME[/cyan]", "alias_or_name (default)")
-    ref_table.add_row("  [cyan]DBT_PROD_SCHEMA_SOURCE[/cyan]", "config_or_model (default)")
+    # Priority System
+    table.add_row("[bold cyan]Priority:[/bold cyan] CLI flags > TOML config > Env vars > Defaults")
 
-    # Combine both tables
-    group = Group(setup_table, ref_table)
-    return Panel(group, title="[bold white]⚙️ Configuration[/bold white]", title_align="left", border_style="white", padding=(0, 1))
+    return Panel(table, title="[bold white]⚙️ Configuration[/bold white]", title_align="left", border_style="white", padding=(0, 1))
 
 
 def show_help_with_examples(ctx: typer.Context):
@@ -323,6 +314,209 @@ def main(
         # Show help with examples when no command specified
         show_help_with_examples(ctx)
 
+
+# ============================================================================
+# Settings Management Commands
+# ============================================================================
+
+@settings_app.command("init")
+def settings_init(
+    force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing config file"),
+):
+    """
+    Initialize config file from template
+
+    Creates ~/.config/dbt-meta/config.toml with documented defaults.
+    Use --force to overwrite existing config.
+
+    Examples:
+        meta settings init              # Create config file
+        meta settings init --force      # Overwrite existing
+    """
+    import shutil
+    from pathlib import Path
+
+    # Target location (XDG standard)
+    target_dir = Path.home() / ".config" / "dbt-meta"
+    target_file = target_dir / "config.toml"
+
+    # Check if already exists
+    if target_file.exists() and not force:
+        console.print(f"[yellow]Config file already exists:[/yellow] {target_file}")
+        console.print("Use --force to overwrite")
+        raise typer.Exit(code=1)
+
+    # Find template file (should be in package)
+    try:
+        import dbt_meta
+        package_dir = Path(dbt_meta.__file__).parent
+        template_file = package_dir / "templates" / "dbt-meta.toml"
+
+        if not template_file.exists():
+            console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Template file not found: {template_file}")
+            console.print("Please reinstall dbt-meta package")
+            raise typer.Exit(code=1)
+
+        # Create target directory
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        # Copy template
+        shutil.copy(template_file, target_file)
+
+        console.print(f"[green]✓ Config file created:[/green] {target_file}")
+        console.print()
+        console.print("Next steps:")
+        console.print("  1. Edit config file: ~/.config/dbt-meta/config.toml")
+        console.print("  2. Validate config: meta settings validate")
+        console.print("  3. View merged config: meta settings show")
+
+    except Exception as e:
+        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Failed to create config file: {str(e)}")
+        raise typer.Exit(code=1)
+
+
+@settings_app.command("show")
+def settings_show(
+    json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
+):
+    """
+    Display current merged configuration
+
+    Shows configuration from TOML file with environment variable overrides.
+
+    Examples:
+        meta settings show              # Human-readable table
+        meta settings show --json       # JSON output
+    """
+    try:
+        config = Config.from_config_or_env()
+        config_dict = config.to_dict()
+
+        if json_output:
+            print(json.dumps(config_dict, indent=2))
+        else:
+            print()
+            table = Table(title="[bold green not italic]Current Configuration[/bold green not italic]", header_style="bold green")
+            table.add_column("Section", style=STYLE_COMMAND, no_wrap=True)
+            table.add_column("Key", style=STYLE_COMMAND, no_wrap=True)
+            table.add_column("Value", style="white")
+
+            # Group by section (based on field prefixes)
+            sections = {
+                "Manifest": ["prod_manifest_path", "dev_manifest_path"],
+                "Catalog": ["prod_catalog_path", "dev_catalog_path"],
+                "Fallback": ["fallback_dev_enabled", "fallback_bigquery_enabled", "fallback_catalog_enabled"],
+                "Dev": ["dev_dataset", "dev_user"],
+                "Production": ["prod_table_name_strategy", "prod_schema_source"],
+                "BigQuery": ["bigquery_project_id", "bigquery_timeout", "bigquery_retries", "bigquery_location"],
+                "Database": ["database_type", "database_host", "database_port", "database_name", "database_username", "database_password"],
+                "Output": ["output_default_format", "output_json_pretty", "output_color", "output_show_source"],
+                "Defer": ["defer_auto_sync", "defer_sync_threshold", "defer_sync_command", "defer_target"],
+            }
+
+            for section_name, fields in sections.items():
+                first_row = True
+                for field in fields:
+                    if field in config_dict:
+                        value = config_dict[field]
+                        # Mask password
+                        if field == "database_password" and value:
+                            value = "***"
+
+                        section_display = section_name if first_row else ""
+                        table.add_row(section_display, field, str(value))
+                        first_row = False
+
+            console.print(table)
+
+            # Show config file location
+            config_file = Config.find_config_file()
+            print()
+            if config_file:
+                console.print(f"[dim]Config file:[/dim] {config_file}")
+            else:
+                console.print("[dim]Config file: Not found (using defaults)[/dim]")
+
+    except Exception as e:
+        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Failed to load config: {str(e)}")
+        raise typer.Exit(code=1)
+
+
+@settings_app.command("validate")
+def settings_validate():
+    """
+    Validate configuration file
+
+    Checks TOML syntax and validates configuration values.
+
+    Examples:
+        meta settings validate
+    """
+    try:
+        # Try to load config
+        config_file = Config.find_config_file()
+
+        if not config_file:
+            console.print("[yellow]No config file found[/yellow]")
+            console.print("Run 'meta settings init' to create one")
+            raise typer.Exit(code=0)
+
+        console.print(f"[dim]Validating:[/dim] {config_file}")
+        print()
+
+        # Load and validate
+        config = Config.from_toml(config_file)
+        warnings_list = config.validate()
+
+        if warnings_list:
+            console.print("[yellow]Validation warnings:[/yellow]")
+            for warning in warnings_list:
+                console.print(f"  • {warning}")
+            print()
+            console.print("[yellow]⚠ Configuration has warnings[/yellow]")
+        else:
+            console.print("[green]✓ Configuration is valid[/green]")
+
+    except FileNotFoundError as e:
+        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] {str(e)}")
+        raise typer.Exit(code=1)
+    except ValueError as e:
+        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] {str(e)}")
+        raise typer.Exit(code=1)
+    except Exception as e:
+        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Unexpected error: {str(e)}")
+        raise typer.Exit(code=1)
+
+
+@settings_app.command("path")
+def settings_path():
+    """
+    Show path to active config file
+
+    Displays the path to the config file being used (if any).
+
+    Examples:
+        meta settings path
+    """
+    config_file = Config.find_config_file()
+
+    if config_file:
+        print(str(config_file))
+    else:
+        error_console = Console(stderr=True)
+        error_console.print("[yellow]No config file found[/yellow]")
+        error_console.print("Using defaults")
+        error_console.print()
+        error_console.print("Search locations:")
+        error_console.print("  1. ./.dbt-meta.toml")
+        error_console.print("  2. ~/.config/dbt-meta/config.toml")
+        error_console.print("  3. ~/.dbt-meta.toml")
+        raise typer.Exit(code=1)
+
+
+# ============================================================================
+# Model Metadata Commands
+# ============================================================================
 
 def get_manifest_path(manifest_path: Optional[str] = None, use_dev: bool = False) -> tuple[str, bool]:
     """
@@ -450,21 +644,14 @@ def schema(
             raise typer.Exit(code=1)
 
         if json_output:
-            print(json.dumps(result, indent=2))
+            output = {
+                "model_name": model_name,
+                "full_name": result['full_name']
+            }
+            print(json.dumps(output, indent=2))
         else:
-            # Rich table output with blank line first
             print()
-            table = Table(title=f"[bold green not italic]Schema: {model_name}[/bold green not italic]", show_header=False)
-            table.add_column("Field", style=STYLE_COMMAND, no_wrap=True)
-            table.add_column("Value", style="white")
-
-            if 'database' in result and result['database']:
-                table.add_row("Database:", result['database'])
-            table.add_row("Schema:", result['schema'])
-            table.add_row("Table:", result['table'])
-            table.add_row("Full:", result['full_name'])
-
-            console.print(table)
+            print(result['full_name'])
 
     except DbtMetaError as e:
         handle_error(e)

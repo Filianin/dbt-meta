@@ -1104,7 +1104,7 @@ class TestCombinedFlags:
 
         # Mock schema command to verify both flags are processed
         mock_schema = mocker.patch("dbt_meta.commands.schema")
-        mock_schema.return_value = {"database": "test", "schema": "personal_user", "table": "model"}
+        mock_schema.return_value = {"database": "test", "schema": "personal_user", "table": "model", "full_name": "test.personal_user.model"}
 
         from typer.testing import CliRunner
         from dbt_meta.cli import app
@@ -1150,7 +1150,7 @@ class TestCombinedFlags:
         manifest_path.write_text('{"metadata": {"dbt_version": "1.5.0"}, "nodes": {}}')
 
         mock_schema = mocker.patch("dbt_meta.commands.schema")
-        mock_schema.return_value = {"database": "test", "schema": "analytics", "table": "model"}
+        mock_schema.return_value = {"database": "test", "schema": "analytics", "table": "model", "full_name": "test.analytics.model"}
 
         from typer.testing import CliRunner
         from dbt_meta.cli import app

@@ -25,10 +25,11 @@ class TestSchemaCommand:
 
         assert result.exit_code == 0
         data = json.loads(result.stdout)
-        assert 'schema' in data
-        assert 'table' in data
-        assert isinstance(data['schema'], str)
-        assert isinstance(data['table'], str)
+        assert 'model_name' in data
+        assert 'full_name' in data
+        assert data['model_name'] == test_model
+        assert isinstance(data['full_name'], str)
+        assert '.' in data['full_name']  # Should be in format: database.schema.table
 
     def test_schema_text_output(self, cli_runner, prod_manifest, test_model, monkeypatch):
         """Test schema extraction with text output"""
@@ -38,7 +39,8 @@ class TestSchemaCommand:
 
         assert result.exit_code == 0
         assert len(result.stdout) > 0
-        # Output should contain schema and table information
+        # Output should contain full table name in format: database.schema.table
+        assert '.' in result.stdout  # Should have at least one dot separator
 
     def test_schema_model_not_found(self, cli_runner, prod_manifest, monkeypatch):
         """Test error when model not found"""

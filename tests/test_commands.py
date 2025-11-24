@@ -160,34 +160,38 @@ class TestColumnsCommand:
         # Disable catalog fallback to test BigQuery fallback
         monkeypatch.setenv('DBT_FALLBACK_CATALOG', 'false')
 
-        # Mock is_modified to avoid git calls
-        mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
+        # Mock Config.find_config_file to ignore real TOML config
+        from unittest.mock import patch
+        from dbt_meta.config import Config
+        with patch.object(Config, 'find_config_file', return_value=None):
+            # Mock is_modified to avoid git calls
+            mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
 
-        # Mock subprocess to simulate bq command
-        mock_run = mocker.patch('subprocess.run')
+            # Mock subprocess to simulate bq command
+            mock_run = mocker.patch('subprocess.run')
 
-        # First call: bq version check (success)
-        # Second call: bq show --schema
-        bq_output = json.dumps([
-            {"name": "id", "type": "INTEGER"},
-            {"name": "name", "type": "STRING"}
-        ])
+            # First call: bq version check (success)
+            # Second call: bq show --schema
+            bq_output = json.dumps([
+                {"name": "id", "type": "INTEGER"},
+                {"name": "name", "type": "STRING"}
+            ])
 
-        mock_run.side_effect = [
-            mocker.Mock(returncode=0),  # bq version check
-            mocker.Mock(stdout=bq_output, returncode=0)  # bq show --schema
-        ]
+            mock_run.side_effect = [
+                mocker.Mock(returncode=0),  # bq version check
+                mocker.Mock(stdout=bq_output, returncode=0)  # bq show --schema
+            ]
 
-        # Model without columns in manifest
-        model_name = "sugarcrm_px_customerstages"
-        result = columns(str(prod_manifest), model_name)
+            # Model without columns in manifest
+            model_name = "sugarcrm_px_customerstages"
+            result = columns(str(prod_manifest), model_name)
 
-        # Should have called bq
-        assert mock_run.call_count == 2
-        assert result is not None
-        assert len(result) == 2
-        assert result[0]['name'] == 'id'
-        assert result[0]['data_type'] == 'integer'
+            # Should have called bq
+            assert mock_run.call_count == 2
+            assert result is not None
+            assert len(result) == 2
+            assert result[0]['name'] == 'id'
+            assert result[0]['data_type'] == 'integer'
 
     def test_columns_fallback_bq_not_installed(self, prod_manifest, mocker, monkeypatch):
         """
@@ -198,15 +202,19 @@ class TestColumnsCommand:
         # Disable catalog fallback to test BigQuery fallback
         monkeypatch.setenv('DBT_FALLBACK_CATALOG', 'false')
 
-        # Mock subprocess to simulate bq not found
-        mock_run = mocker.patch('subprocess.run')
-        mock_run.side_effect = FileNotFoundError("bq not found")
+        # Mock Config.find_config_file to ignore real TOML config
+        from unittest.mock import patch
+        from dbt_meta.config import Config
+        with patch.object(Config, 'find_config_file', return_value=None):
+            # Mock subprocess to simulate bq not found
+            mock_run = mocker.patch('subprocess.run')
+            mock_run.side_effect = FileNotFoundError("bq not found")
 
-        model_name = "sugarcrm_px_customerstages"
-        result = columns(str(prod_manifest), model_name)
+            model_name = "sugarcrm_px_customerstages"
+            result = columns(str(prod_manifest), model_name)
 
-        # Should return None
-        assert result is None
+            # Should return None
+            assert result is None
 
     def test_columns_fallback_bq_table_not_found(self, enable_fallbacks, prod_manifest, mocker, monkeypatch):
         """
@@ -217,31 +225,35 @@ class TestColumnsCommand:
         # Disable catalog fallback to test BigQuery fallback
         monkeypatch.setenv('DBT_FALLBACK_CATALOG', 'false')
 
-        # Mock git status (not testing git here - testing BigQuery fallback)
-        mock_git_check = mocker.patch('dbt_meta.command_impl.base._check_manifest_git_mismatch')
-        mock_git_check.return_value = []  # No warnings
+        # Mock Config.find_config_file to ignore real TOML config
+        from unittest.mock import patch
+        from dbt_meta.config import Config
+        with patch.object(Config, 'find_config_file', return_value=None):
+            # Mock git status (not testing git here - testing BigQuery fallback)
+            mock_git_check = mocker.patch('dbt_meta.command_impl.base._check_manifest_git_mismatch')
+            mock_git_check.return_value = []  # No warnings
 
-        # Mock subprocess for both git and BigQuery calls
-        mock_run = mocker.patch('subprocess.run')
+            # Mock subprocess for both git and BigQuery calls
+            mock_run = mocker.patch('subprocess.run')
 
-        import subprocess as sp
+            import subprocess as sp
 
-        # Create proper mock responses
-        git_mock = mocker.Mock(returncode=0, stdout='')  # git returns empty
-        bq_version_mock = mocker.Mock(returncode=0)  # bq version succeeds
+            # Create proper mock responses
+            git_mock = mocker.Mock(returncode=0, stdout='')  # git returns empty
+            bq_version_mock = mocker.Mock(returncode=0)  # bq version succeeds
 
-        mock_run.side_effect = [
-            git_mock,  # git diff call (from any git checks)
-            git_mock,  # git status call (from any git checks)
-            bq_version_mock,  # bq version check
-            sp.CalledProcessError(1, 'bq show')  # bq show fails - table not found
-        ]
+            mock_run.side_effect = [
+                git_mock,  # git diff call (from any git checks)
+                git_mock,  # git status call (from any git checks)
+                bq_version_mock,  # bq version check
+                sp.CalledProcessError(1, 'bq show')  # bq show fails - table not found
+            ]
 
-        model_name = "sugarcrm_px_customerstages"
-        result = columns(str(prod_manifest), model_name)
+            model_name = "sugarcrm_px_customerstages"
+            result = columns(str(prod_manifest), model_name)
 
-        # Should return None
-        assert result is None
+            # Should return None
+            assert result is None
 
 
 class TestConfigCommand:

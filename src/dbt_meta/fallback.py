@@ -53,7 +53,7 @@ class FallbackStrategy:
 
     Example:
         >>> from dbt_meta.config import Config
-        >>> config = Config.from_env()
+        >>> config = Config.from_config_or_env()
         >>> parser = ManifestParser(config.prod_manifest_path)
         >>> fallback = FallbackStrategy(config)
         >>> result = fallback.get_model(

@@ -98,7 +98,8 @@ class TestConfigEdgeCases:
         monkeypatch.setenv('USER', 'user@example.com')
 
         schema = _calculate_dev_schema()
-        assert schema == 'personal_user@example.com'
+        # All non-alphanumeric chars (@ and .) should be replaced with underscores
+        assert schema == 'personal_user_example_com'
 
 
 class TestErrorsEdgeCases:
@@ -458,8 +459,9 @@ class TestIntegrationEdgeCases:
         config = Config.from_env()
         warnings = config.validate()
 
-        # Should have 3 warnings
+        # Should have 3 warnings (2 for invalid strategies + 1 for missing manifest)
         assert len(warnings) >= 3
-        assert any('DBT_PROD_TABLE_NAME' in w for w in warnings)
-        assert any('DBT_PROD_SCHEMA_SOURCE' in w for w in warnings)
+        # Check for config field names (not env var names)
+        assert any('prod_table_name_strategy' in w for w in warnings)
+        assert any('prod_schema_source' in w for w in warnings)
         assert any('not found' in w for w in warnings)

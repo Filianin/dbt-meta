@@ -81,7 +81,7 @@ def info(manifest_path: str, model_name: str, use_dev: bool = False, json_output
         - Uses model filename, NOT alias
         - Falls back to BigQuery if not in dev manifest
     """
-    config = Config.from_env()
+    config = Config.from_config_or_env()
     command = InfoCommand(config, manifest_path, model_name, use_dev, json_output)
     return command.execute()
 
@@ -132,7 +132,7 @@ def schema(manifest_path: str, model_name: str, use_dev: bool = False, json_outp
         DBT_FALLBACK_TARGET: Enable dev manifest fallback (default: true)
         DBT_FALLBACK_BIGQUERY: Enable BigQuery fallback (default: true)
     """
-    config = Config.from_env()
+    config = Config.from_config_or_env()
     command = SchemaCommand(config, manifest_path, model_name, use_dev, json_output)
     return command.execute()
 
@@ -156,7 +156,7 @@ def columns(manifest_path: str, model_name: str, use_dev: bool = False, json_out
 
         Falls back to BigQuery if columns not in manifest.
     """
-    config = Config.from_env()
+    config = Config.from_config_or_env()
     command = ColumnsCommand(config, manifest_path, model_name, use_dev, json_output)
     return command.execute()
 
@@ -182,7 +182,7 @@ def config(manifest_path: str, model_name: str, use_dev: bool = False, json_outp
         - Returns dev-specific config
         - Falls back to BigQuery if not in dev manifest
     """
-    cfg = Config.from_env()
+    cfg = Config.from_config_or_env()
     command = ConfigCommand(cfg, manifest_path, model_name, use_dev, json_output)
     return command.execute()
 
@@ -209,7 +209,7 @@ def deps(manifest_path: str, model_name: str, use_dev: bool = False, json_output
         - Returns dev-specific dependencies
         - NO BigQuery fallback (lineage is manifest-only)
     """
-    cfg = Config.from_env()
+    cfg = Config.from_config_or_env()
     command = DepsCommand(cfg, manifest_path, model_name, use_dev, json_output)
     return command.execute()
 
@@ -233,7 +233,7 @@ def sql(manifest_path: str, model_name: str, use_dev: bool = False, raw: bool = 
         - Returns dev-specific SQL
         - NO BigQuery fallback (SQL is dbt-specific)
     """
-    cfg = Config.from_env()
+    cfg = Config.from_config_or_env()
     command = SqlCommand(cfg, manifest_path, model_name, use_dev, json_output, raw=raw)
     return command.execute()
 
@@ -257,7 +257,7 @@ def path(manifest_path: str, model_name: str, use_dev: bool = False, json_output
         - Returns dev-specific file path
         - NO BigQuery fallback (file path is dbt-specific)
     """
-    cfg = Config.from_env()
+    cfg = Config.from_config_or_env()
     command = PathCommand(cfg, manifest_path, model_name, use_dev, json_output)
     return command.execute()
 
@@ -365,7 +365,7 @@ def parents(manifest_path: str, model_name: str, use_dev: bool = False, recursiv
     Returns:
         Parent dependencies list, or None if model not found
     """
-    config = Config.from_env()
+    config = Config.from_config_or_env()
     command = ParentsCommand(config, manifest_path, model_name, use_dev, json_output, recursive=recursive)
     return command.execute()
 
@@ -383,7 +383,7 @@ def children(manifest_path: str, model_name: str, use_dev: bool = False, recursi
     Returns:
         Child dependencies list, or None if model not found
     """
-    config = Config.from_env()
+    config = Config.from_config_or_env()
     command = ChildrenCommand(config, manifest_path, model_name, use_dev, json_output, recursive=recursive)
     return command.execute()
 
