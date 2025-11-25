@@ -4,16 +4,16 @@ CRITICAL: Silent failures hide bugs and corrupt state.
 All exceptions must be specific and logged/handled properly.
 """
 
-import pytest
-from unittest.mock import patch, MagicMock
-from pathlib import Path
 import subprocess
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from dbt_meta.errors import ManifestNotFoundError, ManifestParseError, ModelNotFoundError
-from dbt_meta.utils.git import is_modified, get_model_git_status, GitStatus
-from dbt_meta.utils.dev import find_dev_manifest
-from dbt_meta.command_impl.base import BaseCommand
 from dbt_meta.fallback import FallbackStrategy
+from dbt_meta.utils.dev import find_dev_manifest
+from dbt_meta.utils.git import get_model_git_status, is_modified
 
 
 @pytest.mark.critical
@@ -32,8 +32,9 @@ class TestNoSilentFailures:
 
     def test_invalid_json_raises_parse_error(self):
         """Invalid JSON should raise ManifestParseError, not generic Exception."""
-        from dbt_meta.manifest.parser import ManifestParser
         import orjson
+
+        from dbt_meta.manifest.parser import ManifestParser
 
         # Create invalid JSON file
         with patch('pathlib.Path.exists', return_value=True):
@@ -86,8 +87,8 @@ class TestNoSilentFailures:
 
     def test_fallback_strategy_catches_manifest_errors(self, enable_fallbacks):
         """FallbackStrategy should catch ManifestNotFoundError and ManifestParseError gracefully."""
-        from dbt_meta.fallback import FallbackStrategy
         from dbt_meta.config import Config
+        from dbt_meta.fallback import FallbackStrategy
 
         # Create config with fallbacks enabled
         config = Config.from_env()
@@ -107,7 +108,7 @@ class TestNoSilentFailures:
     def test_bigquery_error_caught_in_fallback(self):
         """BigQuery errors should be caught and fallback continues."""
         from dbt_meta.config import Config
-        from dbt_meta.fallback import FallbackStrategy, FallbackLevel
+        from dbt_meta.fallback import FallbackLevel, FallbackStrategy
 
         config = Config.from_env()
         config.fallback_bigquery_enabled = True
@@ -152,7 +153,6 @@ class TestNoSilentFailures:
 
     def test_no_bare_except_statements_in_codebase(self):
         """Verify no 'except:' or 'except Exception:' remain (except CLI)."""
-        import os
         allowed_files = ['cli.py']  # CLI can have broad handler as last resort
 
         src_dir = Path(__file__).parent.parent / 'src' / 'dbt_meta'
@@ -162,7 +162,7 @@ class TestNoSilentFailures:
             if py_file.name in allowed_files:
                 continue
 
-            with open(py_file, 'r') as f:
+            with open(py_file) as f:
                 lines = f.readlines()
                 for i, line in enumerate(lines, 1):
                     # Check for bare except or except Exception

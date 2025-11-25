@@ -1,9 +1,10 @@
 """Tests for catalog.json parser."""
 
 import json
-import pytest
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+
+import pytest
+
 from dbt_meta.catalog.parser import CatalogParser
 
 

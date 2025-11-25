@@ -1,15 +1,15 @@
 """Parents command - Get upstream dependencies (parent models)."""
 
-from typing import Optional, List, Dict, Any
 import sys
+from typing import Any, Optional
 
 from dbt_meta.command_impl.base import BaseCommand
-from dbt_meta.fallback import FallbackLevel
 from dbt_meta.command_impl.lineage_utils import (
     build_relation_tree,
     count_tree_nodes,
-    flatten_tree_to_compact
+    flatten_tree_to_compact,
 )
+from dbt_meta.fallback import FallbackLevel
 
 
 class ParentsCommand(BaseCommand):
@@ -49,7 +49,7 @@ class ParentsCommand(BaseCommand):
         super().__init__(*args, **kwargs)
         self.recursive = recursive
 
-    def execute(self) -> Optional[List[Dict[str, Any]]]:
+    def execute(self) -> Optional[list[dict[str, Any]]]:
         """Execute parents command.
 
         Returns:
@@ -62,7 +62,7 @@ class ParentsCommand(BaseCommand):
             # Print helpful error message
             print(f"❌ Parent dependencies not available for '{self.model_name}': model not in manifest",
                   file=sys.stderr)
-            print(f"   Lineage information is stored only in manifest.json",
+            print("   Lineage information is stored only in manifest.json",
                   file=sys.stderr)
             return None
 
@@ -78,10 +78,10 @@ class ParentsCommand(BaseCommand):
         self,
         model: dict,
         level: Optional[FallbackLevel] = None,
-        parent_map: Optional[Dict] = None,
-        nodes: Optional[Dict] = None,
-        sources: Optional[Dict] = None
-    ) -> Optional[List[Dict[str, Any]]]:
+        parent_map: Optional[dict] = None,
+        nodes: Optional[dict] = None,
+        sources: Optional[dict] = None
+    ) -> Optional[list[dict[str, Any]]]:
         """Process model data and return parent dependencies.
 
         Args:

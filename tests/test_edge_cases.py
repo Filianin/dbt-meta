@@ -1,11 +1,13 @@
 """Edge case tests for config, errors, and fallback modules."""
 
-import pytest
 from pathlib import Path
 from unittest.mock import Mock, patch
-from dbt_meta.config import Config, _parse_bool, _calculate_dev_schema
-from dbt_meta.fallback import FallbackStrategy, FallbackLevel
-from dbt_meta.errors import ModelNotFoundError, ConfigurationError, ManifestParseError
+
+import pytest
+
+from dbt_meta.config import Config, _calculate_dev_schema, _parse_bool
+from dbt_meta.errors import ConfigurationError, ManifestParseError, ModelNotFoundError
+from dbt_meta.fallback import FallbackStrategy
 
 
 class TestConfigEdgeCases:
@@ -207,7 +209,6 @@ class TestFallbackEdgeCases:
 
     def test_fallback_with_model_name_without_separator(self, mock_config):
         """Test fallback with model name without __ separator."""
-        from dbt_meta.manifest.parser import ManifestParser
 
         parser = Mock()
         parser.get_model = Mock(return_value=None)
@@ -267,7 +268,6 @@ class TestFallbackEdgeCases:
         dev_manifest = Path(mock_config.dev_manifest_path)
         dev_manifest.write_text('{ invalid json }')
 
-        from dbt_meta.manifest.parser import ManifestParser
 
         parser = Mock()
         parser.get_model = Mock(return_value=None)
@@ -304,7 +304,6 @@ class TestFallbackEdgeCases:
 
     def test_fallback_warnings_accumulation(self, mock_config, tmp_path):
         """Test that warnings accumulate correctly across fallback levels."""
-        from dbt_meta.manifest.parser import ManifestParser
 
         parser = Mock()
         parser.get_model = Mock(return_value=None)
@@ -347,8 +346,9 @@ class TestColumnsCommandEdgeCases:
         fallback should query BigQuery using dev schema (personal_*), not production schema.
         """
         import json
-        from dbt_meta.commands import columns
         from unittest.mock import patch
+
+        from dbt_meta.commands import columns
 
         # Setup manifests
         prod_manifest = tmp_path / ".dbt-state" / "manifest.json"
@@ -429,9 +429,12 @@ class TestIntegrationEdgeCases:
     def test_exception_inheritance_chain(self):
         """Test that all custom exceptions properly inherit."""
         from dbt_meta.errors import (
-            DbtMetaError, ModelNotFoundError, ManifestNotFoundError,
-            ManifestParseError, BigQueryError, GitOperationError,
-            ConfigurationError
+            BigQueryError,
+            ConfigurationError,
+            DbtMetaError,
+            GitOperationError,
+            ManifestNotFoundError,
+            ModelNotFoundError,
         )
 
         # All should be catchable with base exception

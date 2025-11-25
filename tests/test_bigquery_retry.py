@@ -3,10 +3,11 @@
 CRITICAL: These tests verify retry logic prevents data loss from transient failures.
 """
 
-import pytest
 import subprocess
-import time
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import MagicMock, patch
+
+import pytest
+
 from dbt_meta.utils.bigquery import fetch_columns_from_bigquery_direct
 
 
@@ -128,7 +129,7 @@ class TestBigQueryRetryLogic:
                 # Version check + infinite failures
                 mock_version = MagicMock()
                 errors = [subprocess.CalledProcessError(1, 'bq')] * 100
-                mock_bq.side_effect = [mock_version] + errors
+                mock_bq.side_effect = [mock_version, *errors]
 
                 columns = fetch_columns_from_bigquery_direct('test_schema', 'test_table')
 

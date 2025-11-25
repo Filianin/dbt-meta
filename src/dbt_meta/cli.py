@@ -9,30 +9,33 @@ Provides dbt-meta CLI with:
 """
 
 import json
-import sys
-from typing import Optional, Dict, Any, List
-import typer
-from rich.console import Console
-from rich.table import Table
-from rich.panel import Panel
-from rich.tree import Tree
-from rich import print as rprint
+from typing import Any, Callable, Optional
 
-from dbt_meta.manifest.finder import ManifestFinder
+import typer
+from rich import print as rprint
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.tree import Tree
+
 from dbt_meta import commands
-from dbt_meta.errors import DbtMetaError
 from dbt_meta.config import Config
+from dbt_meta.errors import DbtMetaError
+from dbt_meta.manifest.finder import ManifestFinder
 
 # Create Typer app
 app = typer.Typer(
     name="dbt-meta",
     help="AI-first CLI for dbt metadata extraction",
     add_completion=True,
-    # Note: help is enabled for subcommands, custom help only for main app
+    context_settings={"help_option_names": ["-h", "--help"]},
 )
 
 # Create settings management subcommand group
-settings_app = typer.Typer(help="CLI settings management")
+settings_app = typer.Typer(
+    help="CLI settings management",
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
 app.add_typer(settings_app, name="settings")
 
 # Rich console for formatted output
@@ -71,7 +74,7 @@ def handle_error(error: DbtMetaError) -> None:
     raise typer.Exit(code=1)
 
 
-def _build_tree_recursive(parent_tree: Tree, nodes: List[Dict[str, Any]]) -> None:
+def _build_tree_recursive(parent_tree: Tree, nodes: list[dict[str, Any]]) -> None:
     """
     Recursively build Rich Tree from hierarchical node structure
 
@@ -237,7 +240,7 @@ def _build_configuration_panel() -> Panel:
     return Panel(table, title="[bold white]⚙️ Configuration[/bold white]", title_align="left", border_style="white", padding=(0, 1))
 
 
-def show_help_with_examples(ctx: typer.Context):
+def show_help_with_examples(ctx: typer.Context) -> None:
     """Show help with additional examples and usage info"""
     # Empty line before help
     print()
@@ -270,7 +273,7 @@ def show_help_with_examples(ctx: typer.Context):
     console.print()
 
 
-def version_callback(value: bool):
+def version_callback(value: bool) -> None:
     """Show version and exit"""
     if value:
         from dbt_meta import __version__
@@ -299,7 +302,7 @@ def main(
         help="Show this message and exit",
         is_eager=True,
     ),
-):
+) -> None:
     """
     AI-first CLI for dbt metadata extraction
 
@@ -322,7 +325,7 @@ def main(
 @settings_app.command("init")
 def settings_init(
     force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing config file"),
-):
+) -> None:
     """
     Initialize config file from template
 
@@ -371,14 +374,14 @@ def settings_init(
         console.print("  3. View merged config: meta settings show")
 
     except Exception as e:
-        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Failed to create config file: {str(e)}")
-        raise typer.Exit(code=1)
+        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Failed to create config file: {e!s}")
+        raise typer.Exit(code=1) from None
 
 
 @settings_app.command("show")
 def settings_show(
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-):
+) -> None:
     """
     Display current merged configuration
 
@@ -438,12 +441,12 @@ def settings_show(
                 console.print("[dim]Config file: Not found (using defaults)[/dim]")
 
     except Exception as e:
-        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Failed to load config: {str(e)}")
-        raise typer.Exit(code=1)
+        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Failed to load config: {e!s}")
+        raise typer.Exit(code=1) from None
 
 
 @settings_app.command("validate")
-def settings_validate():
+def settings_validate() -> None:
     """
     Validate configuration file
 
@@ -478,18 +481,18 @@ def settings_validate():
             console.print("[green]✓ Configuration is valid[/green]")
 
     except FileNotFoundError as e:
-        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] {str(e)}")
-        raise typer.Exit(code=1)
+        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] {e!s}")
+        raise typer.Exit(code=1) from None
     except ValueError as e:
-        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] {str(e)}")
-        raise typer.Exit(code=1)
+        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] {e!s}")
+        raise typer.Exit(code=1) from None
     except Exception as e:
-        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Unexpected error: {str(e)}")
-        raise typer.Exit(code=1)
+        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Unexpected error: {e!s}")
+        raise typer.Exit(code=1) from None
 
 
 @settings_app.command("path")
-def settings_path():
+def settings_path() -> None:
     """
     Show path to active config file
 
@@ -546,11 +549,15 @@ def get_manifest_path(manifest_path: Optional[str] = None, use_dev: bool = False
         path = ManifestFinder.find(explicit_path=manifest_path, use_dev=effective_use_dev)
         return path, effective_use_dev
     except FileNotFoundError as e:
-        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] {str(e)}")
-        raise typer.Exit(code=1)
+        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] {e!s}")
+        raise typer.Exit(code=1) from None
 
 
-def handle_command_output(result, json_output: bool, formatter_func=None):
+def handle_command_output(
+    result: Any,
+    json_output: bool,
+    formatter_func: Optional[Callable[[Any], None]] = None
+) -> None:
     """
     Handle command output in JSON or human-readable format
 
@@ -582,7 +589,7 @@ def info(
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
-):
+) -> None:
     """
     Model summary (name, schema, table, materialization, tags)
 
@@ -627,7 +634,7 @@ def schema(
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
-):
+) -> None:
     """
     Production table name (database.schema.table) or dev with --dev flag
 
@@ -663,7 +670,7 @@ def columns(
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema"),
-):
+) -> None:
     """
     Column names and types
 
@@ -703,7 +710,7 @@ def config(
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
-):
+) -> None:
     """
     Full dbt config (29 fields: partition_by, cluster_by, etc.)
 
@@ -743,7 +750,7 @@ def deps(
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
-):
+) -> None:
     """
     Dependencies by type (refs, sources, macros)
 
@@ -802,7 +809,7 @@ def sql(
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
-):
+) -> None:
     """
     Compiled SQL (default) or raw SQL with --jinja
 
@@ -849,7 +856,7 @@ def path(
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
-):
+) -> None:
     """
     Relative file path to .sql file
 
@@ -884,7 +891,7 @@ def list_cmd(
     pattern: Optional[str] = typer.Argument(None, help="Filter pattern"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
-):
+) -> None:
     """
     List models (optionally filter by pattern)
 
@@ -920,7 +927,7 @@ def search(
     query: str = typer.Argument(..., help="Search query"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
-):
+) -> None:
     """
     Search by name or description
 
@@ -956,7 +963,7 @@ def parents(
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
-):
+) -> None:
     """
     Upstream dependencies (direct or all ancestors)
 
@@ -1006,7 +1013,7 @@ def children(
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
-):
+) -> None:
     """
     Downstream dependencies (direct or all descendants)
 
@@ -1052,7 +1059,7 @@ def children(
 @app.command()
 def refresh(
     dev: bool = typer.Option(False, "--dev", "-d", help="Parse local project instead of syncing from remote"),
-):
+) -> None:
     """
     Refresh dbt artifacts (manifest.json + catalog.json)
 
@@ -1077,8 +1084,8 @@ def refresh(
     except DbtMetaError as e:
         handle_error(e)
     except Exception as e:
-        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Failed to refresh artifacts: {str(e)}")
-        raise typer.Exit(code=1)
+        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Failed to refresh artifacts: {e!s}")
+        raise typer.Exit(code=1) from None
 
 
 @app.command()
@@ -1087,7 +1094,7 @@ def docs(
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
-):
+) -> None:
     """
     Column names, types, and descriptions
 

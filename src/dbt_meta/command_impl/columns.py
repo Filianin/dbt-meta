@@ -6,17 +6,20 @@ Manifest columns are unreliable (64.2% missing, 35.8% stale).
 Always fetches fresh, accurate data from BigQuery.
 """
 
+import contextlib
 import os
 import sys
-from typing import Optional, List, Dict
+from typing import Optional
 
 from dbt_meta.command_impl.base import BaseCommand
 from dbt_meta.fallback import FallbackLevel
 from dbt_meta.utils import get_cached_parser as _get_cached_parser
+from dbt_meta.utils.bigquery import (
+    fetch_columns_from_bigquery_direct as _fetch_columns_from_bigquery_direct,
+)
 from dbt_meta.utils.dev import calculate_dev_schema as _calculate_dev_schema
-from dbt_meta.utils.bigquery import fetch_columns_from_bigquery_direct as _fetch_columns_from_bigquery_direct
 from dbt_meta.utils.git import get_model_git_status
-from dbt_meta.utils.model_state import detect_model_state, ModelState
+from dbt_meta.utils.model_state import ModelState, detect_model_state
 
 
 class ColumnsCommand(BaseCommand):
@@ -45,7 +48,7 @@ class ColumnsCommand(BaseCommand):
     SUPPORTS_BIGQUERY = True
     SUPPORTS_DEV = True
 
-    def execute(self) -> Optional[List[Dict[str, str]]]:
+    def execute(self) -> Optional[list[dict[str, str]]]:
         """Execute columns command - ALWAYS use BigQuery.
 
         CRITICAL: NEVER use model.get('columns', {}) from manifest!
@@ -70,24 +73,17 @@ class ColumnsCommand(BaseCommand):
         # CRITICAL: Use REAL production manifest path, not self.manifest_path
         # self.manifest_path might be ./target/manifest.json (dev manifest) when DBT_PROD_MANIFEST_PATH not set
         prod_parser = None
-        import os
         prod_manifest_path = self.config.prod_manifest_path
         if prod_manifest_path and os.path.exists(prod_manifest_path):
-            try:
+            with contextlib.suppress(FileNotFoundError, OSError):
                 prod_parser = self._get_cached_parser(prod_manifest_path)
-            except (FileNotFoundError, OSError, IOError):
-                # Production manifest not available - this is okay
-                pass
 
         dev_parser = None
         if self.config.fallback_dev_enabled:
             dev_manifest_path = self.config.dev_manifest_path
             if dev_manifest_path and os.path.exists(dev_manifest_path):
-                try:
+                with contextlib.suppress(FileNotFoundError, OSError):
                     dev_parser = self._get_cached_parser(dev_manifest_path)
-                except (FileNotFoundError, OSError, IOError):
-                    # Dev manifest not available - this is okay
-                    pass
 
         # Determine model state
         in_prod_manifest = prod_parser.get_model(self.model_name) is not None if prod_parser else False
@@ -140,7 +136,7 @@ class ColumnsCommand(BaseCommand):
         self,
         model: dict,
         state: ModelState
-    ) -> Optional[List[Dict[str, str]]]:
+    ) -> Optional[list[dict[str, str]]]:
         """Fetch columns from BigQuery using model metadata.
 
         Args:
@@ -182,7 +178,7 @@ class ColumnsCommand(BaseCommand):
     def _fetch_from_bigquery_without_model(
         self,
         state: ModelState
-    ) -> Optional[List[Dict[str, str]]]:
+    ) -> Optional[list[dict[str, str]]]:
         """Fetch columns from BigQuery without model in manifest.
 
         This handles cases where model exists only in git but not in manifests.
@@ -208,7 +204,7 @@ class ColumnsCommand(BaseCommand):
 
                 # Add suggestion if model not built
                 if state in [ModelState.NEW_UNCOMMITTED, ModelState.NEW_COMMITTED]:
-                    print(f"\n💡 To build and query:", file=sys.stderr)
+                    print("\n💡 To build and query:", file=sys.stderr)
                     print(f"   defer run --select {self.model_name}", file=sys.stderr)
 
                 return columns
@@ -218,7 +214,7 @@ class ColumnsCommand(BaseCommand):
 
         # Suggest build command for NEW models
         if state in [ModelState.NEW_UNCOMMITTED, ModelState.NEW_COMMITTED]:
-            print(f"\n💡 To build and query:", file=sys.stderr)
+            print("\n💡 To build and query:", file=sys.stderr)
             print(f"   defer run --select {self.model_name}", file=sys.stderr)
 
         return None
@@ -227,7 +223,7 @@ class ColumnsCommand(BaseCommand):
         self,
         model: dict,
         state: ModelState
-    ) -> Optional[List[Dict[str, str]]]:
+    ) -> Optional[list[dict[str, str]]]:
         """Try to fetch columns from catalog.json with fallback to BigQuery.
 
         Args:
@@ -248,7 +244,7 @@ class ColumnsCommand(BaseCommand):
         # Check if catalog fallback is enabled
         if not self.config.fallback_catalog_enabled:
             if os.environ.get('DBT_META_DEBUG'):
-                print(f"\n💡 Catalog disabled (DBT_FALLBACK_CATALOG=false), using BigQuery", file=sys.stderr)
+                print("\n💡 Catalog disabled (DBT_FALLBACK_CATALOG=false), using BigQuery", file=sys.stderr)
             return None
 
         # Determine catalog path (prod or dev)
@@ -289,7 +285,7 @@ class ColumnsCommand(BaseCommand):
 
             # Fallback: model not in catalog
             if os.environ.get('DBT_META_DEBUG'):
-                print(f"\n💡 Model not in catalog, using BigQuery", file=sys.stderr)
+                print("\n💡 Model not in catalog, using BigQuery", file=sys.stderr)
             return None
 
         except Exception as e:
@@ -319,7 +315,7 @@ class ColumnsCommand(BaseCommand):
         # Catalog info
         age_str = f" (cached {age_hours:.1f}h ago)" if age_hours else ""
         print(f"\n✅ Retrieved {column_count} columns from catalog.json{age_str}", file=sys.stderr)
-        print(f"\nData source: catalog.json (fast)", file=sys.stderr)
+        print("\nData source: catalog.json (fast)", file=sys.stderr)
 
     def _print_state_message(self, state: ModelState, searching: bool = False):
         """Print state-aware message to stderr.
@@ -358,9 +354,9 @@ class ColumnsCommand(BaseCommand):
 
         # Add state-specific info
         if state == ModelState.MODIFIED_UNCOMMITTED:
-            print(f"\n⚠️  Using NEW dev version (reflects your uncommitted changes)", file=sys.stderr)
+            print("\n⚠️  Using NEW dev version (reflects your uncommitted changes)", file=sys.stderr)
         elif state == ModelState.MODIFIED_COMMITTED:
-            print(f"\n⚠️  Using dev version (reflects committed changes not yet deployed)", file=sys.stderr)
+            print("\n⚠️  Using dev version (reflects committed changes not yet deployed)", file=sys.stderr)
 
     def _print_not_found_message(self, state: ModelState, attempted_table: Optional[str]):
         """Print error message when columns not found.
@@ -369,18 +365,18 @@ class ColumnsCommand(BaseCommand):
             state: Model state
             attempted_table: Table name that was attempted (if any)
         """
-        print(f"\n❌ Model not found in BigQuery", file=sys.stderr)
+        print("\n❌ Model not found in BigQuery", file=sys.stderr)
 
         if attempted_table:
             print(f"   Tried: {attempted_table}", file=sys.stderr)
 
         # State-specific suggestions
         if state in [ModelState.NEW_UNCOMMITTED, ModelState.NEW_COMMITTED]:
-            print(f"\n💡 Model appears to be NEW but not built in dev", file=sys.stderr)
+            print("\n💡 Model appears to be NEW but not built in dev", file=sys.stderr)
         elif state == ModelState.NOT_FOUND:
-            print(f"\n💡 To find similar models:", file=sys.stderr)
-            print(f"   meta list | grep keyword", file=sys.stderr)
-            print(f"   meta search \"keyword\"", file=sys.stderr)
+            print("\n💡 To find similar models:", file=sys.stderr)
+            print("   meta list | grep keyword", file=sys.stderr)
+            print("   meta search \"keyword\"", file=sys.stderr)
 
     def _get_cached_parser(self, manifest_path: str):
         """Get cached manifest parser.
@@ -393,7 +389,7 @@ class ColumnsCommand(BaseCommand):
         """
         return _get_cached_parser(manifest_path)
 
-    def process_model(self, model: dict, level: Optional[FallbackLevel] = None) -> Optional[List[Dict[str, str]]]:
+    def process_model(self, model: dict, level: Optional[FallbackLevel] = None) -> Optional[list[dict[str, str]]]:
         """Process model data - DEPRECATED, use execute() instead.
 
         This method is kept for backward compatibility with BaseCommand interface,

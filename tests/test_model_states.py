@@ -9,8 +9,9 @@ Failure in state detection = wrong data queried!
 """
 
 import pytest
-from dbt_meta.utils.model_state import ModelState, detect_model_state
+
 from dbt_meta.utils.git import GitStatus
+from dbt_meta.utils.model_state import ModelState, detect_model_state
 
 
 @pytest.mark.critical

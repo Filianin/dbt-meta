@@ -1,12 +1,14 @@
 """Config command - Extract full dbt config."""
 
-from typing import Optional, Dict, Any
 import sys
+from typing import Any, Optional
 
 from dbt_meta.command_impl.base import BaseCommand
 from dbt_meta.fallback import FallbackLevel
+from dbt_meta.utils.bigquery import (
+    fetch_table_metadata_from_bigquery as _fetch_table_metadata_from_bigquery,
+)
 from dbt_meta.utils.dev import calculate_dev_schema as _calculate_dev_schema
-from dbt_meta.utils.bigquery import fetch_table_metadata_from_bigquery as _fetch_table_metadata_from_bigquery
 
 
 class ConfigCommand(BaseCommand):
@@ -35,7 +37,7 @@ class ConfigCommand(BaseCommand):
     SUPPORTS_BIGQUERY = True  # Partial config from BigQuery
     SUPPORTS_DEV = True
 
-    def execute(self) -> Optional[Dict[str, Any]]:
+    def execute(self) -> Optional[dict[str, Any]]:
         """Execute config command.
 
         Returns:
@@ -47,7 +49,7 @@ class ConfigCommand(BaseCommand):
 
         return self.process_model(model)
 
-    def process_model(self, model: dict, level: Optional[FallbackLevel] = None) -> Optional[Dict[str, Any]]:
+    def process_model(self, model: dict, level: Optional[FallbackLevel] = None) -> Optional[dict[str, Any]]:
         """Process model data and return config.
 
         Args:
@@ -59,7 +61,7 @@ class ConfigCommand(BaseCommand):
         """
         return model.get('config', {})
 
-    def _get_model_bigquery_dev(self) -> Optional[Dict]:
+    def _get_model_bigquery_dev(self) -> Optional[dict]:
         """Get model from BigQuery in dev mode.
 
         For dev mode, uses full model name as table name (no splitting by __).
@@ -77,7 +79,7 @@ class ConfigCommand(BaseCommand):
         # Print warnings about partial config
         print(f"⚠️  Model not in manifest, using BigQuery config: {dev_schema}.{self.model_name}",
               file=sys.stderr)
-        print(f"⚠️  Partial config available (dbt-specific settings unavailable)",
+        print("⚠️  Partial config available (dbt-specific settings unavailable)",
               file=sys.stderr)
 
         # Map BigQuery → dbt config

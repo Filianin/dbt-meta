@@ -3,14 +3,10 @@
 Target lines: 35, 64-65, 94-95, 127-131, 170-171, 199-201, 221, 291, 314
 """
 
+
 import pytest
-import os
-from unittest.mock import patch, Mock
-from dbt_meta.utils.bigquery import (
-    _should_retry,
-    sanitize_bigquery_name,
-    infer_table_parts
-)
+
+from dbt_meta.utils.bigquery import _should_retry, infer_table_parts, sanitize_bigquery_name
 
 
 class TestShouldRetry:
@@ -65,7 +61,7 @@ class TestSanitizeBigQueryName:
         """Test sanitize with name starting with special character (lines 94-95)."""
         name = "@invalid"
 
-        sanitized, warnings = sanitize_bigquery_name(name, "table")
+        sanitized, _warnings = sanitize_bigquery_name(name, "table")
 
         # Should prepend underscore and replace @
         assert sanitized.startswith("_")

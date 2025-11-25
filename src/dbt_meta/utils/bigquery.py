@@ -3,13 +3,13 @@
 Handles BigQuery name sanitization, table metadata fetching, and column extraction.
 """
 
+import json as json_lib
 import os
-import sys
 import re
 import subprocess
-import json as json_lib
+import sys
 import time
-from typing import Optional, List, Dict, Tuple
+from typing import Optional
 
 
 def _should_retry(attempt: int, max_retries: int, error_msg: str) -> bool:
@@ -39,7 +39,7 @@ def _should_retry(attempt: int, max_retries: int, error_msg: str) -> bool:
     return False
 
 
-def sanitize_bigquery_name(name: str, name_type: str = "dataset") -> Tuple[str, List[str]]:
+def sanitize_bigquery_name(name: str, name_type: str = "dataset") -> tuple[str, list[str]]:
     """
     Sanitize name for BigQuery compatibility
 
@@ -104,7 +104,7 @@ def sanitize_bigquery_name(name: str, name_type: str = "dataset") -> Tuple[str, 
     return name, warnings
 
 
-def infer_table_parts(model_name: str) -> Tuple[Optional[str], str]:
+def infer_table_parts(model_name: str) -> tuple[Optional[str], str]:
     """
     Extract dataset and table from dbt model name.
 
@@ -159,10 +159,7 @@ def fetch_table_metadata_from_bigquery(
         None if bq command fails or table not found
     """
     # Construct full table name
-    if database:  # pragma: no cover
-        full_table = f"{database}:{dataset}.{table}"
-    else:
-        full_table = f"{dataset}.{table}"
+    full_table = f"{database}:{dataset}.{table}" if database else f"{dataset}.{table}"
 
     # Execute bq show command
     try:
@@ -174,7 +171,7 @@ def fetch_table_metadata_from_bigquery(
         return None
 
 
-def run_bq_command(args: List[str], timeout: int = 10) -> subprocess.CompletedProcess:
+def run_bq_command(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess:
     """
     Run bq command with PYTHONPATH workaround for dwh-pipeline projects.
 
@@ -207,7 +204,7 @@ def run_bq_command(args: List[str], timeout: int = 10) -> subprocess.CompletedPr
 
     try:
         result = subprocess.run(
-            [bq_cmd] + args,
+            [bq_cmd, *args],
             capture_output=True,
             text=True,
             check=True,
@@ -226,7 +223,7 @@ def fetch_columns_from_bigquery_direct(
     table: str,
     database: Optional[str] = None,
     max_retries: int = 3
-) -> Optional[List[Dict[str, str]]]:
+) -> Optional[list[dict[str, str]]]:
     """
     Fetch columns directly from BigQuery with retry logic and performance tracking.
 
@@ -253,16 +250,13 @@ def fetch_columns_from_bigquery_direct(
     start_time = time.time()
 
     # Construct full table name
-    if database:  # pragma: no cover
-        full_table = f"{database}:{dataset}.{table}"
-    else:
-        full_table = f"{dataset}.{table}"
+    full_table = f"{database}:{dataset}.{table}" if database else f"{dataset}.{table}"
 
     # Check if bq command is available (only once, no retry)
     try:
         run_bq_command(['version'], timeout=5)
     except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):  # pragma: no cover
-        print(f"Error: bq command not found. Install Google Cloud SDK.", file=sys.stderr)
+        print("Error: bq command not found. Install Google Cloud SDK.", file=sys.stderr)
         return None
 
     # Fetch schema from BigQuery with retry
@@ -292,7 +286,7 @@ def fetch_columns_from_bigquery_direct(
 
             return columns
 
-        except subprocess.CalledProcessError as e:  # pragma: no cover
+        except subprocess.CalledProcessError:  # pragma: no cover
             if _should_retry(attempt, max_retries, "BigQuery query failed"):
                 continue
             # Final attempt failed
@@ -308,7 +302,7 @@ def fetch_columns_from_bigquery_direct(
 
         except json_lib.JSONDecodeError:  # pragma: no cover
             # JSON parse error - no point retrying
-            print(f"Error: Invalid JSON response from BigQuery", file=sys.stderr)
+            print("Error: Invalid JSON response from BigQuery", file=sys.stderr)
             return None
 
     return None

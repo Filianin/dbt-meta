@@ -7,20 +7,19 @@ Provides common functionality for all model metadata extraction commands:
 - Git status checking
 """
 
+import contextlib
 from abc import ABC, abstractmethod
-from typing import Any, Optional, Dict, List
-import os
+from typing import Any, Optional
 
 from dbt_meta.config import Config
-from dbt_meta.fallback import FallbackStrategy, FallbackLevel, FallbackResult
+from dbt_meta.errors import ManifestNotFoundError, ManifestParseError, ModelNotFoundError
+from dbt_meta.fallback import FallbackLevel, FallbackStrategy
 from dbt_meta.utils import get_cached_parser as _get_cached_parser
 from dbt_meta.utils import print_warnings as _print_warnings
-from dbt_meta.utils.git import check_manifest_git_mismatch as _check_manifest_git_mismatch
 from dbt_meta.utils.dev import (
     find_dev_manifest as _find_dev_manifest,
-    calculate_dev_schema as _calculate_dev_schema,
 )
-from dbt_meta.errors import ModelNotFoundError, ManifestNotFoundError, ManifestParseError
+from dbt_meta.utils.git import check_manifest_git_mismatch as _check_manifest_git_mismatch
 
 
 class BaseCommand(ABC):
@@ -76,7 +75,7 @@ class BaseCommand(ABC):
         self.model_name = model_name
         self.use_dev = use_dev
         self.json_output = json_output
-        self.warnings: List[Dict[str, str]] = []
+        self.warnings: list[dict[str, str]] = []
         self._fallback_strategy = FallbackStrategy(config, manifest_path)
 
     @abstractmethod
@@ -104,7 +103,7 @@ class BaseCommand(ABC):
         """
         pass
 
-    def get_model_with_fallback(self) -> Optional[Dict[str, Any]]:
+    def get_model_with_fallback(self) -> Optional[dict[str, Any]]:
         """Get model data with 3-level fallback strategy.
 
         Flow:
@@ -123,11 +122,8 @@ class BaseCommand(ABC):
         dev_parser = None
         dev_manifest = _find_dev_manifest(self.manifest_path)
         if dev_manifest:
-            try:
+            with contextlib.suppress(ManifestNotFoundError, ManifestParseError):
                 dev_parser = _get_cached_parser(dev_manifest)
-            except (ManifestNotFoundError, ManifestParseError):  # pragma: no cover
-                # Dev manifest not available or invalid - this is acceptable
-                pass
 
         # Check git status and collect warnings (with parsers for new model detection)
         git_warnings = _check_manifest_git_mismatch(
@@ -153,7 +149,7 @@ class BaseCommand(ABC):
         # Production mode: use 3-level fallback
         return self._get_model_prod_mode()
 
-    def _get_model_dev_mode(self) -> Optional[Dict[str, Any]]:
+    def _get_model_dev_mode(self) -> Optional[dict[str, Any]]:
         """Get model in dev mode (dev manifest → BigQuery).
 
         Returns:
@@ -184,7 +180,7 @@ class BaseCommand(ABC):
 
         return None
 
-    def _get_model_prod_mode(self) -> Optional[Dict[str, Any]]:
+    def _get_model_prod_mode(self) -> Optional[dict[str, Any]]:
         """Get model in production mode (prod → dev → BigQuery).
 
         Uses FallbackStrategy for 3-level fallback.
@@ -224,7 +220,7 @@ class BaseCommand(ABC):
         except ModelNotFoundError:
             return None
 
-    def _get_model_bigquery_dev(self) -> Optional[Dict[str, Any]]:
+    def _get_model_bigquery_dev(self) -> Optional[dict[str, Any]]:
         """Get model from BigQuery in dev mode.
 
         Subclasses can override this method to provide BigQuery fallback
@@ -235,7 +231,7 @@ class BaseCommand(ABC):
         """
         return None
 
-    def emit_warnings(self, warnings: List[Dict[str, str]]):
+    def emit_warnings(self, warnings: list[dict[str, str]]):
         """Emit warnings to user.
 
         Args:

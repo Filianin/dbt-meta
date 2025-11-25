@@ -9,13 +9,13 @@ Target modules with 3-6 uncovered lines:
 - lineage_utils.py (2 lines: 34-46)
 """
 
+from unittest.mock import MagicMock, patch
+
 import pytest
-import json
-from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
-from dbt_meta.fallback import FallbackStrategy, FallbackLevel
+
 from dbt_meta.config import Config
 from dbt_meta.errors import ModelNotFoundError
+from dbt_meta.fallback import FallbackLevel, FallbackStrategy
 
 
 class TestFallbackGaps:
@@ -135,7 +135,7 @@ class TestModelStateGaps:
     def test_deleted_locally_state(self):
         """Test DELETED_LOCALLY state detection."""
         from dbt_meta.utils.git import GitStatus
-        from dbt_meta.utils.model_state import detect_model_state, ModelState
+        from dbt_meta.utils.model_state import ModelState, detect_model_state
 
         git_status = GitStatus(
             exists=False,

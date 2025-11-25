@@ -1,9 +1,9 @@
 """Tests for configuration management module."""
 
+
 import pytest
-import os
-from pathlib import Path
-from dbt_meta.config import Config, _parse_bool, _calculate_dev_schema
+
+from dbt_meta.config import Config, _calculate_dev_schema, _parse_bool
 
 
 class TestParseBool:

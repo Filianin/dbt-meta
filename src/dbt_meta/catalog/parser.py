@@ -9,10 +9,10 @@ Performance: ~10ms vs ~2500ms for BigQuery INFORMATION_SCHEMA
 """
 
 import os
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from functools import cached_property
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Any, Optional
 
 try:
     import orjson
@@ -45,7 +45,7 @@ class CatalogParser:
         self.catalog_path = str(Path(catalog_path).expanduser())
 
     @cached_property
-    def catalog(self) -> Dict[str, Any]:
+    def catalog(self) -> dict[str, Any]:
         """Lazy load and parse catalog.json.
 
         Returns:
@@ -68,7 +68,7 @@ class CatalogParser:
         self,
         model_name: str,
         project_name: str = "admirals_bi_dwh"
-    ) -> Optional[List[Dict[str, str]]]:
+    ) -> Optional[list[dict[str, str]]]:
         """Get columns for model from catalog.
 
         Args:
@@ -112,7 +112,7 @@ class CatalogParser:
 
         return result
 
-    def get_table_stats(self, model_name: str, project_name: str = "admirals_bi_dwh") -> Optional[Dict[str, Any]]:
+    def get_table_stats(self, model_name: str, project_name: str = "admirals_bi_dwh") -> Optional[dict[str, Any]]:
         """Get table statistics from catalog.
 
         Args:

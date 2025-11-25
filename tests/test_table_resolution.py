@@ -4,8 +4,10 @@ CRITICAL: These tests verify correct table name resolution which was BROKEN befo
 In dev mode, we must use FULL model_name as table name (not extract parts).
 """
 
+from unittest.mock import patch
+
 import pytest
-from unittest.mock import MagicMock, patch
+
 from dbt_meta.command_impl.columns import ColumnsCommand
 from dbt_meta.config import Config
 

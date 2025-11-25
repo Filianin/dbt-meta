@@ -10,10 +10,9 @@ Tests all 6 critical scenarios from .qa/decision_tree_visual.txt:
 - Scenario G: Dev manifest with prod schema → Override to dev schema
 """
 
-import pytest
 import json
-from pathlib import Path
-from unittest.mock import patch, Mock
+from unittest.mock import patch
+
 from dbt_meta.commands import columns
 
 

@@ -1,11 +1,13 @@
 """Tests for fallback strategy module."""
 
-import pytest
-from pathlib import Path
+import contextlib
 from unittest.mock import Mock, patch
-from dbt_meta.fallback import FallbackStrategy, FallbackLevel, FallbackResult
+
+import pytest
+
 from dbt_meta.config import Config
-from dbt_meta.errors import ModelNotFoundError, ManifestNotFoundError
+from dbt_meta.errors import ManifestNotFoundError, ModelNotFoundError
+from dbt_meta.fallback import FallbackLevel, FallbackResult, FallbackStrategy
 
 
 class TestFallbackResult:
@@ -278,10 +280,8 @@ class TestFallbackStrategy:
 
         strategy = FallbackStrategy(mock_config)
 
-        try:
+        with contextlib.suppress(ModelNotFoundError):
             strategy.get_model('test_model', mock_prod_parser)
-        except ModelNotFoundError:
-            pass
 
         # Should have searched all three levels
         assert len(strategy._searched_levels) == 3

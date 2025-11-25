@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dbt-meta"
-version = "0.2.0"
+version = "0.1.0"
 description = "AI-first CLI for dbt metadata extraction - Fast, modern Python tool"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -61,7 +61,7 @@ target-version = "py39"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "RUF", "B", "SIM"]
-ignore = ["E501"]
+ignore = ["E501", "SIM108", "RUF001"]
 
 [tool.mypy]
 python_version = "3.9"

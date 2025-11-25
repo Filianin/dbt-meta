@@ -3,12 +3,12 @@
 Handles dev manifest discovery, dev schema/dataset naming, and dev table naming patterns.
 """
 
+import getpass
 import os
 import sys
-import getpass
-from pathlib import Path
-from typing import Optional, Dict
 from datetime import datetime
+from pathlib import Path
+from typing import Optional
 
 
 def find_dev_manifest(prod_manifest_path: str) -> Optional[str]:
@@ -48,7 +48,7 @@ def find_dev_manifest(prod_manifest_path: str) -> Optional[str]:
 
         return None
 
-    except (OSError, IOError, PermissionError):  # pragma: no cover
+    except (OSError, PermissionError):  # pragma: no cover
         # Filesystem access issues - return None to indicate dev manifest not available
         return None
 
@@ -112,7 +112,6 @@ def calculate_dev_schema() -> str:
         return validate_dev_dataset(result)
 
     # No legacy vars set - use default for backward compatibility
-    # (This maintains v0.3.0 behavior when no env vars are set)
     dev_dataset = f"personal_{username}"
     return validate_dev_dataset(dev_dataset)
 
@@ -227,7 +226,7 @@ def build_dev_table_name(model: dict, model_name: str) -> str:
         except KeyError as e:
             # Unknown placeholder
             print(f"⚠️  Unknown placeholder in DBT_DEV_TABLE_PATTERN: {e}", file=sys.stderr)
-            print(f"⚠️  Available: {{name}}, {{alias}}, {{username}}, {{model_name}}, {{folder}}, {{date}}", file=sys.stderr)
+            print("⚠️  Available: {name}, {alias}, {username}, {model_name}, {folder}, {date}", file=sys.stderr)
             # Fallback to name
             return name
     else:
@@ -235,7 +234,7 @@ def build_dev_table_name(model: dict, model_name: str) -> str:
         return pattern
 
 
-def build_dev_schema_result(model: dict, model_name: str) -> Dict[str, str]:
+def build_dev_schema_result(model: dict, model_name: str) -> dict[str, str]:
     """
     Build dev schema result from model data.
 

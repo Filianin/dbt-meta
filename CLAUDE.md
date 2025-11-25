@@ -40,10 +40,10 @@ mypy src/dbt_meta && ruff check src/dbt_meta
 src/dbt_meta/
 ├── cli.py                # Typer CLI + Rich formatting
 ├── commands.py           # Command implementations + BigQuery fallback
-├── errors.py             # Exception hierarchy (v0.3.0+)
-├── config.py             # Configuration management (v0.3.0+)
-├── fallback.py           # 3-level fallback strategy (v0.3.0+)
-├── utils/                # Utility modules (v0.3.0+)
+├── errors.py             # Exception hierarchy
+├── config.py             # Configuration management
+├── fallback.py           # 3-level fallback strategy
+├── utils/                # Utility modules
 │   ├── __init__.py       # Parser caching, warnings
 │   └── git.py            # Git operations
 └── manifest/
@@ -101,7 +101,7 @@ if not model:
 
 #### 4. Dev Schema Resolution (2-level priority)
 
-**Simplified from 4-level to 2-level in v0.3.0:**
+**Dev schema resolution (2-level):**
 
 ```python
 1. DBT_DEV_SCHEMA - Direct schema name (highest priority)
@@ -114,7 +114,7 @@ Location: `config.py:28-35`, `utils/dev.py:81-93`
 
 #### 5. Exception Hierarchy
 
-**Consistent error handling with typed exceptions** (Added in v0.3.0):
+**Consistent error handling with typed exceptions**:
 
 ```python
 # src/dbt_meta/errors.py
@@ -158,22 +158,30 @@ Try: meta list core
 
 #### 6. Configuration Management
 
-**Centralized configuration with validation** (Added in v0.3.0):
+**Centralized configuration with TOML and env var support** (v0.1.0):
 
 ```python
 # src/dbt_meta/config.py
 
 from dbt_meta.config import Config
 
-# Load configuration from environment variables
+# Load from TOML config file (recommended)
+config = Config.from_config_or_env()
+# Priority: TOML config > Environment variables > Defaults
+# Searches: ./.dbt-meta.toml, ~/.config/dbt-meta/config.toml, ~/.dbt-meta.toml
+
+# Load from environment variables only
 config = Config.from_env()
+
+# Load from TOML file directly
+config = Config.from_toml("/path/to/config.toml")
 
 # Access configuration
 config.prod_manifest_path       # ~/dbt-state/manifest.json
 config.dev_manifest_path        # ./target/manifest.json
 config.fallback_dev_enabled     # True/False
 config.fallback_bigquery_enabled # True/False
-config.dev_dataset              # personal_username
+config.dev_dataset              # personal_username (sanitized)
 config.prod_table_name_strategy # alias_or_name | name | alias
 config.prod_schema_source       # config_or_model | model | config
 
@@ -184,26 +192,89 @@ for warning in warnings:
 ```
 
 **Key features:**
-- Single source of truth for all environment variables
+- **TOML configuration** - Modern config files with XDG compliance
+- **Priority system** - CLI flags > TOML > Env vars > Defaults
+- Single source of truth for all configuration
 - Automatic path expansion (~ to home directory)
 - Boolean parsing with sensible defaults
 - Validation with helpful warnings
 - Type-safe dataclass with full type hints
+- Username sanitization for BigQuery compatibility (replaces all non-alphanumeric chars)
 
-**Dev schema resolution** (simplified to 2-level):
+**Dev schema resolution** (2-level):
 ```python
 # Priority 1: Direct schema name
 DBT_DEV_SCHEMA = "my_custom_dev_schema"
 
 # Priority 2: Default with username (fallback)
-# personal_{username} (from USER env var)
+# personal_{username} (from USER env var, sanitized with re.sub(r'[^a-zA-Z0-9_]', '_', username))
 ```
 
-Location: `config.py:24-139`
+**Config file locations** (priority order):
+1. `./.dbt-meta.toml` - Project-local config
+2. `~/.config/dbt-meta/config.toml` - User config (XDG)
+3. `~/.dbt-meta.toml` - Fallback
 
-#### 7. Fallback Strategy
+**Settings commands** (v0.1.0):
+- `meta settings init` - Create config file from template
+- `meta settings show` - Display merged configuration
+- `meta settings validate` - Validate config file
+- `meta settings path` - Show active config file path
 
-**3-level fallback system with clean interface** (Added in v0.3.0):
+Location: `config.py:24-473`
+
+#### 7. CLI and User Experience
+
+**Help system improvements** (v0.1.0):
+```python
+# Enable -h short flag for all commands and subcommands
+app = typer.Typer(
+    name="dbt-meta",
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+
+settings_app = typer.Typer(
+    help="CLI settings management",
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+```
+
+**Benefits:**
+- Both `-h` and `--help` work for all commands
+- Consistent UX across main app and subcommands
+- Standard CLI convention
+
+**Schema command output** (v0.1.0):
+```bash
+# Text mode - simple table name
+meta schema core_client__client_info
+# → admirals-bi-dwh.core_client.client_info
+
+# JSON mode - structured output
+meta schema -j core_client__client_info
+# → {"model_name": "core_client__client_info", "full_name": "admirals-bi-dwh.core_client.client_info"}
+```
+
+**Purpose:** Minimalist output optimized for shell scripting and AI consumption
+
+**Username sanitization** (v0.1.0):
+```python
+# config.py:36-57 - _calculate_dev_schema()
+username_sanitized = re.sub(r'[^a-zA-Z0-9_]', '_', username)
+# Replaces ALL non-alphanumeric characters (dots, hyphens, @, etc.)
+# Examples:
+# "pavel.filianin" → "pavel_filianin"
+# "john-doe" → "john_doe"
+# "user@example.com" → "user_example_com"
+```
+
+**Why:** BigQuery dataset names only allow letters, numbers, and underscores
+
+Location: `cli.py:26-39`, `config.py:36-57`
+
+#### 8. Fallback Strategy
+
+**3-level fallback system with clean interface**:
 
 ```python
 # src/dbt_meta/fallback.py
@@ -317,9 +388,9 @@ Add to `_build_commands_panel()` if needed.
 **Test structure:**
 - `test_commands.py` - Command implementations
 - `test_infrastructure.py` - Manifest discovery + warnings
-- `test_errors.py` - Exception hierarchy (v0.3.0+)
-- `test_config.py` - Configuration management (v0.3.0+)
-- `test_fallback.py` - Fallback strategy (v0.3.0+)
+- `test_errors.py` - Exception hierarchy
+- `test_config.py` - Configuration management
+- `test_fallback.py` - Fallback strategy
 - `conftest.py` - Shared fixtures (uses dynamic `test_model` fixture)
 
 **Excluded from coverage:**
@@ -344,7 +415,7 @@ Add to `_build_commands_panel()` if needed.
 
 ## Environment Variables
 
-**Preferred access:** Use `Config.from_env()` (v0.3.0+) for centralized configuration management with validation.
+**Preferred access:** Use `Config.from_env()` for centralized configuration management with validation.
 
 **Manifest:**
 - `DBT_PROD_MANIFEST_PATH` - Production manifest path (default: `~/.dbt-state/manifest.json`)
@@ -360,7 +431,7 @@ Add to `_build_commands_panel()` if needed.
 - `DBT_DEV_SCHEMA` - Direct dev schema name (overrides default `personal_{username}`)
 - `DBT_USER` - Override username for dev schema (default: `$USER`)
 
-**Deprecated (v0.3.0+):**
+**Deprecated:**
 - `DBT_DEV_DATASET` - Use `DBT_DEV_SCHEMA` instead (backward compatible with warning)
 - `DBT_DEV_SCHEMA_TEMPLATE` - Use `DBT_DEV_SCHEMA` instead (no longer supported)
 - `DBT_DEV_SCHEMA_PREFIX` - Use `DBT_DEV_SCHEMA` instead (no longer supported)

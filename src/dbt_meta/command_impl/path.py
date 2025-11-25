@@ -1,11 +1,11 @@
 """Path command - Get relative file path."""
 
-from typing import Optional
 import os
+from typing import Optional
 
 from dbt_meta.command_impl.base import BaseCommand
-from dbt_meta.fallback import FallbackLevel
 from dbt_meta.errors import ManifestNotFoundError, ManifestParseError
+from dbt_meta.fallback import FallbackLevel
 
 
 class PathCommand(BaseCommand):
@@ -101,7 +101,7 @@ class PathCommand(BaseCommand):
         dev_pattern = os.environ.get('DBT_DEV_TABLE_PATTERN', 'name')
 
         nodes = parser_dev.manifest.get('nodes', {})
-        for node_id, node_data in nodes.items():
+        for _node_id, node_data in nodes.items():
             if node_data.get('resource_type') != 'model':
                 continue
 
@@ -156,7 +156,7 @@ class PathCommand(BaseCommand):
 
         # Search all models for matching schema + alias/name
         nodes = parser.manifest.get('nodes', {})
-        for node_id, node_data in nodes.items():
+        for _node_id, node_data in nodes.items():
             if node_data.get('resource_type') != 'model':
                 continue
 

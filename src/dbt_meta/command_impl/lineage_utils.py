@@ -3,10 +3,10 @@
 Helper functions for building and processing hierarchical dependency trees.
 """
 
-from typing import Dict, List, Any, Optional, Set
+from typing import Any, Optional
 
 
-def count_tree_nodes(tree: List[Dict[str, Any]]) -> int:
+def count_tree_nodes(tree: list[dict[str, Any]]) -> int:
     """Count total nodes in hierarchical tree.
 
     Args:
@@ -17,12 +17,12 @@ def count_tree_nodes(tree: List[Dict[str, Any]]) -> int:
     """
     count = len(tree)
     for node in tree:  # pragma: no cover
-        if 'children' in node and node['children']:
+        if node.get('children'):
             count += count_tree_nodes(node['children'])
     return count
 
 
-def flatten_tree_to_compact(tree: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def flatten_tree_to_compact(tree: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Flatten nested tree to compact flat format.
 
     Args:
@@ -47,14 +47,14 @@ def flatten_tree_to_compact(tree: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def build_relation_tree(
-    relation_map: Dict[str, List[str]],
+    relation_map: dict[str, list[str]],
     node_id: str,
-    nodes: Dict[str, Any],
-    sources: Dict[str, Any],
-    visited: Optional[Set[str]] = None,
+    nodes: dict[str, Any],
+    sources: dict[str, Any],
+    visited: Optional[set[str]] = None,
     level: int = 0,
     json_mode: bool = False
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Build hierarchical tree of relations (parents or children).
 
     Args:

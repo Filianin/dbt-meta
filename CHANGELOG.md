@@ -5,361 +5,105 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Changed
-
-#### Environment Variable Naming Consistency
-- **Renamed `DBT_DEV_DATASET` → `DBT_DEV_SCHEMA`** for consistency with dbt terminology
-  - dbt uses "schema" for BigQuery datasets (via `generate_schema_name()` macro)
-  - Old name `DBT_DEV_DATASET` deprecated but still works with warning
-  - Impact: All documentation and code now use consistent "schema" terminology
-  - Migration: Update `export DBT_DEV_DATASET=...` → `export DBT_DEV_SCHEMA=...` in your setup
-  - Backward compatible: Old variable still works until v1.0.0
-
-### Fixed
-
-#### Test Suite Improvements
-- **Improved test coverage from 87% → 93%** (+6 percentage points)
-  - Fixed all 16 failing tests caused by fallback fixture conflicts
-  - Added 32 new tests covering edge cases and error handling
-  - Tests: 344 passing → **376 passing** (all passing, 0 failures)
-  - New test files:
-    - `test_path_bigquery_coverage.py` - Path BigQuery format search edge cases
-    - `test_git_edge_coverage.py` - Git filesystem errors & status detection
-    - `test_bigquery_final_coverage.py` - BigQuery utility retry logic & sanitization
-    - `test_columns_deps_final.py` - Columns & deps command edge cases
-    - `test_final_95_push.py` - Schema, lineage, info, config command tests
-  - Key improvements:
-    - bigquery.py: 79% → 90% coverage
-    - git.py: improved error handling coverage
-    - path.py: improved BigQuery format search coverage
-    - Fixed conditional fixture usage (`enable_fallbacks` opt-in pattern)
-
-#### Improved NEW Model Detection for Feature Branch Workflow
-- **Fixed NEW model detection** for models committed to feature branch but not merged to master
-  - Previously: Only detected NEW models with uncommitted changes (git modified)
-  - Now: Allows defer workflow fallback while warning about potential new models
-  - Impact: Models in feature branch work with fallback, users get helpful warnings
-  - Changes:
-    - `new_model_candidate` warning (instead of blocking error) for models in dev only
-    - `file_not_compiled` error for files that exist but failed compilation
-    - `model_not_in_dev` error when using --dev but model not built in dev
-  - Behavior: Defer workflow fallback proceeds with warnings, not blocked
-  - Related: `test_new_model_committed_in_feature_branch`, `test_file_exists_but_not_compiled` added
-
-#### BigQuery Fallback for Dev Models Without Columns
-- **Fixed incorrect schema in BigQuery fallback** when model found in dev manifest without documented columns
-  - Previously: Fallback searched production manifest → used production schema
-  - Now: Fallback uses schema from FOUND model (dev or prod)
-  - Impact: `meta columns --dev model_name` now correctly queries `personal_user.table` instead of `schema.table`
-  - Affects: New models and models without schema.yml documentation
-  - Related: `test_columns_fallback_uses_model_schema_not_production` added to test suite
-
-#### Dev Mode Uses Full Model Name for BigQuery Fallback
-- **Fixed incorrect table name in dev mode BigQuery fallback** when columns missing from manifest
-  - Previously: Used `alias` or `name` from manifest (e.g., `in_app_events_postbacks`)
-  - Now: Uses full model name in dev mode (e.g., `stg_appsflyer__in_app_events_postbacks`)
-  - Impact: `meta columns --dev model_name` correctly finds dev tables built with full filename
-  - Affects: All dev models without documented columns in manifest
-  - Technical: `columns.py:80-83` - conditional table name selection based on `use_dev` flag
-
-#### Dev Table Naming Matches dbt --target dev Behavior
-- **Changed dev table naming to use full SQL filename** instead of model.name from manifest
-  - Previously: `build_dev_table_name()` used `model.get('name')` → `in_app_events_postbacks`
-  - Now: Uses `model_name` (full SQL filename) → `stg_appsflyer__in_app_events_postbacks`
-  - Impact: `meta schema --dev` and all dev commands now match actual table names in BigQuery
-  - Root cause: dbt builds dev tables with full filename when using `--target dev`
-  - Affects: All dev commands (`schema`, `columns`, `info` with `--dev` flag)
-  - Technical: `utils/dev.py:199` - changed `name = model_name` instead of `model.get('name', model_name)`
-  - Breaking: Existing code expecting short table names will need update
-  - Environment variable: `DBT_DEV_TABLE_PATTERN="name"` now returns full filename (default behavior)
+## [0.1.0] - 2025-11-25
 
 ### Added
 
-#### Simple Mode Support (Works Out-of-Box)
-- **`./target/manifest.json` fallback** - Automatically finds manifest after `dbt compile`
-  - No configuration needed for single-project setups
-  - Perfect for users without defer workflow
-  - Priority 3: Used when `DBT_PROD_MANIFEST_PATH` is not set
-  - Example: `dbt compile && meta schema customers` → works immediately!
+#### TOML Configuration Support
+- **Modern configuration files** with XDG Base Directory compliance
+  - Config locations: `./.dbt-meta.toml`, `~/.config/dbt-meta/config.toml`, `~/.dbt-meta.toml`
+  - Priority: CLI flags > TOML config > Environment variables > Defaults
+  - Template-based initialization with inline documentation
+  - TOML parsing: `tomllib` (Python 3.11+) or `tomli` (Python <3.11)
 
-#### `-m, --manifest` CLI Flag
-- **Global `-m, --manifest PATH` flag** - Explicitly specify manifest.json path
-  - Overrides all environment variables
-  - Example: `meta schema -m ~/custom.json model_name`
-  - Warning displayed when used with `--dev` flag (--dev is ignored)
+#### Settings Management Commands
+- **`meta settings init`** - Create config file from template
+- **`meta settings show`** - Display current merged configuration (text or JSON)
+- **`meta settings validate`** - Validate config file syntax and values
+- **`meta settings path`** - Show path to active config file
 
-#### Combined Short Flags Support
-- **Multiple short flags can be combined** in any order (built-in Typer/Click feature)
-  - Example: `-dj` = `-d -j` (dev + JSON)
-  - Example: `-ajd` = `-a -j -d` (all + JSON + dev)
-  - Example: `-jm PATH` = `-j -m PATH` (JSON + custom manifest)
-  - Works with all flag combinations for streamlined commands
+#### Configuration System
+- **`Config.from_toml()`** - Load configuration from TOML file
+- **`Config.from_config_or_env()`** - Load from TOML with env var fallback
+- **`Config.from_env()`** - Load from environment variables only
+- **`Config.find_config_file()`** - Auto-discover config file
+- Full configuration dataclass with type hints and validation
+- Automatic path expansion (~/ to home directory)
+- Boolean parsing with sensible defaults
 
-#### `DBT_DEV_MANIFEST_PATH` Environment Variable
-- **New environment variable** for dev manifest path
-  - Default: `./target/manifest.json`
-  - Used when `--dev` flag is provided
-  - Example: `export DBT_DEV_MANIFEST_PATH="./target/manifest.json"`
+#### CLI Improvements
+- **`-h` short flag support** - Both `-h` and `--help` work for all commands
+  - Enabled via `context_settings={"help_option_names": ["-h", "--help"]}`
+  - Works for main app and all subcommands (settings, etc.)
+- **Simplified `schema` command output**
+  - Text mode: Just the full table name (e.g., `admirals-bi-dwh.core_client.client_info`)
+  - JSON mode: `{"model_name": "...", "full_name": "..."}`
+  - Optimized for shell scripting and AI consumption
 
-#### Unified Configuration Panel in Help
-- **Consolidated help documentation** - Single "Configuration" panel instead of 4 separate sections
-  - **[1] Simple Setup** - For users without defer (dbt compile + ready to go)
-  - **[2] Production Setup** - For defer workflow (3 steps: export, cron, --dev)
-  - **Manifest Discovery** - Clear priority order for both modes
-  - **Environment Variables** - All variables grouped logically
+#### Username Sanitization
+- **Improved BigQuery dataset compatibility**
+  - Replaces ALL non-alphanumeric characters (not just dots/hyphens)
+  - Uses regex: `re.sub(r'[^a-zA-Z0-9_]', '_', username)`
+  - Examples: `pavel.filianin` → `pavel_filianin`, `user@example.com` → `user_example_com`
+  - Ensures valid BigQuery dataset names (letters, numbers, underscores only)
 
-### Changed
+#### Core Metadata Commands
+- **`info`** - Model summary (name, schema, table, materialization, tags)
+- **`schema`** - Full table name (database.schema.table)
+- **`path`** - Relative file path to .sql file
+- **`columns`** - Column names and types with catalog/BigQuery fallback
+- **`sql`** - Compiled SQL (default) or raw SQL with `--jinja` flag
+- **`docs`** - Column names, types, and descriptions
+- **`config`** - Full dbt config (partition_by, cluster_by, etc.)
 
-#### UI Improvements
-- **Help system styling** - Unified color scheme for Configuration panel
-  - All section headers now use `[bold cyan]` (previously mixed green/cyan/white)
-  - Removed excessive colors from paths and variables
-  - Simplified intro text - removed redundant "Works from any directory" line
-  - **Hybrid layout** - Configuration panel uses best layout for each section
-    - Setup instructions (Simple + Production): Single column for better readability
-    - Reference info (Manifest Discovery + Environment Variables): Two columns with alignment
-    - Left column (45 chars): variable names and paths
-    - Right column: concise descriptions
-  - **Simplified Dev Workflow section** - Completely redesigned to reflect actual behavior
-    - **New approach:** Reads schema/table directly from `target/manifest.json` (dbt-compiled values)
-    - **Fallback:** `DBT_DEV_SCHEMA.{alias|name}` when model not in manifest
-      - Uses `alias` if present in config, otherwise uses `name` (filename)
-      - `DBT_DEV_SCHEMA` defaults to `personal_{username}` if not set
-    - **Removed from help:** All dev naming environment variables (still work for backward compatibility)
-      - `DBT_DEV_SCHEMA_TEMPLATE`, `DBT_DEV_SCHEMA_PREFIX`, `DBT_DEV_TABLE_PATTERN`, `DBT_USER`
-    - **Rationale:** Each project has custom `generate_schema_name` and `generate_alias_name` macros
-      - `dbt-meta` should NOT replicate dbt logic - just read the results from manifest
-      - Universal approach works with any dbt setup
-  - **Depersonalized examples** - Replaced all personal data with generic examples
-    - Changed `pavel_filianin` → `alice` in all documentation and code comments
-    - Changed `personal_pavel_filianin` → `personal_alice` in examples and tests
-    - Kept GitHub links and copyright attribution unchanged
-  - **Simple Mode clarification** - Added note about fallback behavior
-    - Explains that without production manifest, commands use `./target/manifest.json`
-    - Recommends using `--dev` flag explicitly for clarity
-    - Helps users understand automatic fallback in single-project setups
-  - Removed legacy fallback `~/dbt-state/manifest.json` from Manifest Discovery display
-  - More consistent with overall help design
-- **`docs` command** - Removed 80-character description truncation
-  - Now shows full column descriptions without cutting them off
-  - Added blank line before output for consistency
-- **`search` command** - Removed 80-character description truncation
-  - Now shows full model descriptions in search results
+#### Dependency Navigation
+- **`deps`** - Dependencies by type (refs, sources, macros)
+- **`parents`** - Upstream dependencies (direct or all ancestors with `-a`)
+- **`children`** - Downstream dependencies (direct or all descendants with `-a`)
 
-#### Documentation Improvements
-- **README fully updated** - Reflects current functionality and removes outdated content
-  - Updated all examples to use `--dev` flag instead of removed `schema-dev` command
-  - Removed ~300 lines of duplicate and outdated sections
-  - Added "Common Use Cases" section with practical examples
-  - Consolidated "Commands Reference" into single comprehensive table
-  - Split configuration into "Simple Mode" and "Production Mode" sections
-  - Removed duplicate "Examples" and "Three-Level Fallback" sections
+#### Search and Discovery
+- **`list [pattern]`** - List all models (optionally filter by pattern)
+- **`search <query>`** - Search models by name or description
 
-#### Manifest Discovery Simplification
-- **Renamed `DBT_PROD_STATE_PATH` → `DBT_PROD_MANIFEST_PATH`**
-  - Changed from directory name to full file path
-  - Old: `DBT_PROD_STATE_PATH=.dbt-state` (directory name)
-  - New: `DBT_PROD_MANIFEST_PATH=~/dbt-state/manifest.json` (file path)
-  - Default changed: `~/.dbt-state/manifest.json` → `~/dbt-state/manifest.json`
+#### Fallback System
+- **3-level fallback** - Production manifest → Dev manifest → Catalog.json
+- **Catalog.json support** - Fallback to catalog when manifest columns empty
+- **Environment variables** - `DBT_FALLBACK_TARGET`, `DBT_FALLBACK_CATALOG` (default: `true`)
+- **Intelligent warnings** - Automatic git change detection with helpful suggestions
 
-- **Enhanced manifest priority with Simple Mode fallback**:
-  - **Without `--dev`**:
-    1. `--manifest PATH` - Explicit CLI flag
-    2. `DBT_PROD_MANIFEST_PATH` - Production (if set)
-    3. `./target/manifest.json` - **Simple mode fallback** (NEW)
-    4. `~/dbt-state/manifest.json` - Backward compatibility
-  - **With `--dev`**:
-    1. `--manifest PATH` - Explicit CLI flag (--dev ignored with warning)
-    2. `DBT_DEV_MANIFEST_PATH` - Default: `./target/manifest.json`
+#### Output Modes
+- **`--json, -j`** - JSON output for all commands (AI-friendly)
+- **Rich formatted output** - Colored tables and text (default)
+- **Combined flags** - Use `-dj`, `-ajd`, `-jm` for faster typing
 
-- **`DBT_PROD_MANIFEST_PATH` is now optional** - Not required for simple setups
+#### Flexible Naming Configuration
+- **Production table naming** - `DBT_PROD_TABLE_NAME` (alias_or_name, name, alias)
+- **Production schema/database** - `DBT_PROD_SCHEMA_SOURCE` (config_or_model, model, config)
+- **Dev schema naming** - `DBT_DEV_SCHEMA` (direct override, default: `personal_{username}`)
+- **Username override** - `DBT_USER` (default: `$USER`)
 
-### Removed
+#### Manifest Discovery
+- **Auto-discovery** - Searches for manifest.json automatically
+- **Simple Mode** - Works out-of-box with `./target/manifest.json` after `dbt compile`
+- **Production Mode** - `DBT_PROD_MANIFEST_PATH` for central manifest location
+- **Dev Mode** - `DBT_DEV_MANIFEST_PATH` (default: `./target/manifest.json`)
+- **`-m, --manifest` flag** - Explicit manifest path override
 
-- **Removed `node` command** - Duplicated functionality of `info` command
-  - `info` command provides same information in cleaner format
-  - For raw manifest data, use `info -j` which returns structured metadata
-  - Migration: Replace `meta node model_name` with `meta info model_name`
-- **Removed `DBT_MANIFEST_PATH` environment variable** - Use `--manifest` flag or `DBT_PROD_MANIFEST_PATH` instead
-- **Removed upward directory search** - No longer searches parent directories for `target/manifest.json`
-- **Removed `~/Projects/reports/.dbt-state/manifest.json` priority** - Deprecated hardcoded path
-- **Removed separate help panels** - Consolidated into single Configuration panel
+#### Testing
+- **416 comprehensive tests** - All passing
+- **91.67% code coverage** - Exceeds 90% requirement
+- Test categories: unit, integration, performance benchmarks
+- Edge case testing: empty strings, null values, special characters
 
-## [0.2.1] - 2025-11-05
+#### Performance
+- **LRU caching** - Manifest parser cached for sub-10ms responses
+- **orjson** - Fast JSON parsing (6-20x faster than stdlib)
+- **Lazy loading** - Manifest loaded only when needed
 
-### Added
+#### Documentation
+- Comprehensive README with examples and use cases
+- Environment variables reference
+- CLAUDE.md for AI agent integration
+- Apache 2.0 license
 
-#### Universal `--dev` Flag Support
-- **All 10 model commands now support `--dev` flag**:
-  - **Metadata**: `schema`, `columns`, `info`, `config`, `docs`
-  - **Code**: `sql`, `path`
-  - **Lineage**: `deps`, `parents`, `children`
-  - Prioritizes dev manifest (`target/`) over production (`.dbt-state/`)
-  - Returns dev schema names and uses model filename (not alias)
-  - Short form: `-d`
-
-#### Simplified Dev Naming Configuration
-- **`DBT_DEV_SCHEMA`** - Simple constant for dev dataset name
-  - Example: `export DBT_DEV_SCHEMA="personal_alice"`
-  - Replaces complex 4-level priority system
-
-- **`DBT_DEV_TABLE_PATTERN`** - Flexible table naming (default: `name`)
-  - **Predefined**: `name` (filename), `alias` (config alias with fallback)
-  - **Custom with 6 placeholders**: `{name}`, `{alias}`, `{username}`, `{folder}`, `{model_name}`, `{date}`
-  - Examples: `tmp_{name}`, `{username}_{name}`, `{name}_{date}`
-  - Invalid placeholders → warning + fallback to `name`
-
-#### Three-Level Fallback System
-- **LEVEL 1**: Production manifest (`.dbt-state/manifest.json`)
-- **LEVEL 2**: Dev manifest (`target/manifest.json`) - for defer-built models
-- **LEVEL 3**: BigQuery metadata (`bq show`)
-- Environment variables: `DBT_FALLBACK_TARGET`, `DBT_FALLBACK_BIGQUERY` (default: `true`)
-
-#### Intelligent Warning System
-- **Automatic git change detection** - Commands automatically check if model is modified
-  - Warns when querying production but model is modified in git → suggest `--dev`
-  - Warns when using `--dev` flag but model is not modified → suggest removing flag
-  - Warns when using `--dev` but dev manifest not found → suggest `defer run`
-  - **Machine-readable JSON warnings** - All stderr output is JSON when using `-j` flag
-    - Git warnings: `{"warnings": [{"type": "git_mismatch", "severity": "warning", ...}]}`
-    - Fallback warnings: `{"type": "dev_manifest_fallback", "severity": "warning", ...}`
-    - BigQuery fallback: `{"type": "bigquery_fallback", "severity": "warning", ...}`
-  - Color-coded text warnings without `-j` flag (yellow ⚠️) for humans
-
-### Changed
-
-#### Breaking Changes
-- **Removed `is-modified` CLI command** - Now internal helper function
-  - Migration: Remove scripts using `meta is-modified`
-  - Alternative: Use `git diff` directly or check stderr warnings from other commands
-  - Git detection now automatic via warning system
-- **Removed `schema-dev` command** → use `schema --dev` instead
-
-#### Internal Improvements
-- Function signatures: added `use_dev: bool = False` to all 10 model commands
-- New helper functions:
-  - `_calculate_dev_schema()` - simplified dev schema calculation
-  - `_validate_dev_dataset()` - BigQuery validation
-  - `_build_dev_table_name()` - supports 6 placeholders with error handling
-  - `_build_dev_schema_result()` - builds dev schema result
-  - `is_modified()` - internal helper for git change detection (no longer public API)
-  - `_check_manifest_git_mismatch()` - warns when git status doesn't match command
-  - `_find_dev_manifest()` - locates target/manifest.json
-- Manifest parser: LRU cache increased from 1 to 2 entries
-
-### Deprecated
-- `DBT_DEV_SCHEMA`, `DBT_DEV_SCHEMA_TEMPLATE`, `DBT_DEV_SCHEMA_PREFIX` → use `DBT_DEV_SCHEMA`
-- These still work with deprecation warnings
-
-### Testing
-- **145 tests passing** (was 110 in v0.1.0, was 151 before refactor)
-  - Removed 6 tests for `is-modified` CLI command (no longer public API)
-  - Git detection now tested indirectly through warning system
-- Added 35 new tests in v0.2.1:
-  - 10 tests for --dev flag behavior
-  - 13 tests for dev table pattern placeholders
-  - 12 tests for three-level fallback system
-
-## [0.2.0] - 2025-02-04
-
-### Added
-- **BigQuery fallback for models not in manifest** - Continue working even when models are missing from manifest.json
-  - `schema()` - Full fallback to BigQuery table metadata
-  - `columns()` - Full fallback to BigQuery schema
-  - `info()` - Partial fallback (missing: file path, tags, unique_id)
-  - `config()` - Partial fallback (extracts partition_by, cluster_by from BigQuery)
-  - `path()` - Conditional filesystem search fallback
-- **Improved error messages** for commands without fallback:
-  - `deps()` - Explains dependencies are dbt-specific, suggests `defer run`
-  - `sql()` - Suggests using `meta path` to locate source file
-  - `parents()` - Explains lineage is stored only in manifest
-  - `children()` - Explains lineage is stored only in manifest
-- **New helper functions**:
-  - `_infer_table_parts()` - Extract dataset and table from dbt model name
-  - `_fetch_table_metadata_from_bigquery()` - Fetch metadata from BigQuery with 10s timeout
-  - `_fetch_columns_from_bigquery_direct()` - Fetch columns without requiring model in manifest
-- **Environment variable**: `DBT_FALLBACK_BIGQUERY` (default: `true`)
-  - Controls BigQuery fallback behavior
-  - Recognized values: `true`/`1`/`yes` (enable), `false`/`0`/`no` (disable)
-
-### Changed
-- `columns()` now fallback to BigQuery even when model not in manifest (previously only when columns empty)
-- All BigQuery operations use 10-second timeout
-- Warnings printed to stderr with `⚠️` prefix when using fallback
-
-### Documentation
-- Added "BigQuery Fallback" section in README with:
-  - Supported commands table (Full, Partial, None fallback)
-  - Configuration examples
-  - Usage examples with expected output
-  - When to disable fallback
-
-## [0.1.0] - 2025-01-31
-
-### Added
-- Initial release of dbt-meta Python CLI
-- Core commands for metadata extraction:
-  - `info` - Model summary (name, schema, table, materialization, tags)
-  - `schema` - Production table name (database.schema.table)
-  - `schema-dev` - Dev table name (personal_USERNAME.filename)
-  - `columns` - Column names and types with BigQuery fallback
-  - `docs` - Column names, types, and descriptions
-  - `node` - Full node details by unique_id or model name
-  - `refresh` - Refresh manifest (runs dbt parse)
-- Advanced metadata commands:
-  - `config` - Full dbt config (29 fields: partition_by, cluster_by, etc.)
-  - `deps` - Dependencies by type (refs, sources, macros)
-  - `sql` - Compiled SQL (default) or raw SQL with `--jinja` flag
-  - `path` - Relative file path to .sql file
-- Dependency navigation:
-  - `parents` - Upstream dependencies (direct or all ancestors with `--all`)
-  - `children` - Downstream dependencies (direct or all descendants with `--all`)
-- Search and discovery:
-  - `list` - List models (optionally filter by pattern)
-  - `search` - Search by name or description
-- Flexible naming configuration:
-  - Production table naming: `DBT_PROD_TABLE_NAME` (alias_or_name, name, alias)
-  - Production schema/database: `DBT_PROD_SCHEMA_SOURCE` (config_or_model, model, config)
-  - Dev schema naming: 4-level priority system
-    - `DBT_DEV_SCHEMA` - Full override (highest priority)
-    - `DBT_DEV_SCHEMA_TEMPLATE` - Template with {username} placeholder
-    - `DBT_DEV_SCHEMA_PREFIX` - Simple prefix (default: "personal")
-    - Fallback to "personal_{username}"
-  - Username configuration: `DBT_USER` (default: $USER)
-- BigQuery validation (opt-in):
-  - `DBT_VALIDATE_BIGQUERY` - Validate and sanitize schema names for BigQuery
-  - Replaces invalid characters, ensures proper starting char, length limits
-  - Prints warnings when sanitization occurs
-- Manifest priority system:
-  - Automatically prioritizes production manifest (`~/dbt-state/manifest.json`)
-  - Configurable via `DBT_PROD_MANIFEST_PATH` (default: `~/dbt-state/manifest.json`)
-  - 4-level manifest search order
-- Configuration:
-  - `DBT_PROJECT_PATH` - Path to dbt project root
-  - `DBT_MANIFEST_PATH` - Override manifest.json location (highest priority)
-- Output modes:
-  - `--json, -j` - JSON output for all commands
-  - Rich formatted output with colors and tables (default)
-- Installation:
-  - `pip install -e .` for development
-  - Python 3.9+ required
-- Testing:
-  - 110 comprehensive tests
-  - 95%+ code coverage
-  - Edge case testing (empty strings, null values, special characters, priority logic)
-  - BigQuery validation tests
-- Performance:
-  - LRU caching for manifest parsing
-  - Fast metadata extraction
-- Documentation:
-  - Comprehensive README with examples
-  - Environment variables summary
-  - Naming configuration guide
-  - Apache 2.0 license
-
-[Unreleased]: https://github.com/Filianin/dbt-meta/compare/v0.2.1...HEAD
-[0.2.1]: https://github.com/Filianin/dbt-meta/compare/v0.2.0...v0.2.1
-[0.2.0]: https://github.com/Filianin/dbt-meta/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Filianin/dbt-meta/releases/tag/v0.1.0

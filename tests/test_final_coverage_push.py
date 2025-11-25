@@ -7,13 +7,13 @@ Focus on uncovered lines in:
 - columns.py, schema.py, base.py edge cases
 """
 
-import pytest
 import subprocess
-import json
-from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import patch
+
+import pytest
+
 from dbt_meta.utils.git import GitStatus, _find_sql_file_fast
-from dbt_meta.utils.model_state import detect_model_state, ModelState
+from dbt_meta.utils.model_state import ModelState, detect_model_state
 
 
 class TestDepsEdgeCases:

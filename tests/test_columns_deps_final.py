@@ -5,10 +5,9 @@ Target lines:
 - deps.py: 50-54, 70
 """
 
+
 import pytest
-import json
-from pathlib import Path
-from unittest.mock import patch, Mock
+
 from dbt_meta.commands import columns, deps
 
 
@@ -89,7 +88,7 @@ class TestDepsEdgeCases:
         nodes = parser.manifest.get('nodes', {})
 
         # Find any model
-        for node_id in nodes.keys():
+        for node_id in nodes:
             if nodes[node_id].get('resource_type') == 'model':
                 model_name = node_id.split('.')[-1]
 

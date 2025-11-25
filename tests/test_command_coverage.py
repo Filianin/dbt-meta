@@ -7,11 +7,12 @@ Focus on uncovered code paths in:
 - deps.py: edge cases
 """
 
-import pytest
 import json
-from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
-from dbt_meta.commands import info, config, path, deps
+from unittest.mock import patch
+
+import pytest
+
+from dbt_meta.commands import config, deps, info, path
 
 
 class TestInfoCommandCoverage:

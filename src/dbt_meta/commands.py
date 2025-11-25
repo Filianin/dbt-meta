@@ -6,53 +6,33 @@ Each command returns formatted data matching bash version output.
 """
 
 import subprocess
-import json as json_lib
-import sys
-import os
-import re
-import glob
-from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List, Optional, Any
-from dbt_meta.manifest.parser import ManifestParser
-from dbt_meta.manifest.finder import ManifestFinder
-from dbt_meta.errors import DbtMetaError
-from dbt_meta.utils import get_cached_parser as _get_cached_parser
-from dbt_meta.utils import print_warnings as _print_warnings
-from dbt_meta.utils.git import is_modified
-from dbt_meta.utils.git import check_manifest_git_mismatch as _check_manifest_git_mismatch
-from dbt_meta.utils.dev import (
-    find_dev_manifest as _find_dev_manifest,
-    calculate_dev_schema as _calculate_dev_schema,
-    validate_dev_dataset as _validate_dev_dataset,
-    build_dev_table_name as _build_dev_table_name,
-    build_dev_schema_result as _build_dev_schema_result,
-)
-from dbt_meta.utils.bigquery import (
-    sanitize_bigquery_name as _sanitize_bigquery_name,
-    infer_table_parts as _infer_table_parts,
-    fetch_table_metadata_from_bigquery as _fetch_table_metadata_from_bigquery,
-    run_bq_command as _run_bq_command,
-    fetch_columns_from_bigquery_direct as _fetch_columns_from_bigquery_direct,
-)
+from typing import Any, Optional
 
-# Command classes (v0.3.0+)
-from dbt_meta.config import Config
-from dbt_meta.command_impl.info import InfoCommand
-from dbt_meta.command_impl.schema import SchemaCommand
+from dbt_meta.command_impl.children import ChildrenCommand
 from dbt_meta.command_impl.columns import ColumnsCommand
 from dbt_meta.command_impl.config import ConfigCommand
 from dbt_meta.command_impl.deps import DepsCommand
-from dbt_meta.command_impl.sql import SqlCommand
-from dbt_meta.command_impl.path import PathCommand
+from dbt_meta.command_impl.info import InfoCommand
 from dbt_meta.command_impl.parents import ParentsCommand
-from dbt_meta.command_impl.children import ChildrenCommand
+from dbt_meta.command_impl.path import PathCommand
+from dbt_meta.command_impl.schema import SchemaCommand
+from dbt_meta.command_impl.sql import SqlCommand
 
+# Command classes
+from dbt_meta.config import Config
+from dbt_meta.errors import DbtMetaError
+from dbt_meta.utils import get_cached_parser as _get_cached_parser
+from dbt_meta.utils import print_warnings as _print_warnings
+from dbt_meta.utils.dev import (
+    find_dev_manifest as _find_dev_manifest,
+)
+from dbt_meta.utils.git import check_manifest_git_mismatch as _check_manifest_git_mismatch
 
 # Dev and BigQuery utility functions are now imported from utils.dev and utils.bigquery
 
 
-def info(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[Dict[str, Any]]:
+def info(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[dict[str, Any]]:
     """
     Extract basic model information
 
@@ -86,7 +66,7 @@ def info(manifest_path: str, model_name: str, use_dev: bool = False, json_output
     return command.execute()
 
 
-def schema(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[Dict[str, str]]:
+def schema(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[dict[str, str]]:
     """
     Extract schema/table location information
 
@@ -137,7 +117,7 @@ def schema(manifest_path: str, model_name: str, use_dev: bool = False, json_outp
     return command.execute()
 
 
-def columns(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[List[Dict[str, str]]]:
+def columns(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[list[dict[str, str]]]:
     """
     Extract column list with types
 
@@ -161,7 +141,7 @@ def columns(manifest_path: str, model_name: str, use_dev: bool = False, json_out
     return command.execute()
 
 
-def config(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[Dict[str, Any]]:
+def config(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[dict[str, Any]]:
     """
     Extract full dbt config
 
@@ -187,7 +167,7 @@ def config(manifest_path: str, model_name: str, use_dev: bool = False, json_outp
     return command.execute()
 
 
-def deps(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[Dict[str, List[str]]]:
+def deps(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[dict[str, list[str]]]:
     """
     Extract dependencies by type
 
@@ -261,7 +241,7 @@ def path(manifest_path: str, model_name: str, use_dev: bool = False, json_output
     command = PathCommand(cfg, manifest_path, model_name, use_dev, json_output)
     return command.execute()
 
-def list_models(manifest_path: str, pattern: Optional[str] = None) -> List[str]:
+def list_models(manifest_path: str, pattern: Optional[str] = None) -> list[str]:
     """
     List all models, optionally filtered by pattern
 
@@ -280,16 +260,16 @@ def list_models(manifest_path: str, pattern: Optional[str] = None) -> List[str]:
         pattern_lower = pattern.lower()
         model_names = [
             uid.split('.')[-1]
-            for uid in models.keys()
+            for uid in models
             if pattern_lower in uid.split('.')[-1].lower()
         ]
     else:
-        model_names = [uid.split('.')[-1] for uid in models.keys()]
+        model_names = [uid.split('.')[-1] for uid in models]
 
     return sorted(model_names)
 
 
-def search(manifest_path: str, query: str) -> List[Dict[str, str]]:
+def search(manifest_path: str, query: str) -> list[dict[str, str]]:
     """
     Search models by name or description
 
@@ -318,10 +298,10 @@ def search(manifest_path: str, query: str) -> List[Dict[str, str]]:
 
 
 def _get_all_relations_recursive(
-    relation_map: Dict[str, List[str]],
+    relation_map: dict[str, list[str]],
     node_id: str,
     visited: Optional[set] = None
-) -> List[str]:
+) -> list[str]:
     """
     Recursively get all dependencies (parents or children)
 
@@ -352,7 +332,7 @@ def _get_all_relations_recursive(
     return list(dict.fromkeys(all_relations))
 
 
-def parents(manifest_path: str, model_name: str, use_dev: bool = False, recursive: bool = False, json_output: bool = False) -> Optional[List[Dict[str, str]]]:
+def parents(manifest_path: str, model_name: str, use_dev: bool = False, recursive: bool = False, json_output: bool = False) -> Optional[list[dict[str, str]]]:
     """Get upstream dependencies (parent models).
 
     Args:
@@ -370,7 +350,7 @@ def parents(manifest_path: str, model_name: str, use_dev: bool = False, recursiv
     return command.execute()
 
 
-def children(manifest_path: str, model_name: str, use_dev: bool = False, recursive: bool = False, json_output: bool = False) -> Optional[List[Dict[str, str]]]:
+def children(manifest_path: str, model_name: str, use_dev: bool = False, recursive: bool = False, json_output: bool = False) -> Optional[list[dict[str, str]]]:
     """Get downstream dependencies (child models).
 
     Args:
@@ -419,7 +399,7 @@ def refresh(use_dev: bool = False) -> None:
         print("✓ Production artifacts synced (~/dbt-state/)")
 
 
-def docs(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[List[Dict[str, str]]]:
+def docs(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[list[dict[str, str]]]:
     """
     Get columns with descriptions
 
@@ -467,7 +447,7 @@ def docs(manifest_path: str, model_name: str, use_dev: bool = False, json_output
                         })
 
                     return result
-            except (FileNotFoundError, OSError, IOError, KeyError):  # pragma: no cover
+            except (FileNotFoundError, OSError, KeyError):  # pragma: no cover
                 # Dev manifest not available or structure different - continue
                 pass
 

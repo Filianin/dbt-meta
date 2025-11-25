@@ -6,15 +6,18 @@ This module handles git-related operations:
 - Full git status detection for model state tracking
 """
 
+from __future__ import annotations
+
 import subprocess
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List, Optional
-import re
+from typing import TYPE_CHECKING
 
+if TYPE_CHECKING:
+    from dbt_meta.manifest.parser import ManifestParser
 
-__all__ = ['is_modified', 'check_manifest_git_mismatch', 'GitStatus', 'get_model_git_status', 'validate_path']
+__all__ = ['GitStatus', 'check_manifest_git_mismatch', 'get_model_git_status', 'is_modified', 'validate_path']
 
 
 def validate_path(path: str) -> str:
@@ -80,8 +83,8 @@ class GitStatus:
     is_deleted: bool
     is_new: bool
     is_renamed: bool = False
-    renamed_from: Optional[str] = None
-    renamed_to: Optional[str] = None
+    renamed_from: str | None = None
+    renamed_to: str | None = None
 
 
 def is_modified(model_name: str) -> bool:
@@ -137,10 +140,13 @@ def is_modified(model_name: str) -> bool:
             # Check for new files (starting with ??)
             status_lines = result.stdout.splitlines()
             for line in status_lines:
-                if line.startswith('??') or line.startswith('A '):
-                    # Exact filename match to avoid false positives
-                    if (f"/{table}.sql" in line or line.endswith(f" {table}.sql")) and '.sql' in line:
-                        return True
+                # Match new/untracked files with exact filename
+                if (
+                    (line.startswith('??') or line.startswith('A '))
+                    and (f"/{table}.sql" in line or line.endswith(f" {table}.sql"))
+                    and '.sql' in line
+                ):
+                    return True
 
         return False
 
@@ -150,7 +156,7 @@ def is_modified(model_name: str) -> bool:
 
 
 @lru_cache(maxsize=128)
-def _find_sql_file_fast(model_name: str) -> Optional[str]:
+def _find_sql_file_fast(model_name: str) -> str | None:
     """Find .sql file in models/ directory with performance bounds.
 
     Quick filesystem check to verify if model file exists.
@@ -174,10 +180,7 @@ def _find_sql_file_fast(model_name: str) -> Optional[str]:
     try:
         # Extract table name from model_name (e.g., "stg_appsflyer__upload_log" → "upload_log")
         # Note: Some models use full name as filename, so try both
-        if '__' in model_name:
-            table_name = model_name.split('__')[-1]
-        else:
-            table_name = model_name
+        table_name = model_name.split('__')[-1] if '__' in model_name else model_name
 
         # Check if models/ directory exists in current working directory
         models_dir = Path('models')
@@ -196,7 +199,7 @@ def _find_sql_file_fast(model_name: str) -> Optional[str]:
 
         return None
 
-    except (OSError, IOError, PermissionError) as e:
+    except (OSError, PermissionError):
         # If filesystem check fails, return None (safe default)
         # This can happen if models/ directory is inaccessible
         return None
@@ -205,10 +208,10 @@ def _find_sql_file_fast(model_name: str) -> Optional[str]:
 def check_manifest_git_mismatch(
     model_name: str,
     use_dev: bool,
-    dev_manifest_found: Optional[str] = None,
-    prod_parser: Optional['ManifestParser'] = None,
-    dev_parser: Optional['ManifestParser'] = None
-) -> List[Dict[str, str]]:
+    dev_manifest_found: str | None = None,
+    prod_parser: ManifestParser | None = None,
+    dev_parser: ManifestParser | None = None
+) -> list[dict[str, str]]:
     """Check git status and return structured warnings.
 
     Returns list of warning objects that can be output as JSON (with -j) or text (without -j).
@@ -284,13 +287,13 @@ def check_manifest_git_mismatch(
                 warnings.append({
                     "type": "file_not_compiled",
                     "severity": "error",
-                    "message": f"Model file detected in git but NOT in manifest",
+                    "message": "Model file detected in git but NOT in manifest",
                     "detail": "File exists but compilation likely failed",
                     "suggestion": f"Run 'dbt compile --select {model_name}' and check for errors.\nPossible causes: SQL syntax error, missing dependencies, disabled in dbt_project.yml"
                 })
                 # Early return - this is also critical
                 return warnings
-        except (AttributeError, KeyError, TypeError) as e:
+        except (AttributeError, KeyError, TypeError):
             # If parser check fails (missing methods/keys), continue with normal flow
             # This can happen if manifest structure is different or parser is None
             pass
@@ -445,7 +448,7 @@ def get_model_git_status(model_name: str) -> GitStatus:
             is_deleted=False,
             is_new=False
         )
-    except (OSError, ValueError, UnicodeDecodeError) as e:
+    except (OSError, ValueError, UnicodeDecodeError):
         # Any other error - safe fallback
         # OSError: file system issues
         # ValueError: git output parsing issues

@@ -6,14 +6,19 @@ Implements 3-level fallback system:
 3. BigQuery (if enabled)
 """
 
+from __future__ import annotations
+
 import subprocess
-from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
+from dbt_meta.errors import ManifestNotFoundError, ManifestParseError, ModelNotFoundError
 from dbt_meta.manifest.parser import ManifestParser
-from dbt_meta.errors import ModelNotFoundError, ManifestNotFoundError, ManifestParseError
+
+if TYPE_CHECKING:
+    from dbt_meta.config import Config
 
 
 class FallbackLevel(Enum):
@@ -34,9 +39,9 @@ class FallbackResult:
         warnings: List of warnings collected during fallback
     """
 
-    data: Optional[Dict[str, Any]]
-    level: Optional[FallbackLevel]
-    warnings: List[str]
+    data: dict[str, Any] | None
+    level: FallbackLevel | None
+    warnings: list[str]
 
     @property
     def found(self) -> bool:
@@ -65,7 +70,7 @@ class FallbackStrategy:
         ...     print(f"Found in: {result.level.value}")
     """
 
-    def __init__(self, config: 'Config', prod_manifest_path: Optional[str] = None):
+    def __init__(self, config: Config, prod_manifest_path: str | None = None):
         """Initialize fallback strategy with configuration.
 
         Args:
@@ -74,13 +79,13 @@ class FallbackStrategy:
         """
         self.config = config
         self.prod_manifest_path = prod_manifest_path
-        self._searched_levels: List[FallbackLevel] = []
+        self._searched_levels: list[FallbackLevel] = []
 
     def get_model(
         self,
         model_name: str,
         prod_parser: ManifestParser,
-        allowed_levels: Optional[List[FallbackLevel]] = None,
+        allowed_levels: list[FallbackLevel] | None = None,
     ) -> FallbackResult:
         """Try to fetch model with multi-level fallback.
 
@@ -134,7 +139,7 @@ class FallbackStrategy:
                         level=FallbackLevel.DEV_MANIFEST,
                         warnings=result.warnings
                     )
-            except (FileNotFoundError, OSError, IOError, KeyError, ValueError, ManifestNotFoundError, ManifestParseError) as e:
+            except (FileNotFoundError, OSError, KeyError, ValueError, ManifestNotFoundError, ManifestParseError) as e:
                 # Dev manifest not available, continue to next level
                 # FileNotFoundError: manifest file doesn't exist
                 # OSError/IOError: file system issues
@@ -199,7 +204,7 @@ class FallbackStrategy:
 
         return ManifestParser(dev_path)
 
-    def _fetch_from_bigquery(self, model_name: str) -> Optional[Dict[str, Any]]:
+    def _fetch_from_bigquery(self, model_name: str) -> dict[str, Any] | None:
         """Fetch metadata from BigQuery.
 
         Args:
@@ -216,8 +221,8 @@ class FallbackStrategy:
         # Import BigQuery functions from utils module
         try:
             from dbt_meta.utils.bigquery import (
+                fetch_table_metadata_from_bigquery,
                 infer_table_parts,
-                fetch_table_metadata_from_bigquery
             )
         except ImportError:
             return None

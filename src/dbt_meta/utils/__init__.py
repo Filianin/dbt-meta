@@ -8,9 +8,8 @@ This module contains shared utilities used across multiple commands:
 import json as json_lib
 import sys
 from functools import lru_cache
-from typing import Dict, List
-from dbt_meta.manifest.parser import ManifestParser
 
+from dbt_meta.manifest.parser import ManifestParser
 
 __all__ = ['get_cached_parser', 'print_warnings']
 
@@ -35,7 +34,7 @@ def get_cached_parser(manifest_path: str) -> ManifestParser:
     return ManifestParser(manifest_path)
 
 
-def print_warnings(warnings: List[Dict[str, str]], json_output: bool = False) -> None:
+def print_warnings(warnings: list[dict[str, str]], json_output: bool = False) -> None:
     """Print warnings to stderr in JSON or text format.
 
     Args:

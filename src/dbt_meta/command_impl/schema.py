@@ -1,21 +1,21 @@
 """Schema command - Extract schema/table location information."""
 
-from typing import Optional, Dict
+import subprocess
 import sys
+from typing import Optional
 
 from dbt_meta.command_impl.base import BaseCommand
-from dbt_meta.fallback import FallbackLevel
 from dbt_meta.errors import ModelNotFoundError
-from dbt_meta.utils.dev import (
-    calculate_dev_schema as _calculate_dev_schema,
-    build_dev_schema_result as _build_dev_schema_result,
-)
+from dbt_meta.fallback import FallbackLevel
 from dbt_meta.utils.bigquery import (
-    infer_table_parts as _infer_table_parts,
-    fetch_table_metadata_from_bigquery as _fetch_table_metadata_from_bigquery,
     run_bq_command as _run_bq_command,
 )
-import subprocess
+from dbt_meta.utils.dev import (
+    build_dev_schema_result as _build_dev_schema_result,
+)
+from dbt_meta.utils.dev import (
+    calculate_dev_schema as _calculate_dev_schema,
+)
 
 
 class SchemaCommand(BaseCommand):
@@ -60,7 +60,7 @@ class SchemaCommand(BaseCommand):
         super().__init__(*args, **kwargs)
         self._fallback_level = None  # Track which level found the model
 
-    def execute(self) -> Optional[Dict[str, str]]:
+    def execute(self) -> Optional[dict[str, str]]:
         """Execute schema command.
 
         Returns:
@@ -72,7 +72,7 @@ class SchemaCommand(BaseCommand):
 
         return self.process_model(model, self._fallback_level)
 
-    def _get_model_prod_mode(self) -> Optional[Dict]:
+    def _get_model_prod_mode(self) -> Optional[dict]:
         """Override to track fallback level for special dev manifest handling.
 
         When model found in dev manifest (LEVEL 2), schema command returns
@@ -117,7 +117,7 @@ class SchemaCommand(BaseCommand):
             # Model not found in any fallback level - expected error
             return None
 
-    def process_model(self, model: dict, level: Optional[FallbackLevel] = None) -> Dict[str, str]:
+    def process_model(self, model: dict, level: Optional[FallbackLevel] = None) -> dict[str, str]:
         """Process model data and return schema location.
 
         Args:
@@ -173,7 +173,7 @@ class SchemaCommand(BaseCommand):
             'full_name': f"{database}.{schema_name}.{table_name}"
         }
 
-    def _get_model_bigquery_dev(self) -> Optional[Dict]:
+    def _get_model_bigquery_dev(self) -> Optional[dict]:
         """Get model from BigQuery in dev mode.
 
         For dev mode, uses full model name as table name (no splitting by __).
@@ -185,7 +185,7 @@ class SchemaCommand(BaseCommand):
         full_table = f"{dev_schema}.{self.model_name}"
 
         try:
-            result = _run_bq_command(['show', '--format=json', full_table], timeout=10)
+            _run_bq_command(['show', '--format=json', full_table], timeout=10)
             print(f"⚠️  Model not in manifest, using BigQuery table: {full_table}",
                   file=sys.stderr)
 

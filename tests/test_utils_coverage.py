@@ -6,13 +6,12 @@ Focus on uncovered code paths in:
 - git.py: git operations edge cases
 """
 
+
 import pytest
-import subprocess
-from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
-from dbt_meta.utils.model_state import detect_model_state, ModelState
+
+from dbt_meta.utils.bigquery import _should_retry, sanitize_bigquery_name
 from dbt_meta.utils.git import GitStatus, validate_path
-from dbt_meta.utils.bigquery import sanitize_bigquery_name, _should_retry
+from dbt_meta.utils.model_state import ModelState, detect_model_state
 
 
 class TestModelStateCoverage:

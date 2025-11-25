@@ -2,26 +2,84 @@
 
 > ⚡ AI-first CLI for dbt metadata extraction
 
-[![Version](https://img.shields.io/badge/version-0.3.0-blue.svg)](https://github.com/Filianin/dbt-meta/releases)
-[![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
-[![Built for AI](https://img.shields.io/badge/Built_for-AI_Agents-blueviolet.svg)](#-built-for-ai-workflows)
-[![Anthropic Recommended](https://img.shields.io/badge/Anthropic-CLI_Tools-success.svg)](https://docs.anthropic.com/en/docs/build-with-claude/tool-use)
-
-**dbt-meta** is a lightning-fast command-line tool that extracts metadata from dbt's `manifest.json`, eliminating the need to parse `.sql` files or query your data warehouse for schema information.
+**dbt-meta** is a lightning-fast command-line tool that extracts metadata from dbt's artifacts for DEs and AI agents, eliminating the need to parse `.sql` files or query your data warehouse for schema information. This is especially useful for fast and accurate agent operation, for example, Claude Code.
 
 ## ✨ Features
 
-- **🎯 Works out-of-box** - Simple Mode: just run `dbt compile` and start using (v0.3.1+)
+- **🎯 Works out-of-box** - Simple Mode: just run `dbt compile` and start using
+- **⚙️ TOML configuration** - Modern config files with XDG compliance (optional)
 - **⚡ Lightning fast** - Optimized Python with LRU caching and orjson parser
-- **🔄 Production Mode** - Full defer workflow support for multi-project setups
+- **🔄 Production Mode** - Full `defer` workflow support for multi-project setups and development environment
 - **📊 AI-friendly JSON** - Machine-readable structured output (`-j` flag)
 - **🔍 Rich metadata** - Schema, columns, dependencies, config, compiled SQL
 - **🌳 Dependency navigation** - Trace upstream/downstream models
 - **🔎 Smart search** - Find models by name or description
 - **🎨 Beautiful UI** - Rich terminal formatting with helpful examples
-- **⚙️ Flexible naming** - Configurable schema and table naming for any project
 - **⚡ Combined flags** - Use `-dj`, `-ajd`, `-jm` for faster typing
+
+
+## 🤖 Built for AI Workflows
+
+**dbt-meta** was specifically designed to eliminate AI agent hallucinations when working with dbt projects.
+
+### The Problem
+
+AI agents (like Claude Code, GitHub Copilot, ChatGPT) often hallucinate when working with dbt:
+- ❌ **Wrong table names** - Confusing alias vs filename (`customers` vs `dim_customers`)
+- ❌ **Wrong schema names** - Confusing prod and dev schemas
+- ❌ **Unknown dependencies** - Missing refs/sources in lineage
+- ❌ **Incorrect column types** - Using wrong data types in WHERE clauses
+- ❌ **Non-existent fields** - Querying columns that don't exist
+
+### The Solution
+
+Following [Anthropic's recommendation](https://docs.anthropic.com/en/docs/build-with-claude/tool-use) to use CLI tools over MCP for AI agents, **dbt-meta** provides:
+
+✅ **Fast** - Optimized Python with caching, no repeated manifest parsing
+✅ **Deterministic JSON** - No parsing ambiguity, structured output
+✅ **Schema validation** - Prevents hallucinations by providing accurate metadata
+✅ **Type-safe** - Mypy strict mode, comprehensive test coverage (91%+)
+
+### Integration
+
+**dbt-meta** integrates seamlessly with:
+- Claude Code (Anthropic) - Add to allowed commands in `.claude/settings.local.json`
+- GitHub Copilot - Use in terminal and inline suggestions
+- ChatGPT / Custom GPTs - Execute commands and parse JSON output
+- Other AI agents - Standard CLI interface with JSON output
+
+### Why CLI over MCP?
+
+Anthropic [recommends CLI tools](https://docs.anthropic.com/en/docs/build-with-claude/tool-use) for AI agents because they:
+- Have deterministic, structured output
+- Are faster and more reliable
+- Work in any environment
+- Don't require additional infrastructure
+
+**dbt-meta** follows this best practice, providing a lightning-fast, reliable interface for AI agents to access dbt metadata.
+
+### Performance
+
+**dbt-meta** uses several optimization techniques:
+
+- **LRU Caching**: ManifestParser cached with `@lru_cache(maxsize=1)`
+- **orjson**: Fast JSON parsing (2-3x faster than standard json)
+- **Lazy loading**: Manifest parsed only when needed
+- **Catalog fallback**: Use `catalog.json` instead of BigQuery queries
+
+Measured performance (~900 models manifest):
+
+| Command | Time | Notes |
+|---------|------|-------|
+| `meta schema` | ~250ms | Manifest only |
+| `meta info` | ~335ms | Manifest only |
+| `meta parents --all` | ~300ms | Traversed 295 ancestors |
+| `meta columns` (catalog) | ~50ms | With fresh `catalog.json` |
+| `meta columns` (BigQuery via bq CLI) | ~2-3s | Fallback when catalog stale |
+
+**Tip**: Keep `catalog.json` fresh (prod state) for fastest `columns` performance.
+But this only works for unmodified columns. For models built using defer in dev schema, 
+column metadata is only in DWH.
 
 ## 📦 Installation
 
@@ -69,31 +127,40 @@ meta --version
 dbt compile
 
 # Step 2: Use dbt-meta immediately!
-meta schema customers           # → analytics.customers
+meta schema customers           # → admirals-bi-dwh.analytics.customers
 meta columns -j orders          # → JSON array of columns
 meta deps customers             # → Dependencies list
 meta search "customer"          # → Find models
 
 # Get comprehensive help with examples
 meta --help
+meta
 ```
 
 ### Production Mode (with defer workflow)
 
-```bash
-# One-time setup: Set production manifest path
-echo 'export DBT_PROD_MANIFEST_PATH=~/dbt-state/manifest.json' >> ~/.zshrc
-source ~/.zshrc
+To organize a **dev environment**, you need to have the current version 
+of the prod `manifest.json`, which will be regularly updated to the latest state.
+For example, you can regularly compile your manifest and upload it to some cloud storage. 
+From there, you can download this file to your machine in any way you like. 
+If you generate documentation and upload it as a static website, then `catalog.json` is generated 
+as part of this process, which is recommended to be uploaded along with the manifest. 
+This file contains data about columns and data types that are missing from the manifest.
 
-# Copy production manifest (one-time or via cron)
-cp ~/Projects/my-dbt-project/.dbt-state/manifest.json ~/dbt-state/
+```bash
+# One-time setup: Create config file
+meta settings init
+
+# Edit ~/.config/dbt-meta/config.toml:
+prod_manifest_path = "~/dbt-state/manifest.json"
+dev_schema = "personal_myname"
 
 # Now works from any directory!
 cd /tmp && meta schema customers  # → Uses production manifest
 
 # For dev models (after defer run):
 defer run --select customers
-meta schema --dev customers      # → personal_USERNAME.customers
+meta schema --dev customers      # → personal_myname.customers
 meta columns -dj customers       # → Dev columns with JSON output
 ```
 
@@ -103,46 +170,6 @@ meta columns -dj customers       # → Dev columns with JSON output
 meta schema -dj customers        # → Dev + JSON
 meta parents -ajd model          # → All ancestors + JSON + Dev
 meta columns -jm ~/path.json m   # → JSON + Custom manifest
-```
-
-## 🤖 Built for AI Workflows
-
-**dbt-meta** was specifically designed to eliminate AI agent hallucinations when working with dbt projects.
-
-### The Problem
-
-AI agents (like Claude Code, GitHub Copilot, ChatGPT) often hallucinate when working with dbt:
-- ❌ **Wrong table names** - Confusing alias vs filename (`customers` vs `dim_customers`)
-- ❌ **Unknown dependencies** - Missing refs/sources in lineage
-- ❌ **Incorrect column types** - Using wrong data types in WHERE clauses
-- ❌ **Non-existent fields** - Querying columns that don't exist
-
-### The Solution
-
-Following [Anthropic's recommendation](https://docs.anthropic.com/en/docs/build-with-claude/tool-use) to use CLI tools over MCP for AI agents, **dbt-meta** provides:
-
-✅ **Fast** - Optimized Python with caching, no repeated manifest parsing
-✅ **Deterministic JSON** - No parsing ambiguity, structured output
-✅ **Schema validation** - Prevents hallucinations by providing accurate metadata
-✅ **Type-safe** - Mypy strict mode, comprehensive test coverage (91%+)
-
-### Integration
-
-**dbt-meta** integrates seamlessly with:
-- Claude Code (Anthropic) - Add to allowed commands in `.claude/settings.local.json`
-- GitHub Copilot - Use in terminal and inline suggestions
-- ChatGPT / Custom GPTs - Execute commands and parse JSON output
-- Other AI agents - Standard CLI interface with JSON output
-
-### Why CLI over MCP?
-
-Anthropic [recommends CLI tools](https://docs.anthropic.com/en/docs/build-with-claude/tool-use) for AI agents because they:
-- Have deterministic, structured output
-- Are faster and more reliable
-- Work in any environment
-- Don't require additional infrastructure
-
-**dbt-meta** follows this best practice, providing a lightning-fast, reliable interface for AI agents to access dbt metadata.
 
 ## 📚 Commands Reference
 
@@ -151,7 +178,7 @@ Anthropic [recommends CLI tools](https://docs.anthropic.com/en/docs/build-with-c
 | Command | Description | Example |
 |---------|-------------|---------|
 | `info <model>` | Model summary (name, schema, table, materialization, tags) | `meta info -j customers` |
-| `schema <model>` | BigQuery table name (`--dev` for dev schema) | `meta schema customers`<br>`meta schema --dev customers` |
+| `schema <model>` | Full table name (`database.schema.table`) | `meta schema customers`<br>`meta schema --dev customers` |
 | `path <model>` | Relative file path to .sql file | `meta path customers` |
 | `columns <model>` | Column names and types (`--dev` supported) | `meta columns -j customers`<br>`meta columns -dj customers` |
 | `sql <model>` | Compiled SQL (or raw with `--jinja`) | `meta sql customers`<br>`meta sql --jinja customers` |
@@ -161,10 +188,14 @@ Anthropic [recommends CLI tools](https://docs.anthropic.com/en/docs/build-with-c
 | `children <model>` | Downstream dependencies (`-a` for all descendants) | `meta children customers`<br>`meta children -a customers` |
 | `config <model>` | Full dbt config (29 fields: partition_by, cluster_by, etc.) | `meta config -j customers` |
 
-### Utilities
+### Settings & Utilities
 
 | Command | Description | Example |
 |---------|-------------|---------|
+| `settings init` | Create config file from template | `meta settings init` |
+| `settings show` | Display current configuration | `meta settings show`<br>`meta settings show -j` |
+| `settings validate` | Validate config file | `meta settings validate` |
+| `settings path` | Show path to active config file | `meta settings path` |
 | `list [pattern]` | List all models (optionally filter by pattern) | `meta list`<br>`meta list staging` |
 | `search <query>` | Search models by name or description | `meta search "customer"`<br>`meta search "dim_" -j` |
 | `refresh` | Refresh manifest (runs `dbt parse`) | `meta refresh` |
@@ -188,9 +219,13 @@ Anthropic [recommends CLI tools](https://docs.anthropic.com/en/docs/build-with-c
 
 ```bash
 # Get production table name (eliminates AI hallucinations)
+TABLE=$(meta schema customers)
+bq query "SELECT * FROM $TABLE LIMIT 10"
+# → SELECT * FROM admirals-bi-dwh.analytics.dim_customers LIMIT 10
+
+# Or with JSON output
 TABLE=$(meta schema -j customers | jq -r '.full_name')
 bq query "SELECT * FROM $TABLE LIMIT 10"
-# → SELECT * FROM analytics.dim_customers LIMIT 10
 ```
 
 ### Finding All Columns for a Model
@@ -224,7 +259,7 @@ meta children -a customers
 defer run --select customers
 
 # Query dev table (not production)
-TABLE=$(meta schema --dev -j customers | jq -r '.full_name')
+TABLE=$(meta schema --dev customers)
 bq query "SELECT * FROM $TABLE LIMIT 10"
 # → SELECT * FROM personal_USERNAME.customers LIMIT 10
 ```
@@ -238,13 +273,16 @@ meta list staging
 # Search models by description
 meta search "customer dimension" -j | jq -r '.[] | .name'
 
-# Get file path to edit model
-vim $(meta path customers)
+# Get file path for editing
+meta path customers
+# → models/marts/customers.sql
 ```
 
 ## ⚙️ Configuration
 
-### Simple Mode (Recommended for Single Project)
+**Priority:** CLI flags > TOML config > Environment variables > Defaults
+
+### Simple Mode (Zero Configuration)
 
 **No configuration needed!** Just run `dbt compile` and start using:
 
@@ -254,212 +292,56 @@ dbt compile
 meta schema customers  # ✓ Works immediately with ./target/manifest.json
 ```
 
-### Production Mode (Multi-Project / Defer Workflow)
-
-Set production manifest path to work from any directory:
+### TOML Configuration (Recommended)
 
 ```bash
-# Add to ~/.bashrc or ~/.zshrc
-export DBT_PROD_MANIFEST_PATH=~/dbt-state/manifest.json
-
-# Auto-update manifest via cron (recommended)
-# Every hour: copy production manifest to central location
-0 * * * * cp ~/Projects/my-dbt-project/.dbt-state/manifest.json ~/dbt-state/
+# Create config file with template
+meta settings init
 ```
 
-Now `meta` commands work from anywhere and always use production manifest.
+Edit `~/.config/dbt-meta/config.toml`:
 
-### Advanced: Naming Configuration
-
-**dbt-meta** provides flexible naming configuration for complex projects.
-
-#### Production Table Naming
-
-Control how production table names are resolved:
-
-```bash
-# Strategy 1: alias_or_name (DEFAULT)
-# Uses alias if present, otherwise model name
-meta schema model_name
-# Model with alias:    → client_profiles_events (from config.alias)
-# Model without alias: → DW_report (from model.name)
-
-# Strategy 2: name
-# Always prefer model name over alias
-export DBT_PROD_TABLE_NAME="name"
-meta schema model_name
-# Model with alias:    → core_client__client_profiles_events (model.name)
-# Model without alias: → DW_report (model.name)
-
-# Strategy 3: alias
-# Always prefer alias over model name
-export DBT_PROD_TABLE_NAME="alias"
-meta schema model_name
-# Model with alias:    → client_profiles_events (config.alias)
-# Model without alias: → DW_report (fallback to model.name)
-```
-
-**Smart Fallback**: All strategies automatically fallback if the preferred value is missing.
-
-#### Production Schema/Database Naming
-
-Control how production schema and database are resolved:
-
-```bash
-# Strategy 1: config_or_model (DEFAULT)
-# Uses config.schema/database if present, otherwise model.schema/database
-meta schema model_name
-# → Uses config.schema or model.schema (whichever is set)
-
-# Strategy 2: model
-# Always use model.schema and model.database
-export DBT_PROD_SCHEMA_SOURCE="model"
-meta schema model_name
-# → Always uses model.schema and model.database
-
-# Strategy 3: config
-# Prefer config.schema/database, fallback to model values
-export DBT_PROD_SCHEMA_SOURCE="config"
-meta schema model_name
-# → Prefers config.schema, falls back to model.schema if not set
-```
-
-**Why this matters**: In some dbt projects, schema/database can be overridden in `config` blocks. By default, dbt-meta checks both config and model, preferring config values when present.
-
-#### Dev Schema Naming
-
-Control how dev schema names are generated (4 priority levels):
-
-```bash
-# Priority 1: Full schema override (HIGHEST)
-export DBT_DEV_SCHEMA="my_custom_schema"
-meta schema --dev customers
-# → my_custom_schema.customers
-# Ignores all other variables
-
-# Priority 2: Template with {username} placeholder
-export DBT_DEV_SCHEMA_TEMPLATE="dev_{username}"
-meta schema --dev customers
-# → dev_alice.customers
-
-# Template examples:
-export DBT_DEV_SCHEMA_TEMPLATE="{username}_sandbox"
-# → alice_sandbox.customers
-
-export DBT_DEV_SCHEMA_TEMPLATE="analytics_{username}_v2"
-# → analytics_alice_v2.customers
-
-export DBT_DEV_SCHEMA_TEMPLATE="{username}"
-# → alice.customers (no prefix)
-
-# Priority 3: Simple prefix
-export DBT_DEV_SCHEMA_PREFIX="sandbox"
-meta schema --dev customers
-# → sandbox_alice.customers
-
-# Empty prefix = no prefix
-export DBT_DEV_SCHEMA_PREFIX=""
-meta schema --dev customers
-# → alice.customers
-
-# Priority 4: Default (LOWEST)
-# Uses "personal_{username}" if nothing else is set
-meta schema --dev customers
-# → personal_alice.customers
-```
-
-#### Username Configuration
-
-```bash
-# Default: Uses system $USER
-meta schema --dev customers
-# username = $USER (from system)
-
-# Override username
-export DBT_USER="custom_user"
-meta schema --dev customers
-# username = custom_user
-
-# Dots are automatically replaced with underscores (BigQuery compatibility)
-export DBT_USER="john.doe"
-meta schema --dev customers
-# username = john_doe (dots → underscores)
-```
-
-#### Dev Table Naming
-
-Control how dev table names are generated:
-
-```bash
-# Default: Uses model filename (NOT alias)
-meta schema --dev customers
-# → personal_USERNAME.customers (from customers.sql)
-
-# Use alias instead of filename
-export DBT_DEV_TABLE_PATTERN="alias"
-meta schema --dev customers
-# → personal_USERNAME.dim_customers (from config.alias)
-
-# Custom template with placeholders
-export DBT_DEV_TABLE_PATTERN="{folder}_{name}"
-meta schema --dev staging__customers
-# → personal_USERNAME.staging_customers
-```
-
-#### Advanced Environment Variables
-
-All environment variables for manifest discovery and naming:
-
-```bash
+```toml
 # Manifest paths
-export DBT_PROD_MANIFEST_PATH=~/dbt-state/manifest.json  # Production manifest
-export DBT_DEV_MANIFEST_PATH=./target/manifest.json      # Dev manifest (default)
+prod_manifest_path = "~/dbt-state/manifest.json"
+dev_manifest_path = "./target/manifest.json"
 
-# Dev schema naming (4-level priority)
-export DBT_DEV_SCHEMA="custom_schema"                    # Full override (priority 1)
-export DBT_DEV_SCHEMA_TEMPLATE="dev_{username}"          # Template (priority 2)
-export DBT_DEV_SCHEMA_PREFIX="personal"                  # Prefix (priority 3, default)
-export DBT_USER="custom_username"                        # Username override
+# Dev environment
+dev_schema = "personal_myname"
 
-# Dev table naming
-export DBT_DEV_TABLE_PATTERN="alias"                     # alias | name | {template}
+# Fallback behavior
+fallback_dev_enabled = true      # Try dev manifest if model not in prod
+fallback_bigquery_enabled = true # Query BigQuery if model not in manifests
 
-# Production naming (advanced)
-export DBT_PROD_TABLE_NAME="alias_or_name"              # alias_or_name | name | alias
-export DBT_PROD_SCHEMA_SOURCE="config_or_model"         # config_or_model | model | config
-
-# Validation (optional)
-export DBT_VALIDATE_BIGQUERY="true"                      # Enable BigQuery name validation
+# Production naming (optional)
+prod_table_name_strategy = "alias_or_name"  # alias_or_name | name | alias
+prod_schema_source = "config_or_model"      # config_or_model | model | config
 ```
 
-# Usage
-meta schema --dev jaffle_shop__orders
-# → alice.orders
-```
+**Config file locations** (priority order):
+1. `./.dbt-meta.toml` - Project-local config
+2. `~/.config/dbt-meta/config.toml` - User config (XDG standard)
+3. `~/.dbt-meta.toml` - Fallback location
 
-**Example 3: Analytics team template**
+**Settings commands:**
+
 ```bash
-# Setup
-export DBT_DEV_SCHEMA_TEMPLATE="analytics_{username}_sandbox"
-export DBT_PROD_TABLE_NAME="name"
-
-# Usage
-meta schema --dev core_client__events
-# → analytics_alice_sandbox.events
-
-meta schema core_client__events
-# → admirals-bi-dwh.core_client.core_client__events
+meta settings show      # View current configuration
+meta settings validate  # Check config file for errors
+meta settings path      # Show active config file path
 ```
 
-**Example 4: Full schema override for CI/CD**
-```bash
-# Setup (in CI environment)
-export DBT_DEV_SCHEMA="ci_pr_123"
+### Environment Variables (Alternative)
 
-# Usage
-meta schema --dev jaffle_shop__customers
-# → ci_pr_123.customers (ignores username)
-```
+All TOML settings can be set via environment variables with `DBT_` prefix:
+
+| TOML key | Environment variable |
+|----------|---------------------|
+| `prod_manifest_path` | `DBT_PROD_MANIFEST_PATH` |
+| `dev_manifest_path` | `DBT_DEV_MANIFEST_PATH` |
+| `dev_schema` | `DBT_DEV_SCHEMA` |
+| `fallback_dev_enabled` | `DBT_FALLBACK_TARGET` |
+| `fallback_bigquery_enabled` | `DBT_FALLBACK_BIGQUERY` |
 
 ## 🧪 Development
 
@@ -496,20 +378,6 @@ ruff check src/dbt_meta
 # Formatting
 ruff format src/dbt_meta
 ```
-
-### Performance
-
-**dbt-meta** uses several optimization techniques:
-
-- **LRU Caching**: ManifestParser cached with `@lru_cache(maxsize=1)`
-- **orjson**: Fast JSON parsing (2-3x faster than standard json)
-- **Lazy loading**: Manifest parsed only when needed
-- **Single-pass algorithms**: Optimized list/search operations
-
-Typical performance:
-- First command: ~30-60ms (manifest parsing)
-- Subsequent commands: ~5-10ms (cached parser)
-- 865+ models parsed in ~35ms (median)
 
 ## 🤝 Contributing
 

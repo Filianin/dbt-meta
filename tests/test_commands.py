@@ -15,14 +15,24 @@ Replaces old files:
 - test_edge_cases.py
 """
 
-import pytest
 import json
-import os
-from datetime import datetime
-from pathlib import Path
+
+import pytest
+
 from dbt_meta.commands import (
-    info, schema, columns, config, deps, sql, path, list_models, search,
-    parents, children, refresh, docs
+    children,
+    columns,
+    config,
+    deps,
+    docs,
+    info,
+    list_models,
+    parents,
+    path,
+    refresh,
+    schema,
+    search,
+    sql,
 )
 
 
@@ -162,6 +172,7 @@ class TestColumnsCommand:
 
         # Mock Config.find_config_file to ignore real TOML config
         from unittest.mock import patch
+
         from dbt_meta.config import Config
         with patch.object(Config, 'find_config_file', return_value=None):
             # Mock is_modified to avoid git calls
@@ -204,6 +215,7 @@ class TestColumnsCommand:
 
         # Mock Config.find_config_file to ignore real TOML config
         from unittest.mock import patch
+
         from dbt_meta.config import Config
         with patch.object(Config, 'find_config_file', return_value=None):
             # Mock subprocess to simulate bq not found
@@ -227,6 +239,7 @@ class TestColumnsCommand:
 
         # Mock Config.find_config_file to ignore real TOML config
         from unittest.mock import patch
+
         from dbt_meta.config import Config
         with patch.object(Config, 'find_config_file', return_value=None):
             # Mock git status (not testing git here - testing BigQuery fallback)
@@ -677,7 +690,7 @@ class TestRefreshCommand:
     def test_refresh_production_mode(self, mocker):
         """Should call sync-artifacts.sh with --force in production mode"""
         mock_run = mocker.patch('subprocess.run')
-        mock_exists = mocker.patch('pathlib.Path.exists', return_value=True)
+        mocker.patch('pathlib.Path.exists', return_value=True)
 
         refresh(use_dev=False)
 
@@ -740,7 +753,7 @@ class TestDocsCommand:
         result = docs(str(prod_manifest), model_name)
 
         # Should match columns command count
-        cols = columns(str(prod_manifest), model_name)
+        columns(str(prod_manifest), model_name)
 
         # Docs might have fewer if some columns lack descriptions
         # But structure should match
@@ -764,12 +777,10 @@ class TestDocsCommand:
 # Dev Mode & Fallback Tests
 # ============================================================================
 
-from unittest.mock import patch, MagicMock
-from dbt_meta.commands import (
-    schema, columns, info, config,
-    is_modified, _find_dev_manifest, _build_dev_table_name
-)
+from unittest.mock import MagicMock, patch
 
+from dbt_meta.utils.dev import find_dev_manifest as _find_dev_manifest
+from dbt_meta.utils.git import is_modified
 
 # ============================================================================
 # SECTION 1: Git Change Detection - is_modified()
@@ -888,7 +899,7 @@ class TestSchemaWithDevFlag:
             mock_result.returncode = 0
             mock_run.return_value = mock_result
 
-            result = schema(str(prod_manifest), "test_schema__events", use_dev=True)
+            schema(str(prod_manifest), "test_schema__events", use_dev=True)
 
             # Should have tried bq show with dev schema
             assert mock_run.called
@@ -1045,7 +1056,7 @@ class TestColumnsWithDevFlag:
                 ]
 
                 # Use proper dbt model name with __ so _infer_table_parts() works
-                result = columns(str(prod_manifest), "test_schema__test_model", use_dev=True)
+                columns(str(prod_manifest), "test_schema__test_model", use_dev=True)
 
                 assert mock_fetch.called
                 # Should call with dev schema

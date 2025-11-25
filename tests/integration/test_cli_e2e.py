@@ -9,8 +9,7 @@ Tests all 13 commands through the Typer CLI interface to verify:
 """
 
 import json
-import pytest
-from typer.testing import CliRunner
+
 from dbt_meta.cli import app
 
 
@@ -400,7 +399,7 @@ class TestWarnings:
         monkeypatch.setenv('DBT_DEV_MANIFEST_PATH', str(dev_manifest_setup.parent / 'target' / 'manifest.json'))
 
         # Using --dev flag with modified model should not warn
-        result = cli_runner.invoke(app, ['schema', test_model, '--dev', '-j'])
+        cli_runner.invoke(app, ['schema', test_model, '--dev', '-j'])
 
         # May exit with 0 or 1 depending on whether model exists
         # Just verify no crash

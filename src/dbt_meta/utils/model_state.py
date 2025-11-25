@@ -5,10 +5,9 @@ Used to provide context-aware messages and suggestions for the columns command.
 """
 
 from enum import Enum
-from typing import Optional, Dict, Any
+from typing import Any, Optional
 
 from dbt_meta.utils.git import GitStatus
-
 
 __all__ = ['ModelState', 'detect_model_state']
 
@@ -52,7 +51,7 @@ def detect_model_state(
     in_prod_manifest: bool,
     in_dev_manifest: bool,
     git_status: GitStatus,
-    model: Optional[Dict[str, Any]] = None,
+    model: Optional[dict[str, Any]] = None,
     file_path: Optional[str] = None
 ) -> ModelState:
     """Detect model state based on manifest presence and git status.
@@ -100,14 +99,12 @@ def detect_model_state(
             return ModelState.DEPRECATED_FOLDER
 
     # RENAMED models (check before deleted - rename can coexist with other states)
-    if git_status.is_renamed:
-        # Determine if this is the old or new name
-        if git_status.renamed_from and git_status.renamed_to:
-            # If file_path or model_name matches the old path - this is the OLD name
-            if file_path and git_status.renamed_from in file_path:
-                return ModelState.RENAMED_OLD
-            # Otherwise, this is the NEW name
-            return ModelState.RENAMED_NEW
+    if git_status.is_renamed and git_status.renamed_from and git_status.renamed_to:
+        # If file_path or model_name matches the old path - this is the OLD name
+        if file_path and git_status.renamed_from in file_path:
+            return ModelState.RENAMED_OLD
+        # Otherwise, this is the NEW name
+        return ModelState.RENAMED_NEW
 
     # DELETED models (file deleted from disk)
     if git_status.is_deleted or not git_status.exists:

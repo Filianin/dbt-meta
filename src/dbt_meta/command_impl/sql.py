@@ -1,7 +1,7 @@
 """SQL command - Extract SQL code."""
 
-from typing import Optional
 import sys
+from typing import Optional
 
 from dbt_meta.command_impl.base import BaseCommand
 from dbt_meta.fallback import FallbackLevel

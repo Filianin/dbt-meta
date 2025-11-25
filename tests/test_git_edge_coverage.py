@@ -3,11 +3,11 @@
 Target lines: 188-202, 271-279, 293-296, 380, 409-413
 """
 
+from unittest.mock import MagicMock, Mock, patch
+
 import pytest
-import subprocess
-from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
-from dbt_meta.utils.git import _find_sql_file_fast, get_model_git_status, GitStatus
+
+from dbt_meta.utils.git import _find_sql_file_fast, get_model_git_status
 
 
 class TestGitFilesystemErrors:

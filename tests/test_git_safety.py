@@ -4,7 +4,8 @@ CRITICAL: Prevent command injection vulnerabilities in git operations.
 """
 
 import pytest
-from dbt_meta.utils.git import validate_path, get_model_git_status
+
+from dbt_meta.utils.git import get_model_git_status, validate_path
 
 
 @pytest.mark.critical
@@ -101,7 +102,7 @@ class TestGitSafety:
 
     def test_git_operations_use_validated_paths(self):
         """All git subprocess calls should use validated paths."""
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
 
         safe_path = "models/test.sql"
 

@@ -6,7 +6,7 @@ All custom exceptions inherit from DbtMetaError and provide:
 - Structured data for programmatic handling
 """
 
-from typing import Optional, List
+from typing import Optional
 
 
 class DbtMetaError(Exception):
@@ -45,7 +45,7 @@ class ModelNotFoundError(DbtMetaError):
         searched_locations: List of locations where model was searched
     """
 
-    def __init__(self, model_name: str, searched_locations: List[str]):
+    def __init__(self, model_name: str, searched_locations: list[str]):
         self.model_name = model_name
         self.searched_locations = searched_locations
 
@@ -77,7 +77,7 @@ class ManifestNotFoundError(DbtMetaError):
         searched_paths: List of paths where manifest was searched
     """
 
-    def __init__(self, searched_paths: List[str]):
+    def __init__(self, searched_paths: list[str]):
         self.searched_paths = searched_paths
 
         message = "manifest.json not found"
@@ -191,7 +191,7 @@ class ConfigurationError(DbtMetaError):
         self,
         config_key: str,
         invalid_value: str,
-        valid_values: Optional[List[str]] = None
+        valid_values: Optional[list[str]] = None
     ):
         self.config_key = config_key
         self.invalid_value = invalid_value

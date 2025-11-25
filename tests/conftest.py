@@ -1,9 +1,11 @@
 """Pytest configuration and fixtures for dbt-meta tests"""
 
-import os
-import pytest
 import json
+import os
 from pathlib import Path
+
+import pytest
+
 
 # Disable fallbacks by default in tests
 @pytest.fixture(autouse=True)

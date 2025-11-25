@@ -9,8 +9,8 @@ import re
 import sys
 import warnings
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any
 from pathlib import Path
+from typing import Any, Optional
 
 # TOML support: Python 3.11+ has tomllib, earlier versions need tomli
 try:
@@ -224,7 +224,7 @@ class Config:
             try:
                 data = tomllib.load(f)
             except Exception as e:
-                raise ValueError(f"Invalid TOML syntax in {config_path}: {e}")
+                raise ValueError(f"Invalid TOML syntax in {config_path}: {e}") from e
 
         # Extract values from TOML sections
         config = cls()
@@ -411,7 +411,7 @@ class Config:
                 warnings.filterwarnings('ignore', category=DeprecationWarning)
             return cls.from_env()
 
-    def validate(self) -> List[str]:
+    def validate(self) -> list[str]:
         """Validate configuration and return warnings.
 
         Returns:
@@ -472,7 +472,7 @@ class Config:
 
         return warnings_list
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert config to dictionary for display.
 
         Returns:

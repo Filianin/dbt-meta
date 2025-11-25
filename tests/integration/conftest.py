@@ -2,7 +2,6 @@
 
 import pytest
 from typer.testing import CliRunner
-from dbt_meta.cli import app
 
 
 @pytest.fixture

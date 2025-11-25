@@ -5,10 +5,11 @@ Uses orjson (6-20x faster than stdlib json) and @cached_property
 for lazy loading and optimal performance.
 """
 
-import orjson
-from pathlib import Path
 from functools import cached_property
-from typing import Dict, List, Optional, Any
+from pathlib import Path
+from typing import Any, Optional
+
+import orjson
 
 from dbt_meta.errors import ManifestNotFoundError, ManifestParseError
 
@@ -28,7 +29,7 @@ class ManifestParser:
         self.manifest_path = manifest_path
 
     @cached_property
-    def manifest(self) -> Dict[str, Any]:
+    def manifest(self) -> dict[str, Any]:
         """
         Load and parse manifest.json using orjson
 
@@ -55,9 +56,9 @@ class ManifestParser:
             raise ManifestParseError(
                 path=self.manifest_path,
                 parse_error=str(e)
-            )
+            ) from e
 
-    def get_model(self, model_name: str) -> Optional[Dict[str, Any]]:
+    def get_model(self, model_name: str) -> Optional[dict[str, Any]]:
         """
         Get model by name (searches unique_id)
 
@@ -84,7 +85,7 @@ class ManifestParser:
 
         return None
 
-    def get_all_models(self) -> Dict[str, Dict[str, Any]]:
+    def get_all_models(self) -> dict[str, dict[str, Any]]:
         """
         Get all models from manifest
 
@@ -100,7 +101,7 @@ class ManifestParser:
             if unique_id.startswith('model.')
         }
 
-    def search_models(self, pattern: str) -> List[Dict[str, Any]]:
+    def search_models(self, pattern: str) -> list[dict[str, Any]]:
         """
         Search models by name pattern (case-insensitive)
 
@@ -119,7 +120,7 @@ class ManifestParser:
             if pattern_lower in unique_id.lower()
         ]
 
-    def get_dependencies(self, model_name: str) -> Dict[str, List[str]]:
+    def get_dependencies(self, model_name: str) -> dict[str, list[str]]:
         """
         Get model dependencies (refs and sources)
 

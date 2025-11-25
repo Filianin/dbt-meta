@@ -1,7 +1,7 @@
 """Deps command - Extract dependencies by type."""
 
-from typing import Optional, Dict, List
 import sys
+from typing import Optional
 
 from dbt_meta.command_impl.base import BaseCommand
 from dbt_meta.fallback import FallbackLevel
@@ -32,7 +32,7 @@ class DepsCommand(BaseCommand):
     SUPPORTS_BIGQUERY = False  # Dependencies are manifest-only
     SUPPORTS_DEV = True
 
-    def execute(self) -> Optional[Dict[str, List[str]]]:
+    def execute(self) -> Optional[dict[str, list[str]]]:
         """Execute deps command.
 
         Returns:
@@ -49,14 +49,14 @@ class DepsCommand(BaseCommand):
             # Print helpful error message for truly missing models
             print(f"❌ Dependencies not available for '{self.model_name}': model not in manifest",
                   file=sys.stderr)
-            print(f"   Dependencies are dbt-specific (refs, sources, macros) and cannot be inferred from BigQuery.",
+            print("   Dependencies are dbt-specific (refs, sources, macros) and cannot be inferred from BigQuery.",
                   file=sys.stderr)
             print(f"   Hint: Run 'defer run --select {self.model_name}' to add model to manifest",
                   file=sys.stderr)
 
         return result
 
-    def process_model(self, model: dict, level: Optional[FallbackLevel] = None) -> Optional[Dict[str, List[str]]]:
+    def process_model(self, model: dict, level: Optional[FallbackLevel] = None) -> Optional[dict[str, list[str]]]:
         """Process model data and return dependencies.
 
         Args:

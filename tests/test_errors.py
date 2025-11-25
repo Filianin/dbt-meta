@@ -1,14 +1,15 @@
 """Tests for exception hierarchy in dbt_meta.errors module."""
 
 import pytest
+
 from dbt_meta.errors import (
+    BigQueryError,
+    ConfigurationError,
     DbtMetaError,
-    ModelNotFoundError,
+    GitOperationError,
     ManifestNotFoundError,
     ManifestParseError,
-    BigQueryError,
-    GitOperationError,
-    ConfigurationError,
+    ModelNotFoundError,
 )
 
 

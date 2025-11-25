@@ -12,18 +12,29 @@ Replaces old files:
 - test_warning_system.py
 """
 
-import pytest
 import json
 import os
 from pathlib import Path
-from dbt_meta.manifest.finder import ManifestFinder
-from dbt_meta.manifest.parser import ManifestParser
+
+import pytest
+
 from dbt_meta.commands import (
-    schema, columns, info, config, deps, sql, path, docs, parents, children,
-    _check_manifest_git_mismatch, _print_warnings, is_modified
+    _check_manifest_git_mismatch,
+    _print_warnings,
+    children,
+    columns,
+    config,
+    deps,
+    docs,
+    info,
+    parents,
+    path,
+    schema,
+    sql,
 )
 from dbt_meta.errors import ManifestNotFoundError, ManifestParseError
-
+from dbt_meta.manifest.finder import ManifestFinder
+from dbt_meta.manifest.parser import ManifestParser
 
 # ============================================================================
 # SECTION 1: Manifest Finder - 4-Level Priority Search
@@ -458,6 +469,7 @@ class TestCheckManifestGitMismatch:
         Expected: Should trigger 'new_model' error (regardless of git status)
         """
         import json
+
         from dbt_meta.manifest.parser import ManifestParser
 
         # Setup manifests
@@ -518,6 +530,7 @@ class TestCheckManifestGitMismatch:
         Expected: Should warn 'new_model_candidate' but allow fallback to proceed
         """
         import json
+
         from dbt_meta.manifest.parser import ManifestParser
 
         # Setup manifests
@@ -581,6 +594,7 @@ class TestCheckManifestGitMismatch:
         Expected: Should trigger 'file_not_compiled' error with helpful suggestion
         """
         import json
+
         from dbt_meta.manifest.parser import ManifestParser
 
         # Setup manifests (model in neither)
@@ -849,8 +863,8 @@ class TestWarningsWithCommands:
         # Verify json_output was passed (check both args and kwargs)
         calls = mock_print_warnings.call_args_list
         json_output_passed = any(
-            (len(call.args) >= 2 and call.args[1] == True) or
-            call.kwargs.get('json_output') == True
+            (len(call.args) >= 2 and call.args[1]) or
+            call.kwargs.get('json_output')
             for call in calls
         )
         assert json_output_passed
@@ -1107,6 +1121,7 @@ class TestCombinedFlags:
         mock_schema.return_value = {"database": "test", "schema": "personal_user", "table": "model", "full_name": "test.personal_user.model"}
 
         from typer.testing import CliRunner
+
         from dbt_meta.cli import app
 
         runner = CliRunner()
@@ -1132,6 +1147,7 @@ class TestCombinedFlags:
         mock_parents.return_value = ["parent1", "parent2"]
 
         from typer.testing import CliRunner
+
         from dbt_meta.cli import app
 
         runner = CliRunner()
@@ -1153,6 +1169,7 @@ class TestCombinedFlags:
         mock_schema.return_value = {"database": "test", "schema": "analytics", "table": "model", "full_name": "test.analytics.model"}
 
         from typer.testing import CliRunner
+
         from dbt_meta.cli import app
 
         runner = CliRunner()
@@ -1177,6 +1194,7 @@ class TestCombinedFlags:
         mock_columns.return_value = [{"name": "id", "data_type": "INTEGER"}]
 
         from typer.testing import CliRunner
+
         from dbt_meta.cli import app
 
         runner = CliRunner()

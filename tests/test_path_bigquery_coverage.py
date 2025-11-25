@@ -3,12 +3,12 @@
 Target lines: 79, 84, 88-90, 95, 106, 113, 121-125, 130, 145-147, 152, 161, 166, 176
 """
 
-import pytest
 import json
-from pathlib import Path
 from unittest.mock import patch
+
+import pytest
+
 from dbt_meta.commands import path
-from dbt_meta.errors import ManifestNotFoundError
 
 
 class TestPathBigQueryFormatEdgeCases:
@@ -93,7 +93,7 @@ class TestPathBigQueryFormatEdgeCases:
         nodes = parser.manifest.get('nodes', {})
 
         # Find model with alias
-        for node_id, node_data in nodes.items():
+        for _node_id, node_data in nodes.items():
             if node_data.get('resource_type') == 'model':
                 schema = node_data.get('schema')
                 alias = node_data.get('alias') or node_data.get('config', {}).get('alias')

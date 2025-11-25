@@ -1,16 +1,17 @@
 """Info command - Extract basic model information."""
 
-from typing import Optional, Dict, Any
+from typing import Any, Optional
 
 from dbt_meta.command_impl.base import BaseCommand
 from dbt_meta.fallback import FallbackLevel
+from dbt_meta.utils.bigquery import (
+    fetch_table_metadata_from_bigquery as _fetch_table_metadata_from_bigquery,
+)
 from dbt_meta.utils.dev import (
-    calculate_dev_schema as _calculate_dev_schema,
     build_dev_table_name as _build_dev_table_name,
 )
-from dbt_meta.utils.bigquery import (
-    infer_table_parts as _infer_table_parts,
-    fetch_table_metadata_from_bigquery as _fetch_table_metadata_from_bigquery,
+from dbt_meta.utils.dev import (
+    calculate_dev_schema as _calculate_dev_schema,
 )
 
 
@@ -44,7 +45,7 @@ class InfoCommand(BaseCommand):
     SUPPORTS_BIGQUERY = True
     SUPPORTS_DEV = True
 
-    def execute(self) -> Optional[Dict[str, Any]]:
+    def execute(self) -> Optional[dict[str, Any]]:
         """Execute info command.
 
         Returns:
@@ -56,7 +57,7 @@ class InfoCommand(BaseCommand):
 
         return self.process_model(model)
 
-    def process_model(self, model: dict, level: Optional[FallbackLevel] = None) -> Dict[str, Any]:
+    def process_model(self, model: dict, level: Optional[FallbackLevel] = None) -> dict[str, Any]:
         """Process model data and return formatted info.
 
         Args:
@@ -102,7 +103,7 @@ class InfoCommand(BaseCommand):
             'unique_id': model.get('unique_id', '')
         }
 
-    def _get_model_bigquery_dev(self) -> Optional[Dict[str, Any]]:
+    def _get_model_bigquery_dev(self) -> Optional[dict[str, Any]]:
         """Get model from BigQuery in dev mode.
 
         For dev mode, uses full model name as table name (no splitting by __).
@@ -116,7 +117,7 @@ class InfoCommand(BaseCommand):
         if not bq_metadata:
             return None
 
-        table_ref = bq_metadata.get('tableReference', {})
+        bq_metadata.get('tableReference', {})
         table_type = bq_metadata.get('type', 'TABLE')
 
         # Return model-like dict that process_model can handle

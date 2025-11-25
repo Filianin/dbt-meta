@@ -3,11 +3,10 @@
 Target remaining lines across all modules.
 """
 
+
 import pytest
-import json
-from pathlib import Path
-from unittest.mock import patch, Mock
-from dbt_meta.commands import columns, schema, info, config, parents, children
+
+from dbt_meta.commands import children, config, info, parents, schema
 
 
 class TestSchemaEdgeCases:
