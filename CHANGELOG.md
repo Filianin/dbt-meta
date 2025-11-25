@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2025-11-25
+
+### Fixed
+- **README tables rendering on PyPI** - Removed `<br>` tags that broke table layout
+  - PyPI markdown doesn't support HTML `<br>` tags in tables
+  - Simplified examples to one per command
+
 ## [0.1.0] - 2025-11-25
 
 ### Added
@@ -106,4 +113,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLAUDE.md for AI agent integration
 - Apache 2.0 license
 
+[0.1.1]: https://github.com/Filianin/dbt-meta/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Filianin/dbt-meta/releases/tag/v0.1.0

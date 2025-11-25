@@ -170,6 +170,7 @@ meta columns -dj customers       # → Dev columns with JSON output
 meta schema -dj customers        # → Dev + JSON
 meta parents -ajd model          # → All ancestors + JSON + Dev
 meta columns -jm ~/path.json m   # → JSON + Custom manifest
+```
 
 ## 📚 Commands Reference
 
@@ -178,14 +179,14 @@ meta columns -jm ~/path.json m   # → JSON + Custom manifest
 | Command | Description | Example |
 |---------|-------------|---------|
 | `info <model>` | Model summary (name, schema, table, materialization, tags) | `meta info -j customers` |
-| `schema <model>` | Full table name (`database.schema.table`) | `meta schema customers`<br>`meta schema --dev customers` |
+| `schema <model>` | Full table name (`database.schema.table`) | `meta schema customers` |
 | `path <model>` | Relative file path to .sql file | `meta path customers` |
-| `columns <model>` | Column names and types (`--dev` supported) | `meta columns -j customers`<br>`meta columns -dj customers` |
-| `sql <model>` | Compiled SQL (or raw with `--jinja`) | `meta sql customers`<br>`meta sql --jinja customers` |
+| `columns <model>` | Column names and types (`--dev` supported) | `meta columns -dj customers` |
+| `sql <model>` | Compiled SQL (or raw with `--jinja`) | `meta sql --jinja customers` |
 | `docs <model>` | Column names, types, and descriptions | `meta docs customers` |
 | `deps <model>` | Dependencies by type (refs, sources, macros) | `meta deps -j customers` |
-| `parents <model>` | Upstream dependencies (`-a` for all ancestors) | `meta parents customers`<br>`meta parents -a customers` |
-| `children <model>` | Downstream dependencies (`-a` for all descendants) | `meta children customers`<br>`meta children -a customers` |
+| `parents <model>` | Upstream dependencies (`-a` for all ancestors) | `meta parents -aj customers` |
+| `children <model>` | Downstream dependencies (`-a` for all descendants) | `meta children -a customers` |
 | `config <model>` | Full dbt config (29 fields: partition_by, cluster_by, etc.) | `meta config -j customers` |
 
 ### Settings & Utilities
@@ -193,11 +194,11 @@ meta columns -jm ~/path.json m   # → JSON + Custom manifest
 | Command | Description | Example |
 |---------|-------------|---------|
 | `settings init` | Create config file from template | `meta settings init` |
-| `settings show` | Display current configuration | `meta settings show`<br>`meta settings show -j` |
+| `settings show` | Display current configuration | `meta settings show -j` |
 | `settings validate` | Validate config file | `meta settings validate` |
 | `settings path` | Show path to active config file | `meta settings path` |
-| `list [pattern]` | List all models (optionally filter by pattern) | `meta list`<br>`meta list staging` |
-| `search <query>` | Search models by name or description | `meta search "customer"`<br>`meta search "dim_" -j` |
+| `list [pattern]` | List all models (optionally filter by pattern) | `meta list staging` |
+| `search <query>` | Search models by name or description | `meta search "customer" -j` |
 | `refresh` | Refresh manifest (runs `dbt parse`) | `meta refresh` |
 
 ### Global Flags

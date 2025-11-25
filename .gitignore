@@ -41,3 +41,5 @@ htmlcov/
 
 # Project-specific development files
 CLAUDE.md*.json
+
+dist/
