@@ -440,20 +440,43 @@ Add to `_build_commands_panel()` if needed.
 
 ## Testing Strategy
 
-**Coverage requirement:** 95%+ (pyproject.toml:79)
+**Coverage requirement:** 90%+ (pyproject.toml:79)
+**Current coverage:** 91.76% (437 tests)
 
 **Test markers:**
 - `@pytest.mark.unit` - Fast unit tests
 - `@pytest.mark.integration` - Integration tests
 - `@pytest.mark.performance` - Performance benchmarks
+- `@pytest.mark.critical` - Critical security/correctness tests
 
-**Test structure:**
-- `test_commands.py` - Command implementations
-- `test_infrastructure.py` - Manifest discovery + warnings
-- `test_errors.py` - Exception hierarchy
-- `test_config.py` - Configuration management
-- `test_fallback.py` - Fallback strategy
+**Test structure (18 files, consolidated v0.1.4):**
+
+*Core tests:*
+- `test_commands.py` (1846 lines) - Command implementations
+- `test_infrastructure.py` (1405 lines) - Manifest discovery, warnings, message formatting
+- `test_config.py` (548 lines) - Configuration management
+- `test_fallback.py` (303 lines) - Fallback strategy
+
+*Feature tests:*
+- `test_bigquery.py` (475 lines) - BigQuery utilities, retry logic, path search
+- `test_git.py` (480 lines) - Git operations, path validation, security
+- `test_catalog.py` (391 lines) - Catalog parser
+- `test_table_resolution.py` (312 lines) - Prod/dev table resolution
+- `test_model_states.py` (205 lines) - Model state detection
+- `test_decision_tree_scenarios.py` (526 lines) - Decision tree scenarios
+
+*Quality tests:*
+- `test_errors.py` (418 lines) - Exception hierarchy and handling
+- `test_edge_cases.py` (470 lines) - Edge cases and gap coverage
+- `test_utils_coverage.py`, `test_command_coverage.py`, etc. - Specific coverage tests
+
+*Fixtures:*
 - `conftest.py` - Shared fixtures (uses dynamic `test_model` fixture)
+
+**Test consolidation (v0.1.4):**
+- Reduced files: 24 → 18 (-25%)
+- Grouped by functional area (BigQuery, Git, Errors)
+- Better organization and navigation
 
 **Excluded from coverage:**
 - `cli.py` - UI layer (tested manually)
@@ -538,6 +561,56 @@ When BigQuery fallback is needed (empty columns), ALWAYS use schema from the FOU
 - `command_impl/base.py:107-151` - Main fallback orchestration
 - `command_impl/columns.py:71-87` - BigQuery fallback with correct schema
 - `utils/git.py:77-169` - Git status detection and warnings
+
+## Recent Critical Fixes (Unreleased)
+
+### Git Status Detection (CWD-Independent)
+
+**Problem solved:** Running `meta` commands from outside dbt project directory showed false "DELETED locally" warnings.
+
+**Root cause:** `get_model_git_status()` used `_find_sql_file_fast()` which searches relative to CWD. When running from different directory, file not found → marked as deleted.
+
+**Solution:**
+- Added `file_path` parameter to `get_model_git_status()` (`utils/git.py:334`)
+- Pass `original_file_path` from manifest to git status detection (`command_impl/columns.py:69-76`)
+- Check file existence only when `file_path` from manifest (not from filesystem search)
+
+**Example:**
+```python
+# Before: CWD-dependent (WRONG)
+git_status = get_model_git_status(model_name)  # Uses _find_sql_file_fast()
+
+# After: Uses manifest path (CORRECT)
+file_path = model.get('original_file_path')
+git_status = get_model_git_status(model_name, file_path=file_path)
+```
+
+Location: `utils/git.py:334-390`, `command_impl/columns.py:69-76`
+
+### Git Modification Detection (Full Model Names)
+
+**Problem solved:** Models with full filename (e.g., `core_google_events__user_devices.sql`) not detected as modified.
+
+**Root cause:** `is_modified()` only searched by table name (`user_devices.sql`), missing files that use full model name.
+
+**Solution:** Search by both patterns in `is_modified()`:
+- Table name: `/user_devices.sql`
+- Full model name: `/core_google_events__user_devices.sql`
+
+**Code:**
+```python
+# Check both patterns
+if (
+    (f"/{table}.sql" in file_path or file_path == f"{table}.sql" or
+     f"/{model_name}.sql" in file_path or file_path == f"{model_name}.sql")
+    and file_path.endswith('.sql')
+):
+    return True
+```
+
+Location: `utils/git.py:129-134, 149-154`
+
+**Tests:** 7 new tests in `tests/test_git_edge_coverage.py`
 
 ## Publishing Checklist
 

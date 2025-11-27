@@ -1,19 +1,137 @@
-"""Test BigQuery retry logic and exponential backoff.
+"""Consolidated BigQuery tests.
 
-CRITICAL: These tests verify retry logic prevents data loss from transient failures.
+Merged from:
+- test_bigquery_final_coverage.py - Edge cases for BigQuery utilities
+- test_bigquery_retry.py - Retry logic and exponential backoff
+- test_path_bigquery_coverage.py - Path BigQuery format search
+
+Coverage targets:
+- BigQuery retry logic (exponential backoff, max attempts)
+- Helper functions (_should_retry, sanitize_bigquery_name, infer_table_parts)
+- Path command BigQuery format search
 """
 
+import json
 import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from dbt_meta.utils.bigquery import fetch_columns_from_bigquery_direct
+from dbt_meta.commands import path
+from dbt_meta.utils.bigquery import (
+    _should_retry,
+    fetch_columns_from_bigquery_direct,
+    infer_table_parts,
+    sanitize_bigquery_name,
+)
+
+
+# ============================================================================
+# SECTION 1: BigQuery Utility Functions
+# ============================================================================
+
+
+class TestShouldRetry:
+    """Cover _should_retry edge cases."""
+
+    def test_should_retry_with_debug_enabled(self, monkeypatch, capsys):
+        """Test _should_retry prints debug message when DBT_META_DEBUG set."""
+        monkeypatch.setenv('DBT_META_DEBUG', '1')
+
+        result = _should_retry(0, 3, "API rate limit")
+
+        assert result is True
+        captured = capsys.readouterr()
+        # Should print retry message to stderr
+        assert "retrying in 1s" in captured.err or "API rate limit" in captured.err
+
+    def test_should_retry_last_attempt_no_retry(self):
+        """Test _should_retry returns False on last attempt."""
+        result = _should_retry(2, 3, "Timeout")
+
+        # Last attempt (attempt 2 of 3) - should not retry
+        assert result is False
+
+
+class TestSanitizeBigQueryName:
+    """Cover sanitize_bigquery_name edge cases."""
+
+    def test_sanitize_name_too_long(self):
+        """Test sanitize with name longer than 1024 chars."""
+        long_name = "a" * 1500
+
+        sanitized, warnings = sanitize_bigquery_name(long_name)
+
+        # Should truncate to 1024 chars
+        assert len(sanitized) == 1024
+        assert any("too long" in w.lower() for w in warnings)
+
+    def test_sanitize_name_starts_with_number(self):
+        """Test sanitize with name starting with number."""
+        name = "123_table"
+
+        sanitized, warnings = sanitize_bigquery_name(name, "table")
+
+        # Should prepend underscore
+        assert sanitized.startswith("_")
+        assert sanitized == "_123_table"
+        assert any("must start with letter or underscore" in w.lower() for w in warnings)
+
+    def test_sanitize_name_starts_with_special_char(self):
+        """Test sanitize with name starting with special character."""
+        name = "@invalid"
+
+        sanitized, _warnings = sanitize_bigquery_name(name, "table")
+
+        # Should prepend underscore and replace @
+        assert sanitized.startswith("_")
+        assert "@" not in sanitized
+
+
+class TestInferTableParts:
+    """Cover infer_table_parts edge cases."""
+
+    def test_infer_table_parts_multiple_underscores(self):
+        """Test infer_table_parts with multiple __ separators."""
+        model_name = "core__client__events__daily"
+
+        dataset, table = infer_table_parts(model_name)
+
+        # Should join all parts except last as dataset
+        assert dataset == "core__client__events"
+        assert table == "daily"
+
+    def test_infer_table_parts_three_underscores(self):
+        """Test infer_table_parts with three __ separators."""
+        model_name = "staging__external__source__table"
+
+        dataset, table = infer_table_parts(model_name)
+
+        assert dataset == "staging__external__source"
+        assert table == "table"
+
+    def test_infer_table_parts_no_separator(self):
+        """Test infer_table_parts with no __ separator."""
+        model_name = "simple_table"
+
+        dataset, table = infer_table_parts(model_name)
+
+        # No separator - dataset is None
+        assert dataset is None
+        assert table == "simple_table"
+
+
+# ============================================================================
+# SECTION 2: BigQuery Retry Logic
+# ============================================================================
 
 
 @pytest.mark.unit
 class TestBigQueryRetryLogic:
-    """Test retry logic with exponential backoff."""
+    """Test retry logic with exponential backoff.
+
+    CRITICAL: These tests verify retry logic prevents data loss from transient failures.
+    """
 
     def test_success_on_first_attempt(self):
         """Successful query on first attempt requires no retries."""
@@ -259,3 +377,107 @@ class TestBigQueryRetryIntegration:
                 # Verify retry worked with real subprocess mock
                 assert mock_bq.call_count == 3
                 assert columns is not None
+
+
+# ============================================================================
+# SECTION 3: Path Command BigQuery Format Search
+# ============================================================================
+
+
+class TestPathBigQueryFormatEdgeCases:
+    """Cover path.py BigQuery format search edge cases."""
+
+    def test_path_bigquery_format_not_in_dev_mode(self, tmp_path, monkeypatch):
+        """Test BigQuery format search returns None when use_dev=False."""
+        prod_manifest = tmp_path / "manifest.json"
+        prod_manifest.write_text('{"metadata": {}, "nodes": {}}')
+
+        monkeypatch.setenv('DBT_FALLBACK_TARGET', 'false')
+
+        # BigQuery format with use_dev=False should not search
+        result = path(str(prod_manifest), 'schema.table', use_dev=False, json_output=False)
+
+        # Should return None (not use_dev)
+        assert result is None
+
+    def test_path_bigquery_format_dev_manifest_not_found(self, tmp_path, monkeypatch):
+        """Test BigQuery format search returns None when dev manifest missing."""
+        prod_manifest = tmp_path / "manifest.json"
+        prod_manifest.write_text('{"metadata": {}, "nodes": {}}')
+
+        monkeypatch.setenv('DBT_PROD_MANIFEST_PATH', str(prod_manifest))
+        monkeypatch.setenv('DBT_DEV_MANIFEST_PATH', str(tmp_path / "nonexistent" / "manifest.json"))
+
+        # Mock find_dev_manifest to return None
+        with patch('dbt_meta.utils.dev.find_dev_manifest', return_value=None):
+            result = path(str(prod_manifest), 'schema.table', use_dev=True, json_output=False)
+
+            # Should return None (no dev manifest)
+            assert result is None
+
+    def test_path_bigquery_format_single_part_name(self, tmp_path, monkeypatch):
+        """Test BigQuery format with single part returns None."""
+        prod_manifest = tmp_path / "manifest.json"
+        dev_manifest = tmp_path / "dev_manifest.json"
+
+        prod_manifest.write_text('{"metadata": {}, "nodes": {}}')
+        dev_manifest.write_text('{"metadata": {}, "nodes": {}}')
+
+        monkeypatch.setenv('DBT_PROD_MANIFEST_PATH', str(prod_manifest))
+        monkeypatch.setenv('DBT_DEV_MANIFEST_PATH', str(dev_manifest))
+
+        with patch('dbt_meta.utils.dev.find_dev_manifest', return_value=str(dev_manifest)):
+            # Single part name (no dot) should return None
+            result = path(str(prod_manifest), 'tablename', use_dev=True, json_output=False)
+
+            # Should return None (len(parts) < 2)
+            assert result is None
+
+    def test_path_prod_bigquery_format_no_match(self, enable_fallbacks, tmp_path, monkeypatch):
+        """Test production BigQuery format search with no matches."""
+        prod_manifest = tmp_path / "manifest.json"
+        prod_manifest.write_text(json.dumps({
+            "metadata": {},
+            "nodes": {
+                "model.test.my_model": {
+                    "name": "my_model",
+                    "schema": "core",
+                    "alias": "my_table",
+                    "resource_type": "model",
+                    "original_file_path": "models/core/my_model.sql"
+                }
+            }
+        }))
+
+        monkeypatch.setenv('DBT_PROD_MANIFEST_PATH', str(prod_manifest))
+        monkeypatch.setenv('DBT_FALLBACK_TARGET', 'false')
+
+        # Search for non-matching BigQuery format
+        result = path(str(prod_manifest), 'different_schema.different_table', use_dev=False, json_output=False)
+
+        # Should return None (no match found in prod manifest)
+        assert result is None
+
+    def test_path_prod_bigquery_format_match_by_alias(self, enable_fallbacks, prod_manifest):
+        """Test production BigQuery format matches by alias."""
+        from dbt_meta.manifest.parser import ManifestParser
+
+        parser = ManifestParser(str(prod_manifest))
+        nodes = parser.manifest.get('nodes', {})
+
+        # Find model with alias
+        for _node_id, node_data in nodes.items():
+            if node_data.get('resource_type') == 'model':
+                schema = node_data.get('schema')
+                alias = node_data.get('alias') or node_data.get('config', {}).get('alias')
+                if schema and alias:
+                    # Test BigQuery format: schema.alias
+                    result = path(str(prod_manifest), f'{schema}.{alias}', use_dev=False, json_output=False)
+
+                    if result:
+                        assert 'sql' in result or '.sql' in result
+                        break
+
+
+if __name__ == '__main__':
+    pytest.main([__file__, '-v'])

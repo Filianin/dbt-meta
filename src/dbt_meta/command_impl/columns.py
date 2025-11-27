@@ -66,8 +66,14 @@ class ColumnsCommand(BaseCommand):
         # Try to get model from manifests (for table location)
         model = self.get_model_with_fallback()
 
-        # Detect git status
-        git_status = get_model_git_status(self.model_name)
+        # Get file path from model for git status detection
+        # CRITICAL: Extract file_path BEFORE git status to avoid CWD-dependent search
+        file_path = None
+        if model:
+            file_path = model.get('original_file_path') or model.get('path')
+
+        # Detect git status (pass file_path to avoid CWD-dependent search)
+        git_status = get_model_git_status(self.model_name, file_path=file_path)
 
         # Get parsers to check manifest presence
         # CRITICAL: Use REAL production manifest path, not self.manifest_path
@@ -92,11 +98,6 @@ class ColumnsCommand(BaseCommand):
         # Get production model for schema resolution (used when model comes from dev manifest fallback)
         # CRITICAL: For MODIFIED states without --dev, we need production schema/table, not dev
         prod_model = prod_parser.get_model(self.model_name) if prod_parser else None
-
-        # Get file path for deprecated folder check
-        file_path = None
-        if model:
-            file_path = model.get('original_file_path') or model.get('path')
 
         state = detect_model_state(
             self.model_name,
@@ -174,7 +175,7 @@ class ColumnsCommand(BaseCommand):
 
         if columns:
             # Success - print result message
-            self._print_result_message(state, len(columns), f"{schema}.{table}")
+            self._print_result_message(state, len(columns), f"{schema}.{table}", is_dev_table=self.use_dev)
             return columns
 
         # Failed to fetch
@@ -217,7 +218,8 @@ class ColumnsCommand(BaseCommand):
             columns = _fetch_columns_from_bigquery_direct(schema, table, database)
 
             if columns:
-                self._print_result_message(state, len(columns), f"{schema}.{table}")
+                # MODIFIED without --dev: querying production table
+                self._print_result_message(state, len(columns), f"{schema}.{table}", is_dev_table=False)
                 return columns
 
         elif state in [ModelState.NEW_UNCOMMITTED, ModelState.NEW_COMMITTED]:
@@ -230,7 +232,8 @@ class ColumnsCommand(BaseCommand):
             columns = _fetch_columns_from_bigquery_direct(dev_schema, table)
 
             if columns:
-                self._print_result_message(state, len(columns), f"{dev_schema}.{table}")
+                # NEW models: always from dev table
+                self._print_result_message(state, len(columns), f"{dev_schema}.{table}", is_dev_table=True)
 
                 print("\n💡 To build and query:", file=sys.stderr)
                 print(f"   defer run --select {self.model_name}", file=sys.stderr)
@@ -375,22 +378,27 @@ class ColumnsCommand(BaseCommand):
         message = state_messages.get(state, f"Model '{self.model_name}' state: {state.value}")
         print(f"\n{message}", file=sys.stderr)
 
-    def _print_result_message(self, state: ModelState, column_count: int, table: str):
+    def _print_result_message(self, state: ModelState, column_count: int, table: str, is_dev_table: bool = False):
         """Print success message with column count.
 
         Args:
             state: Model state
             column_count: Number of columns retrieved
             table: Full table name
+            is_dev_table: Whether data is from dev table (default: False = prod table)
         """
         print(f"\n✅ Retrieved {column_count} columns from BigQuery", file=sys.stderr)
-        print(f"\nData source: BigQuery (table: {table})", file=sys.stderr)
 
-        # Add state-specific info
-        if state == ModelState.MODIFIED_UNCOMMITTED:
-            print("\n⚠️  Using dev version (reflects your uncommitted changes)", file=sys.stderr)
-        elif state == ModelState.MODIFIED_IN_DEV:
-            print("\n⚠️  Using dev version (compiled in dev)", file=sys.stderr)
+        # Show prod/dev table info
+        table_type = "dev table" if is_dev_table else "prod table"
+        print(f"\nData source: BigQuery ({table_type}: {table})", file=sys.stderr)
+
+        # Add state-specific info only for dev tables
+        if is_dev_table:
+            if state == ModelState.MODIFIED_UNCOMMITTED:
+                print("\n⚠️  Using dev version (reflects your uncommitted changes)", file=sys.stderr)
+            elif state == ModelState.MODIFIED_IN_DEV:
+                print("\n⚠️  Using dev version (compiled in dev)", file=sys.stderr)
 
     def _print_not_found_message(self, state: ModelState, attempted_table: Optional[str]):
         """Print error message when columns not found.

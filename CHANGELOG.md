@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2025-11-27
+
+### Fixed
+- **Git status detection from non-project directory** - Fixed false "DELETED locally" warnings
+  - Bug: Running `meta columns` from outside dbt project showed models as deleted
+  - Symptom: `⚠️ Model 'stg_google_ads__campaign_basic_stats' is DELETED locally`
+  - Root cause: `get_model_git_status()` searched for file relative to CWD, not using manifest path
+  - Fix: Added `file_path` parameter to use path from manifest (`original_file_path`)
+  - Now: Git status detection works regardless of current working directory
+  - Location: `utils/git.py:334`, `command_impl/columns.py:69-76`
+
+- **Git modification detection for full model names** - Fixed `is_modified()` missing files
+  - Bug: Models with full filename (e.g., `core_google_events__user_devices.sql`) not detected as modified
+  - Symptom: `--dev` flag warned "NOT modified" despite uncommitted changes
+  - Root cause: `is_modified()` only searched by table name (`user_devices.sql`), not full model name
+  - Fix: Search by both table name AND full model name in git diff/status
+  - Now: Detects modifications for all filename patterns
+  - Location: `utils/git.py:129-134, 149-154`
+
+- **BigQuery fallback message clarity** - Improved prod/dev table messaging
+  - Changed "IS modified" to "is modified" for consistent lowercase formatting
+  - Added prod/dev table distinction: "BigQuery (prod table: X)" vs "BigQuery (dev table: X)"
+  - Removed misleading "Using dev version" warning when querying production tables
+  - Location: `utils/git.py:322`, `command_impl/columns.py:379-413`
+
+### Added
+- **Git status tests** - 3 new tests for file_path parameter
+  - `test_git_status_with_manifest_file_path`
+  - `test_git_status_file_deleted_from_disk`
+  - `test_git_status_without_file_path_uses_find`
+
+- **is_modified tests** - 4 new tests for full model name detection
+  - `test_is_modified_detects_full_model_name`
+  - `test_is_modified_detects_short_table_name`
+  - `test_is_modified_new_file_full_name`
+  - `test_is_modified_no_match_returns_false`
+
+- **Message formatting tests** - 7 new tests for message clarity improvements
+  - `TestGitWarningFormatting` - 2 tests for lowercase "is modified"
+  - `TestBigQueryMessageFormatting` - 5 tests for prod/dev table distinction
+  - Location: `tests/test_infrastructure.py:1217-1405`
+
+### Changed
+- **Test organization** - Consolidated test files for better maintainability
+  - Reduced test files: 24 → 18 (-25%)
+  - **test_bigquery.py** - Merged 3 files (bigquery_final_coverage, bigquery_retry, path_bigquery_coverage)
+  - **test_git.py** - Merged 2 files (git_edge_coverage, git_safety)
+  - **test_errors.py** - Merged exception_handling tests
+  - Logical grouping by feature/concern (BigQuery, Git, Errors)
+  - Total: 437 tests, 91.76% coverage
+
 ## [0.1.3] - 2025-11-27
 
 ### Fixed
@@ -148,6 +199,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLAUDE.md for AI agent integration
 - Apache 2.0 license
 
+[0.1.4]: https://github.com/Filianin/dbt-meta/releases/tag/v0.1.4
 [0.1.3]: https://github.com/Filianin/dbt-meta/releases/tag/v0.1.3
 [0.1.2]: https://github.com/Filianin/dbt-meta/releases/tag/v0.1.2
 [0.1.1]: https://github.com/Filianin/dbt-meta/releases/tag/v0.1.1

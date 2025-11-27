@@ -401,7 +401,7 @@ class TestCheckManifestGitMismatch:
         assert len(warnings) == 1
         assert warnings[0]['type'] == 'git_mismatch'
         assert warnings[0]['severity'] == 'warning'
-        assert 'IS modified in git' in warnings[0]['message']
+        assert 'is modified in git' in warnings[0]['message']
         assert 'suggestion' in warnings[0]
         assert '--dev' in warnings[0]['suggestion']
 
@@ -581,7 +581,7 @@ class TestCheckManifestGitMismatch:
         # Second warning: git_mismatch (model is modified)
         assert warnings[1]['type'] == 'git_mismatch'
         assert warnings[1]['severity'] == 'warning'
-        assert 'IS modified in git' in warnings[1]['message']
+        assert 'is modified in git' in warnings[1]['message']
 
     def test_file_exists_but_not_compiled_into_manifest(self, tmp_path, mocker):
         """Should detect file that exists but NOT compiled into manifest.
@@ -1212,3 +1212,193 @@ class TestCombinedFlags:
         assert result2.exit_code == 0
         assert "{" in output1 or "[" in output1
         assert "{" in output2 or "[" in output2
+
+
+# ============================================================================
+# SECTION 9: Message Formatting Tests (v0.1.4)
+# ============================================================================
+
+
+class TestGitWarningFormatting:
+    """Test lowercase 'is modified' in git warnings (v0.1.4)."""
+
+    def test_git_mismatch_warning_uses_lowercase_is(self, mocker):
+        """Should use lowercase 'is modified' not 'IS modified'."""
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=True)
+
+        warnings = _check_manifest_git_mismatch("test_model", use_dev=False)
+
+        assert len(warnings) == 1
+        assert warnings[0]['type'] == 'git_mismatch'
+        # Check for lowercase 'is', not uppercase 'IS'
+        assert 'is modified in git' in warnings[0]['message']
+        assert 'IS modified' not in warnings[0]['message']
+
+    def test_git_warning_suggestion_includes_dev_flag(self, mocker):
+        """Git mismatch warning should suggest --dev flag."""
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=True)
+
+        warnings = _check_manifest_git_mismatch("test_model", use_dev=False)
+
+        assert warnings[0]['suggestion']
+        assert '--dev' in warnings[0]['suggestion']
+
+
+class TestBigQueryMessageFormatting:
+    """Test prod/dev table distinction in BigQuery fallback messages (v0.1.4)."""
+
+    @pytest.fixture
+    def mock_config(self):
+        """Mock Config with BigQuery enabled."""
+        from unittest.mock import Mock
+        config = Mock()
+        config.fallback_bigquery_enabled = True
+        config.prod_table_name_strategy = "alias_or_name"
+        config.prod_schema_source = "config_or_model"
+        config.dev_schema = "personal_test_user"
+        return config
+
+    def test_prod_table_message_shows_prod_table(self, mock_config, capsys):
+        """BigQuery fallback for prod should show 'prod table'."""
+        from io import StringIO
+        from unittest.mock import patch
+        from dbt_meta.command_impl.columns import ColumnsCommand
+        from dbt_meta.utils.model_state import ModelState
+
+        cmd = ColumnsCommand(
+            config=mock_config,
+            manifest_path='/fake/manifest.json',
+            model_name='test_model',
+            use_dev=False
+        )
+
+        # Capture stderr
+        with patch('sys.stderr', new_callable=StringIO) as mock_stderr:
+            cmd._print_result_message(
+                state=ModelState.MODIFIED_UNCOMMITTED,
+                column_count=5,
+                table='core_client.test_table',
+                is_dev_table=False
+            )
+
+            output = mock_stderr.getvalue()
+
+        # Should show "prod table"
+        assert 'prod table' in output
+        assert 'BigQuery (prod table: core_client.test_table)' in output
+
+        # Should NOT show "dev table"
+        assert 'dev table' not in output
+
+    def test_dev_table_message_shows_dev_table(self, mock_config, capsys):
+        """BigQuery fallback for dev should show 'dev table'."""
+        from io import StringIO
+        from unittest.mock import patch
+        from dbt_meta.command_impl.columns import ColumnsCommand
+        from dbt_meta.utils.model_state import ModelState
+
+        cmd = ColumnsCommand(
+            config=mock_config,
+            manifest_path='/fake/manifest.json',
+            model_name='test_model',
+            use_dev=True
+        )
+
+        with patch('sys.stderr', new_callable=StringIO) as mock_stderr:
+            cmd._print_result_message(
+                state=ModelState.NEW_UNCOMMITTED,
+                column_count=3,
+                table='personal_test_user.test_model',
+                is_dev_table=True
+            )
+
+            output = mock_stderr.getvalue()
+
+        # Should show "dev table"
+        assert 'dev table' in output
+        assert 'BigQuery (dev table: personal_test_user.test_model)' in output
+
+        # Should NOT show "prod table"
+        assert 'prod table' not in output
+
+    def test_prod_table_no_using_dev_version_warning(self, mock_config, capsys):
+        """Production table should NOT show 'Using dev version' warning."""
+        from io import StringIO
+        from unittest.mock import patch
+        from dbt_meta.command_impl.columns import ColumnsCommand
+        from dbt_meta.utils.model_state import ModelState
+
+        cmd = ColumnsCommand(
+            config=mock_config,
+            manifest_path='/fake/manifest.json',
+            model_name='test_model',
+            use_dev=False
+        )
+
+        with patch('sys.stderr', new_callable=StringIO) as mock_stderr:
+            cmd._print_result_message(
+                state=ModelState.MODIFIED_UNCOMMITTED,
+                column_count=5,
+                table='core_client.test_table',
+                is_dev_table=False  # Production table
+            )
+
+            output = mock_stderr.getvalue()
+
+        # Should NOT show "Using dev version" for production
+        assert 'Using dev version' not in output
+
+    def test_dev_table_shows_using_dev_version_for_modified(self, mock_config, capsys):
+        """Dev table should show 'Using dev version' for MODIFIED_UNCOMMITTED."""
+        from io import StringIO
+        from unittest.mock import patch
+        from dbt_meta.command_impl.columns import ColumnsCommand
+        from dbt_meta.utils.model_state import ModelState
+
+        cmd = ColumnsCommand(
+            config=mock_config,
+            manifest_path='/fake/manifest.json',
+            model_name='test_model',
+            use_dev=True
+        )
+
+        with patch('sys.stderr', new_callable=StringIO) as mock_stderr:
+            cmd._print_result_message(
+                state=ModelState.MODIFIED_UNCOMMITTED,
+                column_count=5,
+                table='personal_test_user.test_model',
+                is_dev_table=True  # Dev table
+            )
+
+            output = mock_stderr.getvalue()
+
+        # Should show "Using dev version" for dev table
+        assert 'Using dev version' in output
+
+    def test_dev_table_no_warning_for_new_models(self, mock_config, capsys):
+        """Dev table should NOT show 'Using dev version' for NEW models."""
+        from io import StringIO
+        from unittest.mock import patch
+        from dbt_meta.command_impl.columns import ColumnsCommand
+        from dbt_meta.utils.model_state import ModelState
+
+        cmd = ColumnsCommand(
+            config=mock_config,
+            manifest_path='/fake/manifest.json',
+            model_name='test_model',
+            use_dev=True
+        )
+
+        with patch('sys.stderr', new_callable=StringIO) as mock_stderr:
+            cmd._print_result_message(
+                state=ModelState.NEW_UNCOMMITTED,
+                column_count=3,
+                table='personal_test_user.new_model',
+                is_dev_table=True
+            )
+
+            output = mock_stderr.getvalue()
+
+        # NEW models don't need "Using dev version" warning
+        # (no committed version exists)
+        assert 'Using dev version' not in output

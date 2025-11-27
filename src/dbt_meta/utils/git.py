@@ -120,12 +120,17 @@ def is_modified(model_name: str) -> bool:
         )
 
         if result.returncode == 0:
-            # Check if any modified file contains the table name
+            # Check if any modified file contains the table name OR full model name
             modified_files = result.stdout.splitlines()
             for file_path in modified_files:
-                # Exact filename match to avoid false positives
-                # e.g., table="events" should NOT match "user_events.sql"
-                if (f"/{table}.sql" in file_path or file_path == f"{table}.sql") and file_path.endswith('.sql'):
+                # Match by table name (e.g., user_devices.sql)
+                # OR by full model name (e.g., core_google_events__user_devices.sql)
+                # Use exact filename match to avoid false positives
+                if (
+                    (f"/{table}.sql" in file_path or file_path == f"{table}.sql" or
+                     f"/{model_name}.sql" in file_path or file_path == f"{model_name}.sql")
+                    and file_path.endswith('.sql')
+                ):
                     return True
 
         # Check git status for new files (untracked)
@@ -140,10 +145,11 @@ def is_modified(model_name: str) -> bool:
             # Check for new files (starting with ??)
             status_lines = result.stdout.splitlines()
             for line in status_lines:
-                # Match new/untracked files with exact filename
+                # Match by table name OR full model name
                 if (
                     (line.startswith('??') or line.startswith('A '))
-                    and (f"/{table}.sql" in line or line.endswith(f" {table}.sql"))
+                    and (f"/{table}.sql" in line or line.endswith(f" {table}.sql") or
+                         f"/{model_name}.sql" in line or line.endswith(f" {model_name}.sql"))
                     and '.sql' in line
                 ):
                     return True
@@ -313,7 +319,7 @@ def check_manifest_git_mismatch(
         warnings.append({
             "type": "git_mismatch",
             "severity": "warning",
-            "message": f"Model '{model_name}' IS modified in git",
+            "message": f"Model '{model_name}' is modified in git",
             "detail": "Querying production table, but local changes exist",
             "suggestion": "Use --dev flag to query dev table"
         })
@@ -331,31 +337,37 @@ def check_manifest_git_mismatch(
     return warnings
 
 
-def get_model_git_status(model_name: str) -> GitStatus:
+def get_model_git_status(model_name: str, file_path: str | None = None) -> GitStatus:
     """Detect complete git status of model file.
 
     Process:
-    1. Find .sql file from model_name (models/**/*model_name.sql)
+    1. Use file_path from manifest OR find .sql file from model_name
     2. Check if file exists on disk
     3. Check git status via 'git status --porcelain'
     4. Check git history via 'git log --all -- path'
 
     Args:
         model_name: Model name in dbt format (e.g., 'core_client__events')
+        file_path: Optional file path from manifest (e.g., 'models/staging/model.sql')
+                  If provided, uses this instead of searching for file
 
     Returns:
         GitStatus with all flags set
 
     Example:
         >>> status = get_model_git_status('core_client__events')
-        >>> if status.is_new:
-        ...     print("Model is untracked")
+        >>> # With manifest path
+        >>> status = get_model_git_status('core_client__events', 'models/core/events.sql')
     """
-    # Find file path using existing function
-    file_path = _find_sql_file_fast(model_name)
+    # Track whether file_path was provided (from manifest) or found (from filesystem)
+    file_path_from_manifest = file_path is not None
+
+    # Use provided file_path or find it
+    if not file_path:
+        file_path = _find_sql_file_fast(model_name)
 
     if not file_path:
-        # File not found on disk
+        # File not found via search
         return GitStatus(
             exists=False,
             is_tracked=False,
@@ -364,6 +376,21 @@ def get_model_git_status(model_name: str) -> GitStatus:
             is_deleted=False,
             is_new=False
         )
+
+    # Check if file exists on disk (ONLY if file_path from manifest)
+    # If from _find_sql_file_fast, it already checked existence
+    if file_path_from_manifest:
+        file_exists = Path(file_path).exists()
+        if not file_exists:
+            # File in manifest but not on disk = deleted
+            return GitStatus(
+                exists=False,
+                is_tracked=False,
+                is_modified=False,
+                is_committed=False,
+                is_deleted=True,
+                is_new=False
+            )
 
     # Check git status
     try:
