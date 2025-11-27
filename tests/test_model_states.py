@@ -70,8 +70,8 @@ class TestAllModelStates:
         state = detect_model_state("mod_model", True, False, git)
         assert state == ModelState.MODIFIED_UNCOMMITTED
 
-    def test_modified_committed(self):
-        """Model in prod with committed changes not deployed."""
+    def test_modified_uncommitted_not_in_dev(self):
+        """Model in prod with uncommitted changes, not compiled in dev."""
         git = GitStatus(
             exists=True,
             is_tracked=True,
@@ -81,14 +81,14 @@ class TestAllModelStates:
             is_new=False
         )
         state = detect_model_state("mod_model", True, False, git)
-        assert state == ModelState.MODIFIED_COMMITTED
+        assert state == ModelState.MODIFIED_UNCOMMITTED
 
     def test_modified_in_dev(self):
-        """Model in prod and dev with changes."""
+        """Model in prod with uncommitted changes, compiled in dev."""
         git = GitStatus(
             exists=True,
             is_tracked=True,
-            is_modified=False,  # Clean after commit
+            is_modified=True,  # Has uncommitted changes
             is_committed=True,
             is_deleted=False,
             is_new=False
@@ -192,15 +192,15 @@ class TestAllModelStates:
         assert state == ModelState.NEW_COMMITTED
 
     def test_file_in_both_manifests_no_changes(self):
-        """Model in both prod and dev manifests, no changes."""
+        """Model in both prod and dev manifests, no changes - should be PROD_STABLE."""
         git = GitStatus(
             exists=True,
             is_tracked=True,
-            is_modified=False,
+            is_modified=False,  # No uncommitted changes
             is_committed=True,
             is_deleted=False,
             is_new=False
         )
         state = detect_model_state("both_model", True, True, git)
-        # Should detect as MODIFIED_IN_DEV since it's in dev manifest
-        assert state == ModelState.MODIFIED_IN_DEV
+        # No modifications → PROD_STABLE (being in dev manifest doesn't matter)
+        assert state == ModelState.PROD_STABLE

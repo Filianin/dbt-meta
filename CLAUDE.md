@@ -99,6 +99,68 @@ if not model:
 **Supported:** `schema`, `columns`, `info`, `config`
 **Not supported:** `deps`, `sql`, `parents`, `children` (dbt-specific)
 
+#### 3a. Catalog Staleness Logic
+
+For `meta columns`, catalog.json is used as a fast alternative to BigQuery (~10ms vs ~3s).
+
+**Staleness detection uses FILE mtime, not internal generated_at:**
+
+```python
+# File mtime > 24h → fallback to BigQuery (CI/CD might be broken)
+file_age = parser.get_file_age_hours()
+if file_age > 24:
+    return fallback_to_bigquery()
+
+# Internal generated_at > 7 days → info message only (no fallback)
+internal_age = parser.get_age_hours()
+if internal_age > 168:
+    print(f"ℹ️  Catalog was generated {days}d {hours}h ago")
+```
+
+**Why this design:**
+- Catalog is synced from CI/CD on each merge to master
+- File mtime indicates when sync happened (fresh = CI working)
+- Internal `generated_at` can be old if no schema changes occurred
+- Old internal age is not a problem if file is regularly synced
+
+Location: `catalog/parser.py:201-217`, `command_impl/columns.py:270-282`
+
+#### 3b. BigQuery Fallback Schema Resolution
+
+**CRITICAL FIX (v0.1.3):** BigQuery fallback now correctly uses production schema for `MODIFIED_UNCOMMITTED` models.
+
+**Problem solved:**
+```
+# Before fix (WRONG):
+Failed to fetch from: personal_pavel_filianin.stg_google_play__installs_app_version
+
+# After fix (CORRECT):
+Fetching from: staging_google_play.installs_app_version
+```
+
+**Schema resolution logic in `_fetch_from_bigquery_with_model()`:**
+
+```python
+if self.use_dev:
+    # Dev mode: use model's schema (from dev manifest)
+    schema = model.get('schema', '')
+    table = self.model_name  # Full model name
+else:
+    # Production mode: ALWAYS use prod_model for schema
+    # Even if model came from dev manifest fallback
+    source_model = prod_model if prod_model else model
+    schema = source_model.get('schema', '')
+    table = source_model.get('alias') or source_model.get('name', '')
+```
+
+**Key principle:**
+- `prod_model` is fetched from production manifest during state detection
+- Passed to fallback methods for correct schema resolution
+- For `MODIFIED_UNCOMMITTED` without `--dev`: uses production schema
+- For `NEW_*` states: uses dev schema (correct - they only exist in dev)
+
+Location: `command_impl/columns.py:92-94, 160-167, 200-221`
+
 #### 4. Dev Schema Resolution (2-level priority)
 
 **Dev schema resolution (2-level):**
@@ -408,6 +470,7 @@ Add to `_build_commands_panel()` if needed.
 | Manifest discovery | `manifest/finder.py:26-89` |
 | Parser caching | `commands.py:20-34`, `manifest/parser.py:28-58` |
 | BigQuery fallback | `commands.py:399-446` |
+| BigQuery schema resolution | `command_impl/columns.py:92-94, 160-167, 200-221` |
 | Dev schema resolution | `commands.py:934-1042` (deprecated, use `config.py`) |
 | Prod table naming | `commands.py:452-493` |
 | Lineage traversal | `commands.py:773-805` |
@@ -421,9 +484,14 @@ Add to `_build_commands_panel()` if needed.
 - `DBT_PROD_MANIFEST_PATH` - Production manifest path (default: `~/.dbt-state/manifest.json`)
 - `DBT_DEV_MANIFEST_PATH` - Dev manifest path (default: `./target/manifest.json`)
 
+**Catalog:**
+- `DBT_PROD_CATALOG_PATH` - Production catalog path (default: `~/dbt-state/catalog.json`)
+- `DBT_DEV_CATALOG_PATH` - Dev catalog path (default: `./target/catalog.json`)
+
 **Fallback control:**
 - `DBT_FALLBACK_TARGET` - Enable dev manifest fallback (default: `true`)
 - `DBT_FALLBACK_BIGQUERY` - Enable BigQuery fallback (default: `true`)
+- `DBT_FALLBACK_CATALOG` - Enable catalog fallback for columns (default: `true`)
 
 **Naming:**
 - `DBT_PROD_TABLE_NAME` - `alias_or_name` (default), `name`, `alias`

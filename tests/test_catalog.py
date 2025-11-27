@@ -194,6 +194,74 @@ class TestCatalogParser:
 
         assert age_hours is None
 
+    def test_get_file_age_hours_recent_file(self, sample_catalog):
+        """Test get_file_age_hours for recently modified file."""
+        parser = CatalogParser(str(sample_catalog))
+
+        file_age_hours = parser.get_file_age_hours()
+
+        assert file_age_hours is not None
+        assert file_age_hours < 1.0  # File just created
+
+    def test_get_file_age_hours_old_file(self, tmp_path):
+        """Test get_file_age_hours for old file (mocked via os.path.getmtime)."""
+        import os
+        import time
+
+        catalog_data = {"nodes": {}, "metadata": {}}
+        catalog_path = tmp_path / "catalog.json"
+        with open(catalog_path, 'w') as f:
+            json.dump(catalog_data, f)
+
+        # Set file mtime to 48 hours ago
+        old_time = time.time() - (48 * 3600)
+        os.utime(catalog_path, (old_time, old_time))
+
+        parser = CatalogParser(str(catalog_path))
+        file_age_hours = parser.get_file_age_hours()
+
+        assert file_age_hours is not None
+        assert file_age_hours > 47  # About 48 hours old
+
+    def test_get_file_age_hours_nonexistent_file(self):
+        """Test get_file_age_hours returns None for nonexistent file."""
+        parser = CatalogParser("/nonexistent/catalog.json")
+
+        file_age_hours = parser.get_file_age_hours()
+
+        assert file_age_hours is None
+
+    def test_file_age_vs_internal_age(self, tmp_path):
+        """Test that file age and internal age can differ.
+
+        This is the key scenario: file was recently synced (fresh mtime)
+        but internal generated_at is old.
+        """
+        from datetime import timedelta
+
+        # Create catalog with old generated_at timestamp
+        old_time = datetime.now(timezone.utc) - timedelta(hours=72)
+        catalog_data = {
+            "metadata": {"generated_at": old_time.isoformat().replace('+00:00', 'Z')},
+            "nodes": {}
+        }
+
+        catalog_path = tmp_path / "catalog.json"
+        with open(catalog_path, 'w') as f:
+            json.dump(catalog_data, f)
+
+        parser = CatalogParser(str(catalog_path))
+
+        # File age should be fresh (just created)
+        file_age = parser.get_file_age_hours()
+        assert file_age is not None
+        assert file_age < 1.0
+
+        # Internal age should be old
+        internal_age = parser.get_age_hours()
+        assert internal_age is not None
+        assert internal_age > 71  # About 72 hours
+
     def test_is_stale_fresh_catalog(self, sample_catalog):
         """Test is_stale returns False for fresh catalog."""
         parser = CatalogParser(str(sample_catalog))

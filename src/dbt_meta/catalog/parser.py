@@ -174,10 +174,10 @@ class CatalogParser:
             return True
 
     def get_age_hours(self) -> Optional[float]:
-        """Get catalog age in hours.
+        """Get catalog internal generated_at age in hours.
 
         Returns:
-            Age in hours, or None if timestamp unavailable
+            Age in hours based on metadata.generated_at, or None if unavailable
 
         Examples:
             >>> parser.get_age_hours()
@@ -196,6 +196,24 @@ class CatalogParser:
             age = now - gen_time
             return age.total_seconds() / 3600
         except (ValueError, AttributeError):
+            return None
+
+    def get_file_age_hours(self) -> Optional[float]:
+        """Get catalog file modification time age in hours.
+
+        Returns:
+            Age in hours based on file mtime, or None if file not found
+
+        Examples:
+            >>> parser.get_file_age_hours()
+            2.5  # File modified 2.5 hours ago
+        """
+        try:
+            mtime = os.path.getmtime(self.catalog_path)
+            now = datetime.now().timestamp()
+            age_seconds = now - mtime
+            return age_seconds / 3600
+        except OSError:
             return None
 
     @staticmethod

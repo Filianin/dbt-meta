@@ -136,25 +136,13 @@ def detect_model_state(
 
     # MODIFIED models (in production manifest with changes)
     if in_prod_manifest:
-        if git_status.is_modified and not git_status.is_committed:
+        if git_status.is_modified:
             # Has uncommitted local changes
+            if in_dev_manifest:
+                return ModelState.MODIFIED_IN_DEV
             return ModelState.MODIFIED_UNCOMMITTED
-
-        if git_status.is_committed and in_dev_manifest:
-            # Committed changes, compiled in dev
-            return ModelState.MODIFIED_IN_DEV
-
-        if git_status.is_committed and not in_dev_manifest:
-            # Committed but not in dev manifest yet
-            # Could be waiting for rebuild
-            if git_status.is_modified:
-                return ModelState.MODIFIED_COMMITTED
-            # Committed but git shows clean - just deployed
-            return ModelState.PROD_STABLE
-
-        # In prod, not modified, not in dev
-        if not git_status.is_modified:
-            return ModelState.PROD_STABLE
+        # No modifications → stable
+        return ModelState.PROD_STABLE
 
     # Fallback for edge cases
     return ModelState.NOT_FOUND

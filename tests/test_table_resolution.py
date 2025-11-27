@@ -189,3 +189,125 @@ class TestTableResolution:
                 # Always use full model_name in dev
                 _, table_arg, _ = mock_fetch.call_args[0]
                 assert table_arg == expected_table, f"Expected {expected_table}, got {table_arg}"
+
+    def test_modified_uncommitted_uses_prod_schema_not_dev(self):
+        """CRITICAL FIX: MODIFIED_UNCOMMITTED without --dev must use production schema.
+
+        Bug scenario:
+        1. Model is MODIFIED_UNCOMMITTED (in prod manifest with local changes)
+        2. User runs `meta columns model_name` (without --dev)
+        3. get_model_with_fallback() might return model from dev manifest (fallback)
+        4. BEFORE FIX: Would use dev schema (personal_xxx) - WRONG!
+        5. AFTER FIX: Uses production schema from prod_model - CORRECT!
+        """
+        config = Config.from_env()
+        cmd = ColumnsCommand(
+            manifest_path="/path/to/manifest.json",
+            model_name="stg_google_play__installs_app_version",
+            use_dev=False,  # Production mode - CRITICAL
+            json_output=False,
+            config=config
+        )
+
+        # Model from dev manifest fallback (has dev schema - WRONG!)
+        dev_model = {
+            'database': 'admirals-bi-dwh',
+            'schema': 'personal_pavel_filianin',  # Dev schema - would be used before fix
+            'name': 'stg_google_play__installs_app_version',  # Full name in dev
+            'alias': ''
+        }
+
+        # Production model (has correct production schema)
+        prod_model = {
+            'database': 'admirals-bi-dwh',
+            'schema': 'staging_google_play',  # Production schema - correct!
+            'name': 'installs_app_version',
+            'alias': 'installs_app_version'
+        }
+
+        from dbt_meta.utils.model_state import ModelState
+        state = ModelState.MODIFIED_UNCOMMITTED
+
+        with patch('dbt_meta.command_impl.columns._fetch_columns_from_bigquery_direct') as mock_fetch:
+            mock_fetch.return_value = [{'name': 'id', 'data_type': 'INT64'}]
+
+            # Pass dev_model as model (what fallback returns)
+            # But also pass prod_model (what we now pass for correct schema)
+            cmd._fetch_from_bigquery_with_model(dev_model, state, prod_model)
+
+            # CRITICAL: Must use PRODUCTION schema, not dev schema
+            mock_fetch.assert_called_with(
+                'staging_google_play',  # Production schema - CORRECT!
+                'installs_app_version',  # Production table name - CORRECT!
+                'admirals-bi-dwh'
+            )
+
+    def test_modified_uncommitted_without_model_uses_prod_schema(self):
+        """CRITICAL FIX: _fetch_from_bigquery_without_model must use prod schema for MODIFIED.
+
+        Bug scenario:
+        1. Model is MODIFIED_UNCOMMITTED but model=None (mismatch in manifest paths)
+        2. BEFORE FIX: Would use dev schema - WRONG!
+        3. AFTER FIX: Uses production schema from prod_model - CORRECT!
+        """
+        config = Config.from_env()
+        cmd = ColumnsCommand(
+            manifest_path="/path/to/manifest.json",
+            model_name="stg_google_play__installs_app_version",
+            use_dev=False,  # Production mode
+            json_output=False,
+            config=config
+        )
+
+        # Production model for schema resolution
+        prod_model = {
+            'database': 'admirals-bi-dwh',
+            'schema': 'staging_google_play',
+            'name': 'installs_app_version',
+            'alias': 'installs_app_version'
+        }
+
+        from dbt_meta.utils.model_state import ModelState
+        state = ModelState.MODIFIED_UNCOMMITTED
+
+        with patch('dbt_meta.command_impl.columns._fetch_columns_from_bigquery_direct') as mock_fetch:
+            mock_fetch.return_value = [{'name': 'id', 'data_type': 'INT64'}]
+
+            # model=None but prod_model provided
+            cmd._fetch_from_bigquery_without_model(state, prod_model)
+
+            # CRITICAL: Must use PRODUCTION schema from prod_model
+            mock_fetch.assert_called_with(
+                'staging_google_play',  # Production schema
+                'installs_app_version',  # Production table name
+                'admirals-bi-dwh'
+            )
+
+    def test_new_uncommitted_still_uses_dev_schema(self):
+        """NEW models should still use dev schema (they only exist in dev)."""
+        config = Config.from_env()
+        cmd = ColumnsCommand(
+            manifest_path="/path/to/manifest.json",
+            model_name="core_new__feature",
+            use_dev=False,  # Even in prod mode
+            json_output=False,
+            config=config
+        )
+
+        from dbt_meta.utils.model_state import ModelState
+        state = ModelState.NEW_UNCOMMITTED
+
+        with patch('dbt_meta.command_impl.columns._calculate_dev_schema') as mock_schema:
+            mock_schema.return_value = 'personal_pavel_filianin'
+
+            with patch('dbt_meta.command_impl.columns._fetch_columns_from_bigquery_direct') as mock_fetch:
+                mock_fetch.return_value = [{'name': 'id', 'data_type': 'INT64'}]
+
+                # NEW models: use dev schema (correct behavior)
+                cmd._fetch_from_bigquery_without_model(state, None)
+
+                # NEW models use dev schema - this is correct!
+                mock_fetch.assert_called_with(
+                    'personal_pavel_filianin',  # Dev schema for NEW
+                    'core_new__feature'
+                )

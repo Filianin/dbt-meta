@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.1.3] - 2025-11-27
+
+### Fixed
+- **BigQuery fallback schema resolution** - Fixed incorrect dev schema usage for MODIFIED models
+  - Bug: `meta columns model_name` used dev schema (`personal_xxx`) instead of production
+  - Symptom: `Failed to fetch from: personal_pavel_filianin.stg_google_play__installs_app_version`
+  - Expected: `staging_google_play.installs_app_version` (production schema)
+  - Root cause: `_fetch_from_bigquery_with_model()` used model's schema from dev manifest fallback
+  - Fix: Added `prod_model` parameter to BigQuery fallback methods for correct schema resolution
+  - Now: Production schema is always used for `MODIFIED_UNCOMMITTED` without `--dev` flag
+
+- **Catalog staleness detection** - Now uses file mtime instead of internal generated_at
+  - Fallback to BigQuery only if file not updated >24h (indicates CI/CD issue)
+  - Info message if internal age >7 days (not regenerated, but file still synced)
+  - Prevents false "catalog too old" warnings when file is fresh but schema unchanged
+
+### Added
+- **BigQuery schema resolution tests** - 3 new tests for prod/dev schema fallback scenarios
+  - `test_modified_uncommitted_uses_prod_schema_not_dev`
+  - `test_modified_uncommitted_without_model_uses_prod_schema`
+  - `test_new_uncommitted_still_uses_dev_schema`
+
+- **Catalog file age tests** - 4 new tests for file mtime vs internal timestamp scenarios
+- **`get_file_age_hours()` method** - CatalogParser now distinguishes file age from internal age
+
+## [0.1.2] - 2025-11-26
+
+### Fixed
+- **Model state detection** - Fixed false `MODIFIED_IN_DEV` warning for stable models
+  - `is_committed` incorrectly triggered MODIFIED states for all tracked files
+  - Now only `is_modified=True` triggers MODIFIED states
+  - Removed unused `MODIFIED_COMMITTED` state
+
 ## [0.1.1] - 2025-11-25
 
 ### Fixed
@@ -113,5 +148,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLAUDE.md for AI agent integration
 - Apache 2.0 license
 
+[0.1.3]: https://github.com/Filianin/dbt-meta/releases/tag/v0.1.3
+[0.1.2]: https://github.com/Filianin/dbt-meta/releases/tag/v0.1.2
 [0.1.1]: https://github.com/Filianin/dbt-meta/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Filianin/dbt-meta/releases/tag/v0.1.0

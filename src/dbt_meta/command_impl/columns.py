@@ -89,6 +89,10 @@ class ColumnsCommand(BaseCommand):
         in_prod_manifest = prod_parser.get_model(self.model_name) is not None if prod_parser else False
         in_dev_manifest = dev_parser.get_model(self.model_name) is not None if dev_parser else False
 
+        # Get production model for schema resolution (used when model comes from dev manifest fallback)
+        # CRITICAL: For MODIFIED states without --dev, we need production schema/table, not dev
+        prod_model = prod_parser.get_model(self.model_name) if prod_parser else None
+
         # Get file path for deprecated folder check
         file_path = None
         if model:
@@ -109,7 +113,6 @@ class ColumnsCommand(BaseCommand):
 
         if state in [
             ModelState.MODIFIED_UNCOMMITTED,
-            ModelState.MODIFIED_COMMITTED,
             ModelState.MODIFIED_IN_DEV,
             ModelState.NEW_UNCOMMITTED,
             ModelState.NEW_COMMITTED,
@@ -117,9 +120,9 @@ class ColumnsCommand(BaseCommand):
         ]:
             # Changed models → SKIP catalog, go directly to BigQuery
             if model:
-                return self._fetch_from_bigquery_with_model(model, state)
+                return self._fetch_from_bigquery_with_model(model, state, prod_model)
             else:
-                return self._fetch_from_bigquery_without_model(state)
+                return self._fetch_from_bigquery_without_model(state, prod_model)
 
         # Stable models → Try catalog first
         if model:
@@ -128,37 +131,40 @@ class ColumnsCommand(BaseCommand):
                 return columns  # Success from catalog
 
             # Catalog failed → fallback to BigQuery
-            return self._fetch_from_bigquery_with_model(model, state)
+            return self._fetch_from_bigquery_with_model(model, state, prod_model)
         else:
-            return self._fetch_from_bigquery_without_model(state)
+            return self._fetch_from_bigquery_without_model(state, prod_model)
 
     def _fetch_from_bigquery_with_model(
         self,
         model: dict,
-        state: ModelState
+        state: ModelState,
+        prod_model: Optional[dict] = None
     ) -> Optional[list[dict[str, str]]]:
         """Fetch columns from BigQuery using model metadata.
 
         Args:
             model: Model data from manifest (for schema/table location)
             state: Detected model state
+            prod_model: Production model data (for schema resolution when model from dev manifest)
 
         Returns:
             List of columns, or None if fetch fails
         """
-        database = model.get('database', '')
-        schema = model.get('schema', '')
-
         # Determine table name based on mode
         if self.use_dev:
-            # Dev mode: use FULL model_name as table name (full SQL filename)
-            # "core_client__events" → "core_client__events" (full name kept)
-            # "staging__users" → "staging__users" (full name kept)
-            # This matches dbt --target dev behavior
+            # Dev mode: use dev schema and FULL model_name as table name
+            database = model.get('database', '')
+            schema = model.get('schema', '')
             table = self.model_name
         else:
-            # Prod mode: use alias or name
-            table = model.get('alias') or model.get('name', '')
+            # Production mode: ALWAYS use production model's schema/table
+            # This handles cases where model was found in dev manifest with dev schema
+            # CRITICAL FIX: For MODIFIED states, prod_model has correct production schema
+            source_model = prod_model if prod_model else model
+            database = source_model.get('database', '')
+            schema = source_model.get('schema', '')
+            table = source_model.get('alias') or source_model.get('name', '')
 
         # Print informative message based on state
         self._print_state_message(state, searching=True)
@@ -177,7 +183,8 @@ class ColumnsCommand(BaseCommand):
 
     def _fetch_from_bigquery_without_model(
         self,
-        state: ModelState
+        state: ModelState,
+        prod_model: Optional[dict] = None
     ) -> Optional[list[dict[str, str]]]:
         """Fetch columns from BigQuery without model in manifest.
 
@@ -185,14 +192,37 @@ class ColumnsCommand(BaseCommand):
 
         Args:
             state: Detected model state
+            prod_model: Production model data (for schema resolution when available)
 
         Returns:
             List of columns, or None if fetch fails
         """
-        # Try dev BQ (for new/modified models)
-        if state in [ModelState.NEW_UNCOMMITTED, ModelState.NEW_COMMITTED, ModelState.MODIFIED_UNCOMMITTED]:
+        # Determine schema and table based on state and mode
+        if state == ModelState.MODIFIED_UNCOMMITTED and not self.use_dev:
+            # MODIFIED model without --dev: Query PRODUCTION table
+            # CRITICAL FIX: Use production schema, not dev schema
+            if prod_model:
+                # Use production model's schema/table
+                schema = prod_model.get('schema', '')
+                table = prod_model.get('alias') or prod_model.get('name', '')
+                database = prod_model.get('database', '')
+            else:
+                # Fallback: infer from model name (best effort)
+                from dbt_meta.utils.bigquery import infer_table_parts
+                schema, table = infer_table_parts(self.model_name)
+                database = None
+
+            self._print_state_message(state, searching=True)
+
+            columns = _fetch_columns_from_bigquery_direct(schema, table, database)
+
+            if columns:
+                self._print_result_message(state, len(columns), f"{schema}.{table}")
+                return columns
+
+        elif state in [ModelState.NEW_UNCOMMITTED, ModelState.NEW_COMMITTED]:
+            # NEW models: Try dev schema (they only exist in dev after build)
             dev_schema = _calculate_dev_schema()
-            # Use FULL model_name as table name (full SQL filename)
             table = self.model_name
 
             self._print_state_message(state, searching=True)
@@ -202,10 +232,8 @@ class ColumnsCommand(BaseCommand):
             if columns:
                 self._print_result_message(state, len(columns), f"{dev_schema}.{table}")
 
-                # Add suggestion if model not built
-                if state in [ModelState.NEW_UNCOMMITTED, ModelState.NEW_COMMITTED]:
-                    print("\n💡 To build and query:", file=sys.stderr)
-                    print(f"   defer run --select {self.model_name}", file=sys.stderr)
+                print("\n💡 To build and query:", file=sys.stderr)
+                print(f"   defer run --select {self.model_name}", file=sys.stderr)
 
                 return columns
 
@@ -268,19 +296,26 @@ class ColumnsCommand(BaseCommand):
 
             parser = CatalogParser(catalog_path)
 
-            # Check if catalog is too stale
-            age_hours = parser.get_age_hours()
-            if age_hours and age_hours > 24:
-                # Catalog older than 24h - skip and use BigQuery
-                print(f"\n⚠️  Catalog is {age_hours:.1f}h old (>24h), using BigQuery for fresh data", file=sys.stderr)
+            # Check if catalog FILE is too stale (not updated by CI/CD)
+            file_age_hours = parser.get_file_age_hours()
+            if file_age_hours and file_age_hours > 24:
+                # File not updated for >24h - CI/CD might be broken
+                print(f"\n⚠️  Catalog file not updated for {file_age_hours:.1f}h (>24h), using BigQuery", file=sys.stderr)
                 return None
+
+            # Info message if internal generated_at is very old (>7 days)
+            internal_age_hours = parser.get_age_hours()
+            if internal_age_hours and internal_age_hours > 168:  # 7 days
+                days = int(internal_age_hours // 24)
+                hours = int(internal_age_hours % 24)
+                print(f"\nℹ️  Catalog was generated {days}d {hours}h ago", file=sys.stderr)
 
             # Fetch columns from catalog
             columns = parser.get_columns(self.model_name)
 
             if columns:
                 # Success - print message
-                self._print_catalog_message(state, len(columns), age_hours)
+                self._print_catalog_message(state, len(columns), internal_age_hours)
                 return columns
 
             # Fallback: model not in catalog
@@ -330,8 +365,7 @@ class ColumnsCommand(BaseCommand):
             ModelState.NEW_COMMITTED: f"⚠️  Model '{self.model_name}' is NEW (committed but not in production)",
             ModelState.NEW_IN_DEV: f"⚠️  Model '{self.model_name}' is NEW (in dev manifest)",
             ModelState.MODIFIED_UNCOMMITTED: f"⚠️  Model '{self.model_name}' has UNCOMMITTED changes",
-            ModelState.MODIFIED_COMMITTED: f"⚠️  Model '{self.model_name}' has COMMITTED changes (not deployed)",
-            ModelState.MODIFIED_IN_DEV: f"⚠️  Model '{self.model_name}' has changes in dev manifest",
+            ModelState.MODIFIED_IN_DEV: f"⚠️  Model '{self.model_name}' has UNCOMMITTED changes (compiled in dev)",
             ModelState.PROD_STABLE: f"✅ Model '{self.model_name}' found in production",
             ModelState.DELETED_LOCALLY: f"⚠️  Model '{self.model_name}' is DELETED locally",
             ModelState.DELETED_DEPLOYED: f"❌ Model '{self.model_name}' is DELETED from production",
@@ -354,9 +388,9 @@ class ColumnsCommand(BaseCommand):
 
         # Add state-specific info
         if state == ModelState.MODIFIED_UNCOMMITTED:
-            print("\n⚠️  Using NEW dev version (reflects your uncommitted changes)", file=sys.stderr)
-        elif state == ModelState.MODIFIED_COMMITTED:
-            print("\n⚠️  Using dev version (reflects committed changes not yet deployed)", file=sys.stderr)
+            print("\n⚠️  Using dev version (reflects your uncommitted changes)", file=sys.stderr)
+        elif state == ModelState.MODIFIED_IN_DEV:
+            print("\n⚠️  Using dev version (compiled in dev)", file=sys.stderr)
 
     def _print_not_found_message(self, state: ModelState, attempted_table: Optional[str]):
         """Print error message when columns not found.
