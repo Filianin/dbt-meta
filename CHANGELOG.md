@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6] - 2025-11-28
+
+### Changed
+- **UI terminology improvements** - Simplified lineage command labels for clarity
+  - Tree view: "All ancestors" → "All parents", "All descendants" → "All children"
+  - Kept "Direct parents" and "Direct children" for non-recursive views
+  - Location: `cli.py:981, 986, 1031, 1036`
+
+- **Emoji consistency** - Improved visual clarity in CLI output
+  - Success messages: ✓ → ✅ (more visible in terminals)
+  - Parents tree: 📊 → 👴 (clearer semantic meaning)
+  - Children tree: 📊 → 👶 (clearer semantic meaning)
+  - Location: `cli.py:369, 481, 981, 1031, 1075`, `commands.py:387, 399`
+
 ## [0.1.5] - 2025-11-28
 
 ### Fixed
@@ -227,6 +241,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLAUDE.md for AI agent integration
 - Apache 2.0 license
 
+[0.1.6]: https://github.com/Filianin/dbt-meta/releases/tag/v0.1.6
+[0.1.5]: https://github.com/Filianin/dbt-meta/releases/tag/v0.1.5
 [0.1.4]: https://github.com/Filianin/dbt-meta/releases/tag/v0.1.4
 [0.1.3]: https://github.com/Filianin/dbt-meta/releases/tag/v0.1.3
 [0.1.2]: https://github.com/Filianin/dbt-meta/releases/tag/v0.1.2

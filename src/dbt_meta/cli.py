@@ -366,7 +366,7 @@ def settings_init(
         # Copy template
         shutil.copy(template_file, target_file)
 
-        console.print(f"[green]✓ Config file created:[/green] {target_file}")
+        console.print(f"[green]✅ Config file created:[/green] {target_file}")
         console.print()
         console.print("Next steps:")
         console.print("  1. Edit config file: ~/.config/dbt-meta/config.toml")
@@ -478,7 +478,7 @@ def settings_validate() -> None:
             print()
             console.print("[yellow]⚠ Configuration has warnings[/yellow]")
         else:
-            console.print("[green]✓ Configuration is valid[/green]")
+            console.print("[green]✅ Configuration is valid[/green]")
 
     except FileNotFoundError as e:
         console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] {e!s}")
@@ -978,12 +978,12 @@ def parents(
             print()
             if all_ancestors and result and isinstance(result[0], dict) and 'children' in result[0]:
                 # Hierarchical tree output
-                tree = Tree(f"[bold green]📊 All ancestors: {model_name}[/bold green]")
+                tree = Tree(f"[bold green]👴 All parents: {model_name}[/bold green]")
                 _build_tree_recursive(tree, result)
                 console.print(tree)
             else:
                 # Flat table output
-                mode = "All ancestors" if all_ancestors else "Direct parents"
+                mode = "All parents" if all_ancestors else "Direct parents"
                 table = Table(title=f"[bold green not italic]{mode} for {model_name} ({len(result)})[/bold green not italic]", header_style="bold green")
                 table.add_column("Path", style=STYLE_COMMAND)
                 table.add_column("Table", style="white", min_width=30)
@@ -1028,12 +1028,12 @@ def children(
             print()
             if all_descendants and result and isinstance(result[0], dict) and 'children' in result[0]:
                 # Hierarchical tree output
-                tree = Tree(f"[bold green]📊 All descendants: {model_name}[/bold green]")
+                tree = Tree(f"[bold green]👶 All children: {model_name}[/bold green]")
                 _build_tree_recursive(tree, result)
                 console.print(tree)
             else:
                 # Flat table output
-                mode = "All descendants" if all_descendants else "Direct children"
+                mode = "All children" if all_descendants else "Direct children"
                 table = Table(title=f"[bold green not italic]{mode} for {model_name} ({len(result)})[/bold green not italic]", header_style="bold green")
                 table.add_column("Path", style=STYLE_COMMAND)
                 table.add_column("Table", style="white", min_width=30)
@@ -1072,7 +1072,7 @@ def refresh(
     """
     try:
         commands.refresh(use_dev=dev)
-        console.print("[green]✓ Artifacts refreshed successfully[/green]")
+        console.print("[green]✅ Artifacts refreshed successfully[/green]")
     except DbtMetaError as e:
         handle_error(e)
     except Exception as e:

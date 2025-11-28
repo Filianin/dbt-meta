@@ -384,7 +384,7 @@ def refresh(use_dev: bool = False) -> None:
         # Dev mode: parse local project
         print("Parsing local dbt project...")
         subprocess.run(['dbt', 'parse', '--target', 'dev'], check=True)
-        print("✓ Local manifest refreshed (./target/manifest.json)")
+        print("✅ Local manifest refreshed (./target/manifest.json)")
     else:
         # Production mode: sync from remote storage with --force
         script_path = Path.home() / '.claude' / 'scripts' / 'sync-artifacts.sh'
@@ -396,7 +396,7 @@ def refresh(use_dev: bool = False) -> None:
 
         print("Syncing production artifacts from remote storage...")
         subprocess.run([str(script_path), '--force'], check=True)
-        print("✓ Production artifacts synced (~/dbt-state/)")
+        print("✅ Production artifacts synced (~/dbt-state/)")
 
 
 def docs(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[list[dict[str, str]]]:
