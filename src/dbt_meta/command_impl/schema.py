@@ -35,7 +35,7 @@ class SchemaCommand(BaseCommand):
         - Falls back to BigQuery if not in dev manifest
 
     Behavior with use_dev=False (default):
-        - Searches production manifest (.dbt-state/) first
+        - Searches production manifest (~/dbt-state/) first
         - Falls back to dev manifest if DBT_FALLBACK_TARGET=true
           (returns DEV schema location when found in dev manifest)
         - Falls back to BigQuery if DBT_FALLBACK_BIGQUERY=true

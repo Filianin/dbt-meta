@@ -20,7 +20,7 @@ class SqlCommand(BaseCommand):
         - NO BigQuery fallback (SQL is dbt-specific)
 
     Behavior with use_dev=False (default):
-        - Searches production manifest (.dbt-state/) first
+        - Searches production manifest (~/dbt-state/) first
         - Falls back to dev manifest if DBT_FALLBACK_TARGET=true
         - NO BigQuery fallback (SQL is dbt-specific)
     """
@@ -67,6 +67,8 @@ class SqlCommand(BaseCommand):
             SQL code string
         """
         # Return raw or compiled SQL
+        # Note: Git warnings are automatically shown by BaseCommand.get_model_with_fallback()
+        # if model is modified/new/deleted, so no additional warnings needed here
         if self.raw:
             return model.get('raw_code', '')
         else:

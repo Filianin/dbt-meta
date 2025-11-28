@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5] - 2025-11-28
+
+### Fixed
+- **SQL command behavior for modified models** - Now returns production SQL with clear git warnings
+  - Behavior: `meta sql model_name` returns production compiled SQL (may be old version if modified)
+  - Git warnings automatically shown via `BaseCommand.get_model_with_fallback()`
+  - Warnings explain model is modified and suggest using `--dev` flag for dev SQL
+  - Removed CLI error handling for empty result (empty string is valid)
+  - All 889 models in production manifest have compiled_code (verified)
+  - Location: `command_impl/sql.py:59-75`, `cli.py:829-831`
+
+- **Path references updated** - Replaced all `.dbt-state/` with `~/dbt-state/` in docstrings
+  - Fixed incorrect path references in command_impl modules
+  - Updated all documentation to use correct default path
+  - Location: All `command_impl/*.py` docstrings
+
+### Added
+- **SQL command test** - `test_sql_returns_empty_string_not_none_for_missing_compiled`
+  - Verifies empty string (not None) for missing compiled_code
+  - Total: 440 tests (+3), coverage 91.76%
+
+### Changed
+- **README AI features section** - Enhanced feature list for better AI agent clarity
+  - Added "Machine-readable JSON" - every command has `-j` flag for structured output
+  - Added "3-level fallback" - Production manifest → Dev manifest → Database
+  - Added "Git-aware" - auto-detects model state with helpful warnings
+  - Simplified "Why CLI over MCP?" section for clarity
+
 ## [0.1.4] - 2025-11-27
 
 ### Fixed

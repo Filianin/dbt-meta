@@ -33,12 +33,14 @@ AI agents (like Claude Code, GitHub Copilot, ChatGPT) often hallucinate when wor
 
 ### The Solution
 
-Following [Anthropic's recommendation](https://docs.anthropic.com/en/docs/build-with-claude/tool-use) to use CLI tools over MCP for AI agents, **dbt-meta** provides:
+Following Anthropic's recommendation to use CLI tools over MCP for AI agents, **dbt-meta** provides:
 
-✅ **Fast** - Optimized Python with caching, no repeated manifest parsing
-✅ **Deterministic JSON** - No parsing ambiguity, structured output
-✅ **Schema validation** - Prevents hallucinations by providing accurate metadata
-✅ **Type-safe** - Mypy strict mode, comprehensive test coverage (91%+)
+- ✅ **Fast** - Optimized Python with caching, no repeated manifest parsing
+- ✅ **Machine-readable JSON** - Every command has `-j` flag for structured output, no text parsing needed
+- ✅ **Schema validation** - Prevents hallucinations by providing accurate metadata
+- ✅ **Type-safe** - Mypy strict mode, comprehensive test coverage (91%+)
+- ✅ **3-level fallback** - Production manifest → Dev manifest → your database (always finds metadata)
+- ✅ **Git-aware** - Auto-detects model state (modified, new, deleted) with helpful warnings
 
 ### Integration
 
@@ -50,13 +52,10 @@ Following [Anthropic's recommendation](https://docs.anthropic.com/en/docs/build-
 
 ### Why CLI over MCP?
 
-Anthropic [recommends CLI tools](https://docs.anthropic.com/en/docs/build-with-claude/tool-use) for AI agents because they:
 - Have deterministic, structured output
 - Are faster and more reliable
 - Work in any environment
 - Don't require additional infrastructure
-
-**dbt-meta** follows this best practice, providing a lightning-fast, reliable interface for AI agents to access dbt metadata.
 
 ### Performance
 
@@ -127,7 +126,7 @@ meta --version
 dbt compile
 
 # Step 2: Use dbt-meta immediately!
-meta schema customers           # → admirals-bi-dwh.analytics.customers
+meta schema customers           # → your_project.analytics.customers
 meta columns -j orders          # → JSON array of columns
 meta deps customers             # → Dependencies list
 meta search "customer"          # → Find models
@@ -222,7 +221,7 @@ meta columns -jm ~/path.json m   # → JSON + Custom manifest
 # Get production table name (eliminates AI hallucinations)
 TABLE=$(meta schema customers)
 bq query "SELECT * FROM $TABLE LIMIT 10"
-# → SELECT * FROM admirals-bi-dwh.analytics.dim_customers LIMIT 10
+# → SELECT * FROM your_project.analytics.dim_customers LIMIT 10
 
 # Or with JSON output
 TABLE=$(meta schema -j customers | jq -r '.full_name')

@@ -826,16 +826,8 @@ def sql(
             console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
             raise typer.Exit(code=1)
 
-        if not result:
-            if not jinja:
-                console.print(f"[{STYLE_ERROR}]Compiled code not found for model '{model_name}'[/{STYLE_ERROR}]")
-                console.print("Note: Compiled code is only available in .dbt-state/manifest.json")
-                console.print(f"Tip: Use 'meta sql {model_name} --jinja' to get raw SQL with Jinja templates")
-                raise typer.Exit(code=1)
-            else:
-                console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Raw SQL not found for model '{model_name}'")
-                raise typer.Exit(code=1)
-
+        # Empty string is valid result (e.g., compiled_code missing from manifest)
+        # SqlCommand will print informational messages to stderr if needed
         if json_output:
             output = {
                 "model_name": model_name,

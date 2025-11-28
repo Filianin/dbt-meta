@@ -28,7 +28,7 @@ class ConfigCommand(BaseCommand):
           (partial config: materialized, partition_by, cluster_by)
 
     Behavior with use_dev=False (default):
-        - Searches production manifest (.dbt-state/) first
+        - Searches production manifest (~/dbt-state/) first
         - Falls back to dev manifest if DBT_FALLBACK_TARGET=true
         - Falls back to BigQuery if DBT_FALLBACK_BIGQUERY=true
           (partial config: materialized, partition_by, cluster_by)

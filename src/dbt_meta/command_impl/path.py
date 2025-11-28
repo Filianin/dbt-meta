@@ -22,7 +22,7 @@ class PathCommand(BaseCommand):
         - Supports BigQuery format search (schema.table) in dev manifest
 
     Behavior with use_dev=False (default):
-        - Searches production manifest (.dbt-state/) first
+        - Searches production manifest (~/dbt-state/) first
         - Falls back to dev manifest if DBT_FALLBACK_TARGET=true
         - NO BigQuery fallback (file path is dbt-specific)
     """

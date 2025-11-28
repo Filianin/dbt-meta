@@ -367,7 +367,7 @@ class TestSqlCommand:
         """
         Should return empty string for compiled SQL if not available
 
-        Compiled SQL only in .dbt-state/ manifest after dbt compile.
+        Compiled SQL only in ~/dbt-state/ manifest after dbt compile.
         """
         model_name = test_model  # Use fixture
         result = sql(str(prod_manifest), model_name, raw=False)
@@ -390,6 +390,37 @@ class TestSqlCommand:
         result = sql(str(prod_manifest), model_name, raw=True)
 
         assert 'config(' in result.lower()
+
+    def test_sql_returns_empty_string_not_none_for_missing_compiled(self, tmp_path):
+        """
+        Should return empty string (not None) when compiled_code missing
+
+        None is reserved for model not found, empty string means no compiled SQL.
+        Note: In production this shouldn't happen as all models are compiled.
+        """
+        # Create manifest with model that has empty compiled_code
+        manifest_path = tmp_path / "manifest.json"
+        manifest_data = {
+            "metadata": {"dbt_version": "1.5.0"},
+            "nodes": {
+                "model.project.test_model": {
+                    "name": "test_model",
+                    "resource_type": "model",
+                    "schema": "analytics",
+                    "alias": "test_table",
+                    "raw_code": "SELECT * FROM {{ ref('upstream') }}",
+                    "compiled_code": "",  # Empty compiled code (shouldn't happen in prod)
+                    "original_file_path": "models/test_model.sql"
+                }
+            }
+        }
+        manifest_path.write_text(json.dumps(manifest_data))
+
+        result = sql(str(manifest_path), "test_model", raw=False)
+
+        # Should be empty string, NOT None
+        assert result == ''
+        assert result is not None
 
 
 class TestSqlCommandJsonOutput:
