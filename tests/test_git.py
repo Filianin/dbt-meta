@@ -11,11 +11,18 @@ Coverage targets:
 - Error handling in git operations
 """
 
+import subprocess
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from dbt_meta.utils.git import _find_sql_file_fast, get_model_git_status, is_modified, validate_path
+from dbt_meta.utils.git import (
+    _find_sql_file_fast,
+    get_model_git_status,
+    is_committed_but_not_in_main,
+    is_modified,
+    validate_path,
+)
 
 
 # ============================================================================
@@ -474,6 +481,69 @@ class TestIsModifiedFullModelNames:
             # Should NOT detect as modified
             result = is_modified("stable_model")
             assert result is False
+
+
+class TestIsCommittedButNotInMain:
+    """Test is_committed_but_not_in_main() detects committed changes vs main/master."""
+
+    def test_committed_model_detected(self):
+        """Test detects model committed in branch but not in main."""
+        with patch('subprocess.run') as mock_run:
+            # First call: git diff origin/main...HEAD (has changes)
+            mock_run.return_value = Mock(
+                returncode=0,
+                stdout="models/core/events.sql\nmodels/staging/users.sql\n"
+            )
+
+            # Should detect as committed
+            result = is_committed_but_not_in_main("core_client__events")
+            assert result is True
+
+    def test_not_committed_returns_false(self):
+        """Test returns False when model not in branch changes."""
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = Mock(
+                returncode=0,
+                stdout="models/other/different.sql\n"
+            )
+
+            # Should NOT detect as committed
+            result = is_committed_but_not_in_main("stable_model")
+            assert result is False
+
+    def test_fallback_to_origin_master(self):
+        """Test falls back to origin/master if origin/main not found."""
+        with patch('subprocess.run') as mock_run:
+            # First call: origin/main (fails)
+            # Second call: origin/master (succeeds)
+            mock_run.side_effect = [
+                Mock(returncode=128, stdout=""),  # origin/main not found
+                Mock(returncode=0, stdout="models/events.sql\n")  # origin/master works
+            ]
+
+            result = is_committed_but_not_in_main("core_client__events")
+            assert result is True
+
+    def test_git_error_returns_false(self):
+        """Test returns False on git errors."""
+        with patch('subprocess.run') as mock_run:
+            mock_run.side_effect = subprocess.TimeoutExpired(cmd='git', timeout=5)
+
+            # Should NOT raise, should return False
+            result = is_committed_but_not_in_main("any_model")
+            assert result is False
+
+    def test_committed_with_full_model_name(self):
+        """Test detects committed files with full model name."""
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = Mock(
+                returncode=0,
+                stdout="models/core_google_events__user_devices.sql\n"
+            )
+
+            # Should detect by full model name
+            result = is_committed_but_not_in_main("core_google_events__user_devices")
+            assert result is True
 
 
 if __name__ == '__main__':

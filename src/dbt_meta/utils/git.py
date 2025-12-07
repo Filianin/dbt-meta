@@ -87,6 +87,59 @@ class GitStatus:
     renamed_to: str | None = None
 
 
+def is_committed_but_not_in_main(model_name: str) -> bool:
+    """Check if model file is committed in current branch but not in main/master.
+
+    Compares current branch with main/master to detect committed but not merged changes.
+
+    Args:
+        model_name: dbt model name (e.g., "core_client__events")
+
+    Returns:
+        True if model is in current branch but not in main/master, False otherwise
+
+    Example:
+        >>> is_committed_but_not_in_main('core_client__events')
+        True  # If models/core/client/events.sql is committed but not merged
+    """
+    try:
+        # Extract table name from model_name
+        if '__' not in model_name:
+            table = model_name
+        else:
+            parts = model_name.split('__')
+            table = parts[-1]
+
+        # Try different branch names in order of likelihood
+        for base_branch in ['origin/main', 'origin/master', 'main', 'master']:
+            result = subprocess.run(
+                ['git', 'diff', f'{base_branch}...HEAD', '--name-only'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode == 0:
+                # Check if any changed file contains the table name OR full model name
+                changed_files = result.stdout.splitlines()
+                for file_path in changed_files:
+                    if (
+                        (f"/{table}.sql" in file_path or file_path == f"{table}.sql" or
+                         f"/{model_name}.sql" in file_path or file_path == f"{model_name}.sql")
+                        and file_path.endswith('.sql')
+                    ):
+                        return True
+                # Found branch, no match - return False
+                return False
+
+        # No base branch found
+        return False
+
+    except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.CalledProcessError, OSError):
+        # If git check fails, assume not committed (safe default)
+        return False
+
+
 def is_modified(model_name: str) -> bool:
     """Check if model file is modified in git (new or changed).
 
@@ -246,6 +299,7 @@ def check_manifest_git_mismatch(
     """
     warnings = []
     modified = is_modified(model_name)
+    committed = is_committed_but_not_in_main(model_name)
 
     # CRITICAL: Check for NEW MODEL state (only in dev, not in prod)
     # This must be detected FIRST before generic "modified" checks
@@ -304,17 +358,27 @@ def check_manifest_git_mismatch(
             # This can happen if manifest structure is different or parser is None
             pass
 
-    # Case 1: Using --dev but model NOT modified
-    if use_dev and not modified:
+    # Case 1: Using --dev but model NOT modified OR committed
+    if use_dev and not modified and not committed:
+        # Model is clean (not modified, not committed in branch)
         warnings.append({
             "type": "dev_without_changes",
             "severity": "warning",
-            "message": f"Model '{model_name}' NOT modified in git, but using --dev flag",
+            "message": f"Model '{model_name}' has no changes in current branch, but using --dev flag",
             "detail": "Dev table may not exist or may be outdated",
             "suggestion": "Remove --dev flag to query production table"
         })
+    elif use_dev and not modified and committed:
+        # Model is committed but not merged to main (no local changes)
+        warnings.append({
+            "type": "dev_committed_not_merged",
+            "severity": "info",
+            "message": f"Model '{model_name}' is committed but not merged to main",
+            "detail": "Querying dev table with committed changes (not in production yet)",
+            "suggestion": "Changes are in your branch but not in production"
+        })
 
-    # Case 2: NOT using --dev but model IS modified
+    # Case 2: NOT using --dev but model IS modified (uncommitted changes)
     elif not use_dev and modified:
         warnings.append({
             "type": "git_mismatch",
@@ -324,7 +388,17 @@ def check_manifest_git_mismatch(
             "suggestion": "Use --dev flag to query dev table"
         })
 
-    # Case 3: Using --dev but dev manifest not found
+    # Case 3: NOT using --dev but model IS committed (no uncommitted changes)
+    elif not use_dev and not modified and committed:
+        warnings.append({
+            "type": "git_committed",
+            "severity": "info",
+            "message": f"Model '{model_name}' is committed but not merged to main",
+            "detail": "Querying production table (may not have your branch changes)",
+            "suggestion": "Use --dev flag to query dev table if changes were built with defer"
+        })
+
+    # Case 4: Using --dev but dev manifest not found
     if use_dev and dev_manifest_found is None:
         warnings.append({
             "type": "dev_manifest_missing",

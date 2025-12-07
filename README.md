@@ -13,9 +13,11 @@
 - **📊 AI-friendly JSON** - Machine-readable structured output (`-j` flag)
 - **🔍 Rich metadata** - Schema, columns, dependencies, config, compiled SQL
 - **🌳 Dependency navigation** - Trace upstream/downstream models
-- **🔎 Smart search** - Find models by name or description
+- **🔎 Advanced filtering** - Filter models by tags, config, path with OR/AND logic
+- **🔀 Git-aware** - Find modified models and dependencies needing `--full-refresh`
+- **📋 Smart search** - Find models by name or description
 - **🎨 Beautiful UI** - Rich terminal formatting with helpful examples
-- **⚡ Combined flags** - Use `-dj`, `-ajd`, `-jm` for faster typing
+- **⚡ Combined flags** - Use `-dj`, `-ajd`, `-mf` for faster typing
 
 
 ## 🤖 Built for AI Workflows
@@ -129,7 +131,8 @@ dbt compile
 meta schema customers           # → your_project.analytics.customers
 meta columns -j orders          # → JSON array of columns
 meta deps customers             # → Dependencies list
-meta search "customer"          # → Find models
+meta list tag:daily             # → Filter models by tag
+meta search "customer"          # → Find models by description
 
 # Get comprehensive help with examples
 meta --help
@@ -166,9 +169,9 @@ meta columns -dj customers       # → Dev columns with JSON output
 ### Combined Flags (faster typing)
 
 ```bash
-meta schema -dj customers        # → Dev + JSON
-meta parents -ajd model          # → All ancestors + JSON + Dev
-meta columns -jm ~/path.json m   # → JSON + Custom manifest
+meta schema -dj customers                    # → Dev + JSON
+meta parents -ajd model                      # → All ancestors + JSON + Dev
+meta columns -j --manifest ~/path.json m     # → JSON + Custom manifest
 ```
 
 ## 📚 Commands Reference
@@ -196,9 +199,16 @@ meta columns -jm ~/path.json m   # → JSON + Custom manifest
 | `settings show` | Display current configuration | `meta settings show -j` |
 | `settings validate` | Validate config file | `meta settings validate` |
 | `settings path` | Show path to active config file | `meta settings path` |
-| `list [pattern]` | List all models (optionally filter by pattern) | `meta list staging` |
+| `list [selectors]` | Advanced model filtering with selectors (`tag:`, `config.`, `path:`) | `meta list tag:daily --modified` |
+| `models [pattern]` | Simple substring search in model names | `meta models staging` |
 | `search <query>` | Search models by name or description | `meta search "customer" -j` |
 | `refresh` | Refresh manifest (runs `dbt parse`) | `meta refresh` |
+
+**List command flags:**
+- `--and` - AND logic for multiple selectors (default: OR)
+- `--group` - Group results by tag combinations
+- `-m, --modified` - Show only git-modified models
+- `-f, --full-refresh` - Show models needing `--full-refresh` (modified + descendants)
 
 ### Global Flags
 
@@ -206,12 +216,12 @@ meta columns -jm ~/path.json m   # → JSON + Custom manifest
 |------|-------------|
 | `-j, --json` | Output as JSON (AI-friendly structured data) |
 | `-d, --dev` | Use dev manifest and schema |
-| `-m, --manifest PATH` | Explicit path to manifest.json |
+| `--manifest PATH` | Explicit path to manifest.json |
 | `-a, --all` | Recursive mode (parents/children only) |
 | `-h, --help` | Show help with examples |
 | `-v, --version` | Show version |
 
-**Combined flags**: `-dj`, `-ajd`, `-jm PATH` (order-independent)
+**Combined flags**: `-dj`, `-ajd`, `-mf` (order-independent)
 
 ## 💡 Common Use Cases
 
@@ -267,10 +277,34 @@ bq query "SELECT * FROM $TABLE LIMIT 10"
 ### Search and Discovery
 
 ```bash
-# Find all staging models
-meta list staging
+# Simple substring search (old command)
+meta models staging
 
-# Search models by description
+# Advanced filtering with selectors
+meta list tag:daily                           # Models with 'daily' tag
+meta list config.materialized:incremental     # Incremental models
+meta list path:models/core/                   # Models in specific folder
+
+# Multiple selectors with OR logic (default)
+meta list tag:daily tag:core
+# → Returns models with 'daily' OR 'core' tag
+
+# Multiple selectors with AND logic
+meta list tag:daily tag:core --and
+# → Returns models with both 'daily' AND 'core' tags
+
+# Git-aware filtering
+meta list -m                                  # Show modified models
+meta list -f                                  # Models needing --full-refresh
+
+# Group by tag combinations
+meta list tag:daily tag:core --group
+# → Groups results by tag combinations
+
+# JSON output for scripting
+meta list tag:daily -j | jq -r '.[].model'
+
+# Search models by description (different from list)
 meta search "customer dimension" -j | jq -r '.[] | .name'
 
 # Get file path for editing

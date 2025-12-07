@@ -7,6 +7,125 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2025-12-07
+
+### Changed
+- **Flag naming to match dbt CLI** - Renamed `--refresh` to `--full-refresh` with `-f` alias
+  - `--refresh` → `--full-refresh` (matches `dbt build --full-refresh`)
+  - Added `-f` as short alias for `--full-refresh` (like dbt CLI)
+  - `-m` changed from `--manifest` to `--modified` (list command only)
+  - `--manifest` now only has long form (no short `-m` alias)
+  - Rationale: Consistent terminology with dbt CLI, frequently used flags get short aliases
+  - **Breaking Change**:
+    - Commands using `-m` for manifest must use `--manifest` instead
+    - Commands using `--refresh` must use `--full-refresh` instead
+  - Updated help text and examples to reflect new aliases
+  - Location: `cli.py:970, 973, 1018-1019, 1026, 164, 991, 1004`
+
+### Added
+- **Text output headers** - Bold green headers with blank lines before output
+  - `meta list` - Shows "Models:" before model list (including empty results)
+  - `meta schema` - Shows "Table:" before table name
+  - `meta path` - Shows "File path:" before path
+  - `meta sql` - Shows "Compiled SQL:" or "Raw SQL:" before SQL output
+  - Text mode: Always shows header with empty line before it
+  - JSON mode: No headers (clean JSON output)
+  - Empty results: Shows header even when no models found (text mode only)
+  - Location: `cli.py:660-662, 840-843, 875-877, 1018-1033`
+
+- **Help improvements** - Better organization and focused examples
+  - Added "Model filtering (list)" section with 3 key examples
+  - Reduced "Combined flags" from 3 to 1 example for clarity
+  - Restructured Flags section: Global → Output → Specific (was "Command-specific")
+  - Added `meta list` flags: `--and`, `--group`, `-m/--modified`, `-f/--full-refresh`
+  - Clarified `-a, --all` flag: "Recursive mode (parents/children commands)"
+  - Location: `cli.py:149-188`
+
+- **`meta list` command** - Powerful model filtering (replaces `dbt ls`)
+  - Selectors: `tag:`, `config.`, `path:`, `package:`
+  - Tag logic: OR by default, AND with `--and` flag
+  - Git-aware: `-m, --modified` flag shows changed/new models (optimized batch git calls)
+  - Graph traversal: `-f, --full-refresh` flag finds models needing `--full-refresh`
+  - Output modes:
+    - Text: space-separated model names
+    - `--full-refresh` text: model names with `+` suffix (for dbt select syntax)
+    - `--group`: grouped by tag
+    - `-j`: JSON format (detailed for normal mode, compact `{models: [], tables: []}` for `--full-refresh`/`--modified`)
+    - `--all` with `--full-refresh`: tree view showing dependency graph from modified to downstream
+  - Dev/prod: `--dev` flag for dev manifest
+  - Renamed old `list` command to `models` (simple substring search)
+  - Test coverage: 41 new tests, all passing (89.52% total coverage)
+  - Location: `commands.py:478-838`, `cli.py:951-1027`
+
+- **Empty result warnings** - Informative messages when no models found
+  - `meta list -m` shows "No modified models found" when branch is clean
+  - `meta list -f` shows "No models need refresh" when no changes
+  - Prevents confusion from silent empty results
+  - Location: `commands.py:560-578`
+
+- **Pipe-friendly output** - Headers hidden in command substitution
+  - Headers ("Models:", "Table:", etc.) shown only in TTY (interactive terminal)
+  - When piped or in `$()` substitution - only data output
+  - Enables: `defer test --select $(meta list -m)`
+  - Warnings still go to stderr (visible but not captured)
+  - Location: `cli.py:1032-1044`
+
+- **Tree view for `-f --all`** - Visual lineage from modified to downstream
+  - Shows full dependency tree from each modified model
+  - Icons: 🔴 uncommitted (red), ✅ committed (green)
+  - Recursive display with proper indentation (├──, └──, │)
+  - Example: `meta list -f --all`
+  - Helps understand impact of changes before running --full-refresh
+  - Location: `commands.py:698-775`, `cli.py:973`
+
+### Fixed
+- **Git comparison logic** - Now compares current branch vs main/master (not just uncommitted)
+  - **Breaking Change**: `-m/--modified` and `-f/--full-refresh` now detect both:
+    - Committed changes (in branch but not in main/master)
+    - Uncommitted changes (local modifications)
+  - Before: Only detected uncommitted local changes
+  - After: Detects ALL changes relative to production (committed + uncommitted)
+  - Added `is_committed_but_not_in_main()` function to check committed changes
+  - Fallback logic: tries origin/main → origin/master → main → master
+  - Test coverage: 5 new tests for committed change detection
+  - Location: `utils/git.py:90-140, 300-302`, `tests/test_git.py:479-545`
+
+- **Git warning accuracy** - Improved messages for committed models
+  - Before: "Model NOT modified in git, but using --dev flag" (confusing for committed models)
+  - After: "Model is committed but not merged to main" (clear distinction)
+  - Warning types:
+    - `dev_without_changes` - Model clean, using --dev (suggests removing --dev)
+    - `dev_committed_not_merged` - Model committed, using --dev (info message)
+    - `git_committed` - Model committed, not using --dev (suggests --dev if needed)
+  - Warnings no longer duplicate model names (shown once in output)
+  - Location: `utils/git.py:361-399`, `commands.py:650-678`
+
+- **Unified git status messages** - Single INFO block for `-m/--modified` and `-f/--full-refresh`
+  - Combines uncommitted and committed counts in one message
+  - Example: "Found 1 uncommitted and 4 committed model(s) in current branch"
+  - Reduced noise from multiple warnings (dev-oriented commands)
+  - Location: `commands.py:662-683`
+
+- **Uncommitted changes detection** - Now includes locally modified files
+  - Before: Only detected files changed in branch vs main/master
+  - After: Detects both branch changes AND locally modified files
+  - Example: File in main with local edits now appears in `-m/--modified`
+  - Location: `commands.py:788-801`
+
+- **`meta list -f` KeyError** - Fixed descendant lookup in full-refresh filter
+  - Problem: `children()` returns 'path' field (file path), but models dict uses unique_id
+  - Solution: Added path→unique_id reverse lookup mapping before descendants loop
+  - Tests: Added 6 edge case tests for error handling and selector validation
+  - Location: `commands.py:787-800`, `tests/test_commands.py:2153-2229`
+
+- **`meta list -m` performance** - Optimized git operations from O(N) to O(1)
+  - Problem: Was calling git subprocess for every model (600+ calls for 300 models)
+  - Solution: Batch git operations (4 calls total regardless of model count)
+  - Performance: ~100x faster for large manifests
+  - Before: `git diff` + `git status` once per model
+  - After: Single batch call of each, cache results in memory as sets
+  - Location: `commands.py:715-799`
+
 ## [0.1.6] - 2025-11-28
 
 ### Changed
@@ -241,6 +360,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLAUDE.md for AI agent integration
 - Apache 2.0 license
 
+[0.2.0]: https://github.com/Filianin/dbt-meta/releases/tag/v0.2.0
 [0.1.6]: https://github.com/Filianin/dbt-meta/releases/tag/v0.1.6
 [0.1.5]: https://github.com/Filianin/dbt-meta/releases/tag/v0.1.5
 [0.1.4]: https://github.com/Filianin/dbt-meta/releases/tag/v0.1.4

@@ -27,6 +27,7 @@ from dbt_meta.commands import (
     docs,
     info,
     list_models,
+    ls,
     parents,
     path,
     refresh,
@@ -175,8 +176,9 @@ class TestColumnsCommand:
 
         from dbt_meta.config import Config
         with patch.object(Config, 'find_config_file', return_value=None):
-            # Mock is_modified to avoid git calls
+            # Mock git functions to avoid git calls
             mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
+            mocker.patch('dbt_meta.utils.git.is_committed_but_not_in_main', return_value=False)
 
             # Mock subprocess to simulate bq command
             mock_run = mocker.patch('subprocess.run')
@@ -1873,5 +1875,421 @@ class TestBigQueryValidation:
         # Should NOT sanitize (validation disabled)
         assert result is not None
         assert result['schema'] == 'invalid.name@test'  # Unchanged
+
+
+class TestLsCommand:
+    """Test ls command - filter and list models"""
+
+    def test_ls_all_models_text(self, prod_manifest):
+        """List all models without filters (text mode)"""
+        result = ls(str(prod_manifest), selectors=None, json_output=False)
+        assert isinstance(result, str)
+        assert len(result) > 0
+        # Should be space-separated model names
+        models = result.split()
+        assert len(models) > 0
+        # Should be sorted
+        assert models == sorted(models)
+
+    def test_ls_all_models_json(self, prod_manifest):
+        """List all models without filters (JSON mode)"""
+        result = ls(str(prod_manifest), selectors=None, json_output=True)
+        assert isinstance(result, list)
+        assert len(result) > 0
+        # Each item should have expected fields
+        for model_info in result:
+            assert 'model' in model_info
+            assert 'table' in model_info
+            assert 'tags' in model_info
+            assert 'materialized' in model_info
+            assert 'path' in model_info
+
+    def test_ls_tag_filter_single_tag(self, prod_manifest):
+        """Filter by single tag (OR logic by default)"""
+        result = ls(str(prod_manifest), selectors=['tag:verified'], json_output=True)
+        assert isinstance(result, list)
+        # All results should have 'verified' tag
+        for model_info in result:
+            assert 'verified' in model_info['tags']
+
+    def test_ls_tag_filter_or_logic(self, prod_manifest):
+        """Filter by multiple tags with OR logic (default)"""
+        result = ls(str(prod_manifest), selectors=['tag:verified', 'tag:active'], json_output=True)
+        assert isinstance(result, list)
+        # Each result should have at least one of the tags
+        for model_info in result:
+            assert 'verified' in model_info['tags'] or 'active' in model_info['tags']
+
+    def test_ls_tag_filter_and_logic(self, prod_manifest):
+        """Filter by multiple tags with AND logic"""
+        result = ls(str(prod_manifest), selectors=['tag:verified', 'tag:active'], and_logic=True, json_output=True)
+        assert isinstance(result, list)
+        # Each result should have BOTH tags
+        for model_info in result:
+            assert 'verified' in model_info['tags']
+            assert 'active' in model_info['tags']
+
+    def test_ls_config_selector(self, prod_manifest):
+        """Filter by config selector"""
+        result = ls(str(prod_manifest), selectors=['config.materialized:incremental'], json_output=True)
+        assert isinstance(result, list)
+        # All results should have materialized=incremental (if any exist)
+        if len(result) > 0:
+            for model_info in result:
+                assert model_info['materialized'] == 'incremental'
+
+        # Test with a more common config value
+        result_table = ls(str(prod_manifest), selectors=['config.materialized:table'], json_output=True)
+        assert isinstance(result_table, list)
+        for model_info in result_table:
+            assert model_info['materialized'] == 'table'
+
+    def test_ls_path_selector(self, prod_manifest):
+        """Filter by path selector"""
+        result = ls(str(prod_manifest), selectors=['path:models/staging/'], json_output=True)
+        assert isinstance(result, list)
+        # All results should have path starting with models/staging/
+        for model_info in result:
+            assert model_info['path'].startswith('models/staging/')
+
+    def test_ls_empty_result(self, prod_manifest):
+        """Test with selector that matches no models"""
+        result = ls(str(prod_manifest), selectors=['tag:nonexistent_tag_xyz'], json_output=True)
+        assert isinstance(result, list)
+        assert len(result) == 0
+
+    def test_ls_modified(self, prod_manifest):
+        """Test --modified flag to list modified/new models (compact JSON format)"""
+        result = ls(str(prod_manifest), modified=True, json_output=True)
+        assert isinstance(result, dict)
+        assert 'models' in result
+        assert 'tables' in result
+        assert isinstance(result['models'], list)
+        assert isinstance(result['tables'], list)
+        # Result depends on git status - could be empty or have models
+        # Both lists should have same length
+        assert len(result['models']) == len(result['tables'])
+
+    def test_ls_refresh(self, prod_manifest):
+        """Test --refresh flag to list models needing --full-refresh (compact JSON format)"""
+        result = ls(str(prod_manifest), refresh=True, json_output=True)
+        assert isinstance(result, dict)
+        assert 'models' in result
+        assert 'tables' in result
+        assert isinstance(result['models'], list)
+        assert isinstance(result['tables'], list)
+        # Result depends on git status - could be empty or have models
+        # Both lists should have same length
+        assert len(result['models']) == len(result['tables'])
+
+    def test_ls_group_text(self, prod_manifest):
+        """Test --group flag with text output"""
+        result = ls(str(prod_manifest), selectors=['tag:verified', 'tag:active'], group=True, json_output=False)
+        assert isinstance(result, str)
+        # Should have headers like "tag:verified:"
+        if 'tag:verified:' in result or 'tag:active:' in result:
+            # If groups exist, verify format
+            assert 'tag:' in result
+
+    def test_ls_group_json(self, prod_manifest):
+        """Test --group flag with JSON output"""
+        result = ls(str(prod_manifest), selectors=['tag:verified', 'tag:active'], group=True, json_output=True)
+        assert isinstance(result, dict)
+        # Each group should be a list
+        for group_key, group_models in result.items():
+            assert isinstance(group_models, list)
+            # Each model in group should have verified or active tag
+            for model_info in group_models:
+                assert 'model' in model_info
+                assert 'tags' in model_info
+
+    def test_ls_combined_selectors(self, prod_manifest):
+        """Test combining multiple selector types"""
+        # Combine tag + config selector
+        result = ls(
+            str(prod_manifest),
+            selectors=['tag:verified', 'config.materialized:table'],
+            json_output=True
+        )
+        assert isinstance(result, list)
+        # All results should have 'verified' tag OR materialized=table
+        for model_info in result:
+            has_tag = 'verified' in model_info['tags']
+            has_config = model_info['materialized'] == 'table'
+            # At least one condition should be true (OR logic for different selector types)
+            assert has_tag or has_config
+
+    def test_ls_combined_selectors_and_logic(self, prod_manifest):
+        """Test combining selectors with AND logic"""
+        # AND logic should apply to all selectors
+        result = ls(
+            str(prod_manifest),
+            selectors=['tag:verified', 'config.materialized:table'],
+            and_logic=True,
+            json_output=True
+        )
+        assert isinstance(result, list)
+        # All results should have verified tag AND materialized=table
+        for model_info in result:
+            assert 'verified' in model_info['tags']
+            assert model_info['materialized'] == 'table'
+
+    def test_ls_sorting(self, prod_manifest):
+        """Test that results are sorted alphabetically"""
+        result_text = ls(str(prod_manifest), selectors=None, json_output=False)
+        models = result_text.split()
+        assert models == sorted(models), "Models should be sorted alphabetically"
+
+        result_json = ls(str(prod_manifest), selectors=None, json_output=True)
+        model_names = [m['model'] for m in result_json]
+        assert model_names == sorted(model_names), "JSON models should be sorted alphabetically"
+
+    def test_ls_no_duplicates(self, prod_manifest):
+        """Test that results don't contain duplicates"""
+        # Use OR logic with overlapping tags
+        result = ls(
+            str(prod_manifest),
+            selectors=['tag:verified', 'tag:verified'],
+            json_output=True
+        )
+        model_names = [m['model'] for m in result]
+        assert len(model_names) == len(set(model_names)), "Results should not contain duplicates"
+
+    def test_ls_empty_selectors_list(self, prod_manifest):
+        """Test with empty selectors list"""
+        result = ls(str(prod_manifest), selectors=[], json_output=True)
+        assert isinstance(result, list)
+        assert len(result) > 0  # Should return all models
+
+    def test_ls_invalid_selector_format(self, prod_manifest):
+        """Test with invalid selector format"""
+        # Selector without colon
+        result = ls(str(prod_manifest), selectors=['invalid_selector'], json_output=True)
+        assert isinstance(result, list)
+        # Should return all models (selector ignored)
+
+    def test_ls_package_selector(self, prod_manifest):
+        """Test package selector"""
+        result = ls(str(prod_manifest), selectors=['package:my_package'], json_output=True)
+        assert isinstance(result, list)
+        # Results depend on manifest content
+        for model_info in result:
+            assert 'model' in model_info
+
+    def test_ls_multiple_tag_combinations(self, prod_manifest):
+        """Test grouping with 3+ tags"""
+        result = ls(
+            str(prod_manifest),
+            selectors=['tag:verified', 'tag:active', 'tag:prod'],
+            group=True,
+            json_output=True
+        )
+        assert isinstance(result, dict)
+        # Should have groups for single tags and combinations
+        # Check that group keys are properly formatted
+        for group_key in result.keys():
+            assert group_key.startswith('tag:')
+
+    def test_ls_text_output_no_trailing_space(self, prod_manifest):
+        """Test that text output has no trailing spaces"""
+        result = ls(str(prod_manifest), selectors=['tag:verified'], json_output=False)
+        if result:  # Only check if not empty
+            assert not result.endswith(' '), "Text output should not have trailing space"
+            assert not result.startswith(' '), "Text output should not have leading space"
+
+    def test_ls_refresh_text_with_plus_suffix(self, prod_manifest):
+        """Test that --refresh mode adds + suffix to model names"""
+        result = ls(str(prod_manifest), refresh=True, json_output=False)
+        if result:  # Only check if models found
+            models = result.split()
+            for model in models:
+                assert model.endswith('+'), f"Model '{model}' should end with '+' in refresh mode"
+
+    def test_ls_refresh_json_compact_format(self, prod_manifest):
+        """Test that --refresh mode returns compact JSON format"""
+        result = ls(str(prod_manifest), refresh=True, json_output=True)
+        assert isinstance(result, dict)
+        assert 'models' in result
+        assert 'tables' in result
+        # Models should not have + suffix in JSON
+        if result['models']:
+            for model in result['models']:
+                assert not model.endswith('+'), "Models in JSON should not have + suffix"
+
+    def test_ls_modified_json_compact_format(self, prod_manifest):
+        """Test that --modified mode returns compact JSON format"""
+        result = ls(str(prod_manifest), modified=True, json_output=True)
+        assert isinstance(result, dict)
+        assert 'models' in result
+        assert 'tables' in result
+
+    def test_ls_group_text_format(self, prod_manifest):
+        """Test grouped text output format"""
+        result = ls(
+            str(prod_manifest),
+            selectors=['tag:verified', 'tag:active'],
+            group=True,
+            json_output=False
+        )
+        if result:  # Only check if not empty
+            lines = result.split('\n')
+            # Each group should have header with colon
+            for i, line in enumerate(lines):
+                if line.startswith('tag:'):
+                    assert line.endswith(':'), f"Group header should end with colon: {line}"
+                    # Next line should be model names (if not empty)
+                    if i + 1 < len(lines) and lines[i + 1]:
+                        # Models should be space-separated
+                        assert ' ' in lines[i + 1] or lines[i + 1].isalnum()
+
+    def test_ls_modified_empty_when_clean(self, prod_manifest):
+        """Test --modified returns empty compact format when no modified files"""
+        # This test might fail if there are actually modified files
+        result = ls(str(prod_manifest), modified=True, json_output=True)
+        assert isinstance(result, dict)
+        assert 'models' in result
+        assert 'tables' in result
+        # Can be empty or have modified models depending on git status
+
+    def test_ls_refresh_empty_when_clean(self, prod_manifest):
+        """Test --refresh returns empty compact format when no modified files"""
+        result = ls(str(prod_manifest), refresh=True, json_output=True)
+        assert isinstance(result, dict)
+        assert 'models' in result
+        assert 'tables' in result
+        # Can be empty or have models depending on git status
+
+    def test_ls_refresh_includes_descendants(self, prod_manifest, mocker):
+        """Test --refresh includes descendants of modified models"""
+        # Mock subprocess to simulate git operations
+        # The function calls git multiple times, so create a repeatable mock
+        mock_run = mocker.patch('subprocess.run')
+
+        def git_mock(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get('args', [])
+            if 'diff' in cmd:
+                # git diff returns one modified file
+                return mocker.Mock(stdout='models/staging/freshmarketer/stg_freshmarketer__contacts.sql\n', returncode=0)
+            elif 'status' in cmd:
+                # git status returns nothing
+                return mocker.Mock(stdout='', returncode=0)
+            else:
+                # Other git commands
+                return mocker.Mock(stdout='', returncode=0)
+
+        mock_run.side_effect = git_mock
+
+        result = ls(str(prod_manifest), refresh=True, json_output=True)
+        assert isinstance(result, dict)
+        assert 'models' in result
+        assert 'tables' in result
+
+        # Should include the modified model
+        if result['models']:
+            assert any('freshmarketer' in name or 'contacts' in name for name in result['models'])
+
+    def test_ls_config_selector_with_dots(self, prod_manifest):
+        """Test config selector with nested keys"""
+        # Test config.materialized:value format
+        result = ls(str(prod_manifest), selectors=['config.materialized:view'], json_output=True)
+        assert isinstance(result, list)
+        for model_info in result:
+            assert model_info['materialized'] == 'view'
+
+    def test_ls_config_selector_invalid_format(self, prod_manifest):
+        """Test config selector without colon - should return all models"""
+        result = ls(str(prod_manifest), selectors=['config.materialized'], json_output=True)
+        assert isinstance(result, list)
+        # Invalid format returns all models (no filtering)
+
+    def test_ls_unknown_selector_type(self, prod_manifest):
+        """Test unknown selector type - should return all models"""
+        result = ls(str(prod_manifest), selectors=['unknown:value'], json_output=True)
+        assert isinstance(result, list)
+        # Unknown selector returns all models (no filtering)
+
+    def test_ls_modified_git_both_commands_fail(self, prod_manifest, mocker):
+        """Test --modified when all git commands fail"""
+        mock_run = mocker.patch('subprocess.run')
+        # All git commands fail (origin/main, origin/master, main, master)
+        mock_run.side_effect = [
+            mocker.Mock(stdout='', returncode=128),  # origin/main not found
+            mocker.Mock(stdout='', returncode=128),  # origin/master not found
+            mocker.Mock(stdout='', returncode=128),  # main not found
+            mocker.Mock(stdout='', returncode=128),  # master not found
+        ]
+
+        result = ls(str(prod_manifest), modified=True, json_output=True)
+        assert isinstance(result, dict)
+        assert result == {'models': [], 'tables': []}  # Should return empty compact format
+
+    def test_ls_modified_git_exception(self, prod_manifest, mocker):
+        """Test --modified when git raises exception"""
+        mock_run = mocker.patch('subprocess.run')
+        mock_run.side_effect = FileNotFoundError("git not found")
+
+        result = ls(str(prod_manifest), modified=True, json_output=True)
+        assert isinstance(result, dict)
+        assert result == {'models': [], 'tables': []}  # Should return empty compact format
+
+    def test_ls_group_multiple_tags(self, prod_manifest):
+        """Test --group with models having multiple tags"""
+        # Find models with multiple tags
+        result = ls(str(prod_manifest), selectors=['tag:daily', 'tag:core'], group=True, json_output=True)
+        assert isinstance(result, dict)
+        # Should have groups with tag combinations
+
+    def test_ls_refresh_with_multiple_modified_models(self, prod_manifest, mocker):
+        """Test --refresh with 2+ modified models (tests intermediate model finding)"""
+        # Mock subprocess to return 2 modified models with real paths
+        mock_run = mocker.patch('subprocess.run')
+
+        def git_mock(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get('args', [])
+            if 'diff' in cmd:
+                # git diff returns 2 modified files
+                return mocker.Mock(
+                    stdout='models/staging/freshmarketer/stg_freshmarketer__contacts.sql\nmodels/staging/freshmarketer/stg_freshmarketer__accounts.sql\n',
+                    returncode=0
+                )
+            elif 'status' in cmd:
+                return mocker.Mock(stdout='', returncode=0)
+            else:
+                return mocker.Mock(stdout='', returncode=0)
+
+        mock_run.side_effect = git_mock
+
+        result = ls(str(prod_manifest), refresh=True, json_output=True)
+        assert isinstance(result, dict)
+        assert 'models' in result
+        assert 'tables' in result
+        # With 2+ modified models, should also find intermediate models if they exist
+        # At minimum should include the 2 modified models
+        if result['models']:
+            assert len(result['models']) >= 2
+
+    def test_ls_path_selector_subdirectory(self, prod_manifest):
+        """Test path selector with subdirectory"""
+        result = ls(str(prod_manifest), selectors=['path:models/'], json_output=True)
+        assert isinstance(result, list)
+        # All results should have path starting with models/
+        for model_info in result:
+            assert model_info['path'].startswith('models/')
+
+    def test_ls_json_output_structure(self, prod_manifest):
+        """Test JSON output has all required fields"""
+        result = ls(str(prod_manifest), selectors=None, json_output=True)
+        assert isinstance(result, list)
+        if len(result) > 0:
+            first_model = result[0]
+            required_fields = ['model', 'table', 'tags', 'materialized', 'path']
+            for field in required_fields:
+                assert field in first_model, f"Field '{field}' missing from JSON output"
+            # Validate field types
+            assert isinstance(first_model['model'], str)
+            assert isinstance(first_model['table'], str)
+            assert isinstance(first_model['tags'], list)
+            assert isinstance(first_model['materialized'], str)
+            assert isinstance(first_model['path'], str)
 
 

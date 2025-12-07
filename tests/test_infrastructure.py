@@ -408,6 +408,7 @@ class TestCheckManifestGitMismatch:
     def test_dev_without_changes_warning_when_using_dev_for_unchanged_model(self, mocker):
         """Should warn when using --dev flag but model not modified"""
         mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
+        mocker.patch('dbt_meta.utils.git.is_committed_but_not_in_main', return_value=False)
 
         # Pass dev_manifest_found to avoid dev_manifest_missing warning
         warnings = _check_manifest_git_mismatch(
@@ -419,12 +420,13 @@ class TestCheckManifestGitMismatch:
         assert len(warnings) == 1
         assert warnings[0]['type'] == 'dev_without_changes'
         assert warnings[0]['severity'] == 'warning'
-        assert 'NOT modified in git' in warnings[0]['message']
+        assert 'has no changes in current branch' in warnings[0]['message']
         assert 'Remove --dev flag' in warnings[0]['suggestion']
 
     def test_dev_manifest_missing_warning(self, mocker):
         """Should warn when using --dev but dev manifest not found"""
         mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
+        mocker.patch('dbt_meta.utils.git.is_committed_but_not_in_main', return_value=False)
 
         warnings = _check_manifest_git_mismatch(
             "test_model",
@@ -1160,7 +1162,7 @@ class TestCombinedFlags:
         assert "[" in result.stdout or "{" in result.stdout
 
     def test_combined_json_and_manifest_flags(self, tmp_path, test_model, mocker):
-        """Verify -jm PATH equals -j -m PATH"""
+        """Verify -j --manifest PATH works (note: -m is now --modified in list command)"""
         # Create temporary manifest
         manifest_path = tmp_path / "custom.json"
         manifest_path.write_text('{"metadata": {"dbt_version": "1.5.0"}, "nodes": {}}')
@@ -1174,8 +1176,8 @@ class TestCombinedFlags:
 
         runner = CliRunner()
 
-        # Test -jm PATH (combined)
-        result = runner.invoke(app, ["schema", "-jm", str(manifest_path), test_model])
+        # Test -j --manifest PATH (note: -m no longer short for --manifest)
+        result = runner.invoke(app, ["schema", "-j", "--manifest", str(manifest_path), test_model])
         assert result.exit_code == 0
 
         # Verify output is JSON

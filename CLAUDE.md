@@ -395,6 +395,82 @@ Location: `fallback.py:18-198`
 
 **Note:** BigQuery fallback (`_fetch_from_bigquery`) is currently a placeholder (returns None). Full implementation will be added when refactoring `commands.py` in Task 3.
 
+## Model Listing and Filtering (`meta list`)
+
+**New command (Unreleased):** `meta list` replaces `dbt ls` functionality with AI-optimized output.
+
+**Note:** The old `list` command (simple substring search) has been renamed to `models` for clarity:
+- `meta models staging` - Simple substring search in model names
+- `meta list tag:daily` - Advanced filtering with selectors
+
+### Features
+
+**Selectors:**
+- `tag:name` - Filter by tags (OR logic by default, AND with `--and`)
+- `config.materialized:table` - Filter by config values
+- `path:models/staging/` - Filter by file path
+- `package:dbt_utils` - Filter by package name
+
+**Git-aware filtering:**
+- `-m, --modified` - Show only changed/new models
+- `-f, --full-refresh` - Show models needing `--full-refresh` (modified + intermediate + downstream)
+
+**Output modes:**
+- Default: Space-separated model names (for terminal copy-paste)
+- `--group`: Group by tag combinations with headers
+- `-j/--json`: Structured metadata (list or dict if `--group`)
+
+### Examples
+
+```bash
+# List models with at least ONE tag (OR logic)
+meta list tag:verified tag:active
+
+# List models with ALL tags (AND logic)
+meta list tag:verified tag:active --and
+
+# Group by tag combinations
+meta list tag:verified tag:active --group
+
+# Filter by config
+meta list config.materialized:incremental
+
+# Git-aware: show only modified models
+meta list -m
+
+# Git-aware: show all models needing --full-refresh
+# Includes: modified models + downstream + intermediate models on paths between modified
+meta list -f
+
+# JSON output for AI agents
+meta list tag:verified -j
+```
+
+### `--full-refresh` Algorithm
+
+Determines which models need `--full-refresh` when rebuilding:
+
+1. **Find modified models** - Uses git to detect changed/new models
+2. **Find downstream models** - Includes all descendants of modified models
+3. **Find intermediate models** - Uses BFS to find models on dependency paths between modified models
+
+**Use case:** When model A and model D are both modified, and there's a dependency chain A → B → C → D, running `meta list -f` returns: `[A, B, C, D]` (all models that need rebuilding for consistent data).
+
+**Implementation:**
+- `ls()` - Main command function with all filtering logic
+- `_filter_refresh_models()` - Main orchestration for `--full-refresh` flag
+- `_find_intermediate_models()` - Find models between modified pairs
+- `_find_path_between()` - BFS pathfinding in dependency graph
+
+**Location:** `commands.py:478-880` (full `list` command implementation)
+
+### Output Format Comparison
+
+| Mode | Text Output | JSON Output |
+|------|-------------|-------------|
+| Default | `model1 model2 model3` | `[{"model": "...", "table": "...", "tags": [...]}]` |
+| `--group` | `tag:verified:\nmodel1 model2\n\ntag:active:\nmodel3` | `{"tag:verified": [...], "tag:active": [...]}` |
+
 ## Adding a New Command
 
 ### 1. Add command function in `commands.py`
@@ -441,7 +517,7 @@ Add to `_build_commands_panel()` if needed.
 ## Testing Strategy
 
 **Coverage requirement:** 90%+ (pyproject.toml:79)
-**Current coverage:** 91.76% (440 tests)
+**Current coverage:** 91.43% (472 tests)
 
 **Test markers:**
 - `@pytest.mark.unit` - Fast unit tests

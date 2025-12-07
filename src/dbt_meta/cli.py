@@ -149,13 +149,19 @@ def _build_flags_panel() -> Panel:
     table.add_row("[bold cyan]Global flags:[/bold cyan]", "")
     table.add_row("-h, --help", "Show this help message")
     table.add_row("-v, --version", "Show version and exit")
-    table.add_row("-m, --manifest PATH", "Explicit path to manifest.json")
+    table.add_row("--manifest PATH", "Explicit path to manifest.json")
     table.add_row("-d, --dev", "Use dev manifest and schema")
     table.add_row("", "")
-    table.add_row("[bold cyan]Command flags:[/bold cyan]", "")
+    table.add_row("[bold cyan]Output flags:[/bold cyan]", "")
     table.add_row("[green]-j, --json[/green]", "Output as JSON (AI-friendly structured data)")
-    table.add_row("-a, --all", "Recursive mode (parents/children)")
-    table.add_row("--jinja", "Show raw SQL with Jinja (sql command only)")
+    table.add_row("", "")
+    table.add_row("[bold cyan]Specific flags:[/bold cyan]", "")
+    table.add_row("-a, --all", "Recursive mode (parents/children commands)")
+    table.add_row("--jinja", "Show raw SQL with Jinja (sql command)")
+    table.add_row("--and", "AND logic for selectors (list command)")
+    table.add_row("--group", "Group by tag combinations (list command)")
+    table.add_row("-m, --modified", "Show git-modified models (list command)")
+    table.add_row("-f, --full-refresh", "Show models for --full-refresh (list command)")
 
     return Panel(table, title="[bold white]🚩 Flags[/bold white]", title_align="left", border_style="white", padding=(0, 1))
 
@@ -178,10 +184,13 @@ def _build_examples_panel() -> Panel:
     table.add_row("  meta schema --dev customers", "personal_USERNAME.customers")
     table.add_row("  meta columns --dev -j customers", "Get dev table columns")
     table.add_row("", "")
+    table.add_row("[bold]Model filtering (list):[/bold]", "")
+    table.add_row("  meta list tag:daily", "Models with daily tag")
+    table.add_row("  meta list path:models/core/ tag:daily --and", "Core models with daily tag")
+    table.add_row("  meta list -m", "Git-modified models")
+    table.add_row("", "")
     table.add_row("[bold]Combined flags:[/bold]", "")
     table.add_row("  meta schema -dj customers", "Dev + JSON output")
-    table.add_row("  meta parents -ajd model", "All + JSON + Dev")
-    table.add_row("  meta columns -jm ~/custom.json model", "JSON + Custom manifest")
     table.add_row("", "")
     table.add_row("[bold]Configuration:[/bold]", "")
     table.add_row("  meta settings init", "Create config file")
@@ -587,7 +596,7 @@ def handle_command_output(
 def info(
     model_name: str = typer.Argument(..., help="Model name (e.g., core_client__events)"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
 ) -> None:
     """
@@ -632,7 +641,7 @@ def info(
 def schema(
     model_name: str = typer.Argument(..., help="Model name"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
 ) -> None:
     """
@@ -646,7 +655,7 @@ def schema(
         manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
         result = commands.schema(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
 
-        if not result:
+        if not result or not result.get('full_name'):
             console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
             raise typer.Exit(code=1)
 
@@ -657,7 +666,8 @@ def schema(
             }
             print(json.dumps(output, indent=2))
         else:
-            print()
+            console.print()
+            console.print("[bold green]Table:[/]")
             print(result['full_name'])
 
     except DbtMetaError as e:
@@ -668,7 +678,7 @@ def schema(
 def columns(
     model_name: str = typer.Argument(..., help="Model name"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema"),
 ) -> None:
     """
@@ -708,7 +718,7 @@ def columns(
 def config(
     model_name: str = typer.Argument(..., help="Model name"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
 ) -> None:
     """
@@ -748,7 +758,7 @@ def config(
 def deps(
     model_name: str = typer.Argument(..., help="Model name"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
 ) -> None:
     """
@@ -807,7 +817,7 @@ def sql(
     model_name: str = typer.Argument(..., help="Model name"),
     jinja: bool = typer.Option(False, "--jinja", help="Show raw SQL with Jinja"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
 ) -> None:
     """
@@ -836,6 +846,9 @@ def sql(
             }
             print(json.dumps(output, indent=2))
         else:
+            console.print()
+            sql_type = "Raw SQL:" if jinja else "Compiled SQL:"
+            console.print(f"[bold green]{sql_type}[/]")
             print(result)
 
     except DbtMetaError as e:
@@ -846,7 +859,7 @@ def sql(
 def path(
     model_name: str = typer.Argument(..., help="Model name"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
 ) -> None:
     """
@@ -871,23 +884,24 @@ def path(
             }
             print(json.dumps(output, indent=2))
         else:
-            print()
+            console.print()
+            console.print("[bold green]File path:[/]")
             print(result)
 
     except DbtMetaError as e:
         handle_error(e)
 
 
-@app.command("list")
-def list_cmd(
+@app.command("models")
+def models_cmd(
     pattern: Optional[str] = typer.Argument(None, help="Filter pattern"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
 ) -> None:
     """
-    List models (optionally filter by pattern)
+    List all models (optionally filter by pattern - simple substring search)
 
-    Example: meta list jaffle_shop
+    Example: meta models jaffle_shop
     """
     try:
         manifest_path, _ = get_manifest_path(manifest)
@@ -918,7 +932,7 @@ def list_cmd(
 def search(
     query: str = typer.Argument(..., help="Search query"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
 ) -> None:
     """
     Search by name or description
@@ -948,12 +962,114 @@ def search(
         handle_error(e)
 
 
+@app.command("list")
+def list_cmd(
+    selectors: Optional[list[str]] = typer.Argument(None, help="Selectors: tag:name config.key:val path:dir package:name"),
+    json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
+    modified: bool = typer.Option(False, "-m", "--modified", help="Show only modified/new models (git-aware)"),
+    full_refresh: bool = typer.Option(False, "-f", "--full-refresh", help="Show models requiring --full-refresh"),
+    and_logic: bool = typer.Option(False, "--and", help="Require ALL tags (default: OR - at least one)"),
+    group: bool = typer.Option(False, "--group", help="Group by tag combinations"),
+    all_tree: bool = typer.Option(False, "-a", "--all", help="Tree view (--full-refresh only): show lineage from modified to downstream"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema"),
+) -> None:
+    """Filter and list dbt models (replaces dbt ls)
+
+    \b
+    SELECTORS:
+      tag:name               - Filter by tag (OR logic by default)
+      config.key:value       - Filter by config value
+      path:dir/              - Filter by file path
+      package:name           - Filter by package
+
+    \b
+    FLAGS:
+      --and                  - Use AND logic for tags (default: OR)
+      --group                - Group results by tag combinations
+      -m, --modified         - Show only git-modified/new models
+      -f, --full-refresh     - Show models needing --full-refresh
+      --dev / -d             - Use dev manifest (personal schema)
+      --json / -j            - Output as JSON
+
+    \b
+    EXAMPLES:
+      meta list tag:verified                      # Filter by tag
+      meta list tag:verified tag:active           # At least ONE tag (OR)
+      meta list tag:verified tag:active --and     # BOTH tags (AND)
+      meta list tag:verified tag:active --group   # Grouped by tags
+      meta list config.materialized:incremental   # Incremental models
+      meta list path:models/staging/              # Staging models
+      meta list -m                                # Git-modified models
+      meta list -f                                # Models for --full-refresh
+      meta list tag:verified -j                   # JSON output
+
+    \b
+    OUTPUT FORMATS:
+      Default    - Space-separated model names (for copy-paste)
+      --group    - Grouped by tag combinations with headers
+      --json     - Structured metadata [{"model": "...", "tags": [...]}]
+    """
+    try:
+        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+        selector_list = list(selectors) if selectors else None
+
+        # Validate --all flag usage
+        if all_tree and not full_refresh:
+            console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] --all flag only works with --full-refresh")
+            raise typer.Exit(code=1)
+
+        result = commands.ls(
+            manifest_path,
+            selectors=selector_list,
+            modified=modified,
+            refresh=full_refresh,
+            and_logic=and_logic,
+            group=group,
+            tree_view=all_tree,
+            use_dev=effective_use_dev,
+            json_output=json_output
+        )
+
+        # Check for empty results (handles both list and dict formats)
+        is_empty = (
+            not result or
+            (isinstance(result, list) and len(result) == 0) or
+            (isinstance(result, dict) and len(result.get('models', [])) == 0)
+        )
+
+        if is_empty:
+            if json_output:
+                # Return empty dict format for consistency
+                print(json.dumps({"models": [], "tables": []}))
+            else:
+                # Show header even for empty results (only in TTY)
+                import sys
+                if sys.stdout.isatty():
+                    console.print()
+                    console.print("[bold green]Models:[/]")
+            return
+
+        if json_output:
+            print(json.dumps(result, indent=2))
+        else:
+            # Add header and empty line ONLY if output is to TTY (not piped)
+            import sys
+            if sys.stdout.isatty():
+                console.print()
+                console.print("[bold green]Models:[/]")
+            print(result)
+
+    except DbtMetaError as e:
+        handle_error(e)
+
+
 @app.command()
 def parents(
     model_name: str = typer.Argument(..., help="Model name"),
     all_ancestors: bool = typer.Option(False, "-a", "--all", help="Get all ancestors (recursive)"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
 ) -> None:
     """
@@ -1003,7 +1119,7 @@ def children(
     model_name: str = typer.Argument(..., help="Model name"),
     all_descendants: bool = typer.Option(False, "-a", "--all", help="Get all descendants (recursive)"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
 ) -> None:
     """
@@ -1084,7 +1200,7 @@ def refresh(
 def docs(
     model_name: str = typer.Argument(..., help="Model name"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", "-m", help="Path to manifest.json"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
 ) -> None:
     """
