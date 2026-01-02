@@ -278,7 +278,8 @@ def check_manifest_git_mismatch(
     Warning types:
     - new_model: Model exists ONLY in dev manifest, not in production (CRITICAL)
     - git_mismatch: Model modified in git but querying production
-    - dev_without_changes: Using --dev but model not modified
+    - modified_not_compiled: Model modified in git but not compiled in dev manifest
+    - dev_without_changes: Using --dev but model not modified in git
     - dev_manifest_missing: Using --dev but dev manifest not found
 
     Args:
@@ -305,7 +306,7 @@ def check_manifest_git_mismatch(
     # This must be detected FIRST before generic "modified" checks
     # NEW model is determined by manifest state, NOT git status
     # Model in dev but NOT in prod = NEW MODEL (regardless of git status)
-    if prod_parser and dev_parser and not use_dev:
+    if prod_parser and dev_parser:
         try:
             in_prod = prod_parser.get_model(model_name) is not None
             in_dev = dev_parser.get_model(model_name) is not None
@@ -316,7 +317,7 @@ def check_manifest_git_mismatch(
             #  2. DEV model from defer run (legitimate fallback scenario)
             # We can't definitively distinguish these cases, so we let fallback proceed
             # and only add a warning (not an error that blocks fallback)
-            if not in_prod and in_dev and modified:
+            if not use_dev and not in_prod and in_dev and modified:
                 # Only warn if file is modified (likely a new model in development)
                 # If file not modified, it's probably a defer build (let fallback proceed silently)
                 warnings.append({
@@ -331,13 +332,24 @@ def check_manifest_git_mismatch(
             # Case: Using --dev but model NOT in dev manifest
             # This happens when user wants to query dev table but hasn't built it yet
             if use_dev and not in_dev:
-                warnings.append({
-                    "type": "model_not_in_dev",
-                    "severity": "error",
-                    "message": f"Model '{model_name}' NOT found in dev manifest",
-                    "detail": "Using --dev flag but model not built in dev environment",
-                    "suggestion": f"Run 'defer run --select {model_name}' to build model in dev"
-                })
+                if modified or committed:
+                    # Model is modified/committed but not compiled in dev
+                    warnings.append({
+                        "type": "modified_not_compiled",
+                        "severity": "warning",
+                        "message": f"Model '{model_name}' modified but not compiled in dev manifest",
+                        "detail": "Dev table does not exist or is outdated",
+                        "suggestion": "Compile the model in dev environment first, then use --dev flag"
+                    })
+                else:
+                    # Model is not modified, why use --dev?
+                    warnings.append({
+                        "type": "dev_without_changes",
+                        "severity": "warning",
+                        "message": f"Model '{model_name}' has no changes, but using --dev flag",
+                        "detail": "Dev table may not exist or may be outdated",
+                        "suggestion": "Remove --dev flag to query production table"
+                    })
                 # Early return - can't proceed without dev manifest
                 return warnings
 
@@ -349,7 +361,7 @@ def check_manifest_git_mismatch(
                     "severity": "error",
                     "message": "Model file detected in git but NOT in manifest",
                     "detail": "File exists but compilation likely failed",
-                    "suggestion": f"Run 'dbt compile --select {model_name}' and check for errors.\nPossible causes: SQL syntax error, missing dependencies, disabled in dbt_project.yml"
+                    "suggestion": "Compile the model and check for errors.\nPossible causes: SQL syntax error, missing dependencies, disabled in dbt_project.yml"
                 })
                 # Early return - this is also critical
                 return warnings
@@ -364,7 +376,7 @@ def check_manifest_git_mismatch(
         warnings.append({
             "type": "dev_without_changes",
             "severity": "warning",
-            "message": f"Model '{model_name}' has no changes in current branch, but using --dev flag",
+            "message": f"Model '{model_name}' has no changes, but using --dev flag",
             "detail": "Dev table may not exist or may be outdated",
             "suggestion": "Remove --dev flag to query production table"
         })
@@ -405,7 +417,7 @@ def check_manifest_git_mismatch(
             "severity": "error",
             "message": "Dev manifest (target/manifest.json) not found",
             "detail": "Dev table cannot be queried without manifest",
-            "suggestion": f"Run 'defer run --select {model_name}' to build dev table"
+            "suggestion": "Build the model in dev environment to create dev manifest"
         })
 
     return warnings

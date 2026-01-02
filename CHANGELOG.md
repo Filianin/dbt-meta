@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-01-02
+
+### Added
+- **`meta validate` command** - Validate SQL syntax using BigQuery dry run
+  - Validates compiled SQL against BigQuery without executing
+  - Checks: syntax errors, table/column existence, type mismatches
+  - Returns: `{model, valid, error}` - valid=true if SQL is correct
+  - Supports `--dev` flag for dev manifest
+  - Example: `meta validate customers` → `✅ Valid` or `❌ Error: Unrecognized name: col at [1:8]`
+  - Location: `command_impl/validate.py`, `cli.py`
+
+- **`meta cost` command** - Estimate query scan size using BigQuery dry run
+  - Estimates bytes scanned without executing query
+  - Returns: `{model, bytes, formatted, error}` - formatted like "3.2 GB"
+  - Uses `bq query --dry_run` for cost estimation
+  - Supports `--dev` flag for dev manifest
+  - Example: `meta cost customers` → `Scan size: 3.2 GB`
+  - CI/CD usage: `meta cost -j model | jq '.bytes'` for programmatic checks
+  - Location: `command_impl/cost.py`, `cli.py`
+
+- **BigQuery dry run utility** - Shared function for validate/cost commands
+  - `run_dry_run_query(sql)` - validates SQL and returns bytes estimate
+  - `format_bytes(bytes)` - formats bytes to "X.X MB" or "X.X GB"
+  - Parses bq output: "Query successfully validated. ... N bytes of data."
+  - Handles errors: syntax, table not found, permission denied
+  - Location: `utils/bigquery.py:311-397`
+
+- **Tests for validate/cost** - 14 new tests with 100% coverage
+  - ValidateCommand: valid SQL, invalid SQL, no compiled SQL, model not found
+  - CostCommand: valid SQL, small query, invalid SQL, no compiled SQL, model not found, zero bytes
+  - format_bytes: MB, GB, zero, large values
+  - Location: `tests/test_validate_cost.py`
+
+### Fixed
+- **Test environment isolation** - Fixed 19 failing tests caused by environment variables
+  - Issue: Tests affected by shell env vars (`DBT_VALIDATE_BIGQUERY`, `DBT_DEV_SCHEMA`)
+  - Fix: Added `monkeypatch.delenv()` to clear env vars in affected tests
+  - Fix: Added `patch('dbt_meta.config.Config.find_config_file')` to force env var usage
+  - Fix: Corrected mock patch locations (patch where imported, not where defined)
+  - All 502 tests now pass
+
 ## [0.2.0] - 2025-12-07
 
 ### Changed
@@ -360,6 +401,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLAUDE.md for AI agent integration
 - Apache 2.0 license
 
+[0.2.1]: https://github.com/Filianin/dbt-meta/releases/tag/v0.2.1
 [0.2.0]: https://github.com/Filianin/dbt-meta/releases/tag/v0.2.0
 [0.1.6]: https://github.com/Filianin/dbt-meta/releases/tag/v0.1.6
 [0.1.5]: https://github.com/Filianin/dbt-meta/releases/tag/v0.1.5

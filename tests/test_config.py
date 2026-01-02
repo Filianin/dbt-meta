@@ -492,8 +492,8 @@ prod_path = "/toml/manifest.json"
         """Test defaults when neither TOML nor env vars."""
         from unittest.mock import patch
 
-        # Clear env vars
-        for var in ['DBT_PROD_MANIFEST_PATH', 'DBT_DEV_MANIFEST_PATH']:
+        # Clear env vars (including DBT_DEV_SCHEMA to test USER-based default)
+        for var in ['DBT_PROD_MANIFEST_PATH', 'DBT_DEV_MANIFEST_PATH', 'DBT_DEV_SCHEMA']:
             monkeypatch.delenv(var, raising=False)
 
         monkeypatch.setenv('USER', 'testuser')

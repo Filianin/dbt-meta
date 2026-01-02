@@ -306,3 +306,92 @@ def fetch_columns_from_bigquery_direct(
             return None
 
     return None
+
+
+def format_bytes(bytes_count: int) -> str:
+    """Format bytes to human readable (MB or GB with 1 decimal).
+
+    Args:
+        bytes_count: Number of bytes
+
+    Returns:
+        Formatted string like "123.4 MB" or "1.5 GB"
+
+    Examples:
+        >>> format_bytes(1048576)
+        '1.0 MB'
+        >>> format_bytes(1073741824)
+        '1024.0 MB'
+        >>> format_bytes(1073741824000)
+        '1000.0 GB'
+    """
+    mb = bytes_count / (1024 * 1024)
+    if mb >= 1000:
+        return f"{mb / 1024:.1f} GB"
+    return f"{mb:.1f} MB"
+
+
+def run_dry_run_query(sql: str, timeout: int = 30) -> dict:
+    """Run bq query --dry_run and return validation result.
+
+    Uses BigQuery dry run to validate SQL syntax and estimate scan size
+    without actually executing the query.
+
+    Args:
+        sql: SQL query to validate
+        timeout: Command timeout in seconds (default: 30)
+
+    Returns:
+        Dictionary with:
+        - valid: True if query is valid, False if syntax error
+        - bytes_processed: Estimated bytes to scan (None if invalid)
+        - error: Error message (None if valid)
+
+    Example:
+        >>> result = run_dry_run_query("SELECT * FROM dataset.table")
+        >>> if result['valid']:
+        ...     print(f"Will scan {format_bytes(result['bytes_processed'])}")
+        ... else:
+        ...     print(f"Error: {result['error']}")
+    """
+    import shutil
+
+    # Find bq command
+    bq_cmd = shutil.which('bq')
+    if not bq_cmd:
+        bq_cmd = '/opt/homebrew/bin/bq'
+        if not os.path.exists(bq_cmd):
+            return {'valid': False, 'bytes_processed': None, 'error': 'bq command not found'}
+
+    # Clear PYTHONPATH to avoid conflicts
+    env = os.environ.copy()
+    env['PYTHONPATH'] = ''
+
+    try:
+        result = subprocess.run(
+            [bq_cmd, 'query', '--dry_run', '--use_legacy_sql=false', sql],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env
+        )
+
+        output = result.stdout.strip()
+
+        # Success: "Query successfully validated. Assuming the tables are not modified,
+        #          running this query will process upper bound of 2409808874 bytes of data."
+        if 'Query successfully validated' in output:
+            match = re.search(r'(\d+) bytes', output)
+            bytes_processed = int(match.group(1)) if match else None
+            return {'valid': True, 'bytes_processed': bytes_processed, 'error': None}
+
+        # Error: "Error in query string: Unrecognized name: col at [1:8]"
+        error = output
+        if error.startswith('Error in query string: '):
+            error = error[len('Error in query string: '):]
+        return {'valid': False, 'bytes_processed': None, 'error': error}
+
+    except subprocess.TimeoutExpired:
+        return {'valid': False, 'bytes_processed': None, 'error': f'Query validation timed out after {timeout}s'}
+    except FileNotFoundError:
+        return {'valid': False, 'bytes_processed': None, 'error': 'bq command not found'}

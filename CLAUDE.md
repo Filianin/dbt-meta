@@ -395,6 +395,56 @@ Location: `fallback.py:18-198`
 
 **Note:** BigQuery fallback (`_fetch_from_bigquery`) is currently a placeholder (returns None). Full implementation will be added when refactoring `commands.py` in Task 3.
 
+## SQL Validation and Cost Estimation
+
+Two commands use BigQuery dry run (`bq query --dry_run`) for SQL analysis:
+
+### `meta validate` - Validate SQL syntax
+
+Validates compiled SQL against BigQuery without executing.
+
+```bash
+meta validate model_name          # Validate production SQL
+meta validate --dev model_name    # Validate dev SQL
+meta validate -j model_name       # JSON output
+```
+
+**Output:**
+- Success: `✅ Valid`
+- Error: `❌ Error: Unrecognized name: column at [1:8]`
+
+**Returns (JSON):**
+```json
+{"model": "model_name", "valid": true, "error": null}
+```
+
+### `meta cost` - Estimate query scan size
+
+Shows estimated bytes scanned with color-coded output.
+
+```bash
+meta cost model_name              # Show scan size
+meta cost --dev model_name        # Dev SQL scan size
+meta cost -j model_name           # JSON output
+```
+
+**Color scheme:**
+| Size | Color |
+|------|-------|
+| < 1 GB | 🟢 green |
+| 1-10 GB | 🟡 yellow |
+| ≥ 10 GB | 🔴 red |
+
+**Returns (JSON):**
+```json
+{"model": "model_name", "bytes": 2410311931, "formatted": "2.2 GB", "error": null}
+```
+
+**Implementation:**
+- `utils/bigquery.py`: `run_dry_run_query()`, `format_bytes()`
+- `command_impl/validate.py`: ValidateCommand
+- `command_impl/cost.py`: CostCommand
+
 ## Model Listing and Filtering (`meta list`)
 
 **New command (Unreleased):** `meta list` replaces `dbt ls` functionality with AI-optimized output.
@@ -570,6 +620,9 @@ Add to `_build_commands_panel()` if needed.
 | Parser caching | `commands.py:20-34`, `manifest/parser.py:28-58` |
 | BigQuery fallback | `commands.py:399-446` |
 | BigQuery schema resolution | `command_impl/columns.py:92-94, 160-167, 200-221` |
+| BigQuery dry run | `utils/bigquery.py:311-398` |
+| SQL validation | `command_impl/validate.py` |
+| Cost estimation | `command_impl/cost.py` |
 | Dev schema resolution | `commands.py:934-1042` (deprecated, use `config.py`) |
 | Prod table naming | `commands.py:452-493` |
 | Lineage traversal | `commands.py:773-805` |

@@ -12,12 +12,14 @@ from typing import Any, Optional
 from dbt_meta.command_impl.children import ChildrenCommand
 from dbt_meta.command_impl.columns import ColumnsCommand
 from dbt_meta.command_impl.config import ConfigCommand
+from dbt_meta.command_impl.cost import CostCommand
 from dbt_meta.command_impl.deps import DepsCommand
 from dbt_meta.command_impl.info import InfoCommand
 from dbt_meta.command_impl.parents import ParentsCommand
 from dbt_meta.command_impl.path import PathCommand
 from dbt_meta.command_impl.schema import SchemaCommand
 from dbt_meta.command_impl.sql import SqlCommand
+from dbt_meta.command_impl.validate import ValidateCommand
 
 # Command classes
 from dbt_meta.config import Config
@@ -217,6 +219,50 @@ def sql(manifest_path: str, model_name: str, use_dev: bool = False, raw: bool = 
     command = SqlCommand(cfg, manifest_path, model_name, use_dev, json_output, raw=raw)
     return command.execute()
 
+
+def validate(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[dict[str, Any]]:
+    """
+    Validate model SQL syntax using BigQuery dry run.
+
+    Args:
+        manifest_path: Path to manifest.json
+        model_name: Model name
+        use_dev: If True, use dev manifest SQL
+
+    Returns:
+        Dictionary with:
+        - model: Model name
+        - valid: True if SQL is valid
+        - error: Error message (None if valid)
+
+        Returns None if model not found.
+    """
+    cfg = Config.from_config_or_env()
+    command = ValidateCommand(cfg, manifest_path, model_name, use_dev, json_output)
+    return command.execute()
+
+
+def cost(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[dict[str, Any]]:
+    """
+    Estimate query scan size using BigQuery dry run.
+
+    Args:
+        manifest_path: Path to manifest.json
+        model_name: Model name
+        use_dev: If True, use dev manifest SQL
+
+    Returns:
+        Dictionary with:
+        - model: Model name
+        - bytes: Estimated bytes to scan
+        - formatted: Human-readable size (e.g., "1.5 GB")
+        - error: Error message if validation failed
+
+        Returns None if model not found.
+    """
+    cfg = Config.from_config_or_env()
+    command = CostCommand(cfg, manifest_path, model_name, use_dev, json_output)
+    return command.execute()
 
 
 def path(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[str]:

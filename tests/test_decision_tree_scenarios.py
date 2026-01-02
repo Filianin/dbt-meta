@@ -30,16 +30,16 @@ class TestScenarioA:
         # Setup manifests
         prod_manifest = tmp_path / ".dbt-state" / "manifest.json"
         dev_manifest = tmp_path / "target" / "manifest.json"
-        
+
         prod_manifest.parent.mkdir(parents=True)
         dev_manifest.parent.mkdir(parents=True)
-        
+
         # Production manifest: model NOT in production
         prod_manifest.write_text(json.dumps({
             "metadata": {},
             "nodes": {}
         }))
-        
+
         # Dev manifest: model EXISTS (columns no longer used from manifest)
         dev_manifest.write_text(json.dumps({
             "metadata": {},
@@ -57,8 +57,8 @@ class TestScenarioA:
         monkeypatch.setenv('DBT_PROD_MANIFEST_PATH', str(prod_manifest))
         monkeypatch.setenv('DBT_DEV_MANIFEST_PATH', str(dev_manifest))
 
-        # Mock git to report NEW status
-        with patch('dbt_meta.utils.git.get_model_git_status') as mock_git:
+        # Mock git to report NEW status (patch where imported, not where defined)
+        with patch('dbt_meta.command_impl.columns.get_model_git_status') as mock_git:
             from dbt_meta.utils.git import GitStatus
             mock_git.return_value = GitStatus(
                 exists=True,
@@ -130,7 +130,7 @@ class TestScenarioB:
         monkeypatch.setenv('DBT_DEV_MANIFEST_PATH', str(dev_manifest))
 
         # Mock git to report NEW status
-        with patch('dbt_meta.utils.git.get_model_git_status') as mock_git:
+        with patch('dbt_meta.command_impl.columns.get_model_git_status') as mock_git:
             from dbt_meta.utils.git import GitStatus
             mock_git.return_value = GitStatus(
                 exists=True,
@@ -211,7 +211,7 @@ class TestScenarioC:
         monkeypatch.setenv('DBT_DEV_MANIFEST_PATH', str(dev_manifest))
 
         # Mock git to report MODIFIED status
-        with patch('dbt_meta.utils.git.get_model_git_status') as mock_git:
+        with patch('dbt_meta.command_impl.columns.get_model_git_status') as mock_git:
             from dbt_meta.utils.git import GitStatus
             mock_git.return_value = GitStatus(
                 exists=True,
@@ -291,7 +291,7 @@ class TestScenarioD:
         monkeypatch.setenv('DBT_DEV_SCHEMA', 'personal_testuser')
 
         # Mock git to report MODIFIED status
-        with patch('dbt_meta.utils.git.get_model_git_status') as mock_git:
+        with patch('dbt_meta.command_impl.columns.get_model_git_status') as mock_git:
             from dbt_meta.utils.git import GitStatus
             mock_git.return_value = GitStatus(
                 exists=True,
@@ -371,7 +371,7 @@ class TestScenarioE:
         monkeypatch.setenv('DBT_DEV_SCHEMA', 'personal_testuser')
 
         # Mock git to report UNMODIFIED status
-        with patch('dbt_meta.utils.git.get_model_git_status') as mock_git:
+        with patch('dbt_meta.command_impl.columns.get_model_git_status') as mock_git:
             from dbt_meta.utils.git import GitStatus
             mock_git.return_value = GitStatus(
                 exists=True,
@@ -504,21 +504,23 @@ class TestScenarioG:
         
         monkeypatch.setenv('DBT_PROD_MANIFEST_PATH', str(prod_manifest))
         monkeypatch.setenv('DBT_DEV_MANIFEST_PATH', str(dev_manifest))
+        # Clear DBT_DEV_SCHEMA to use USER-based calculation
+        monkeypatch.delenv('DBT_DEV_SCHEMA', raising=False)
         monkeypatch.setenv('USER', 'testuser')
-        
+
         # Mock BigQuery fetch
         with patch('dbt_meta.command_impl.columns._fetch_columns_from_bigquery_direct') as mock_bq:
             mock_bq.return_value = [
                 {'name': 'col1', 'data_type': 'string'}
             ]
-            
+
             # Run with --dev flag
             result = columns(str(prod_manifest), 'test_model', use_dev=True, json_output=True)
-            
+
             # Verify BigQuery was called with DEV schema, NOT staging_appsflyer!
             mock_bq.assert_called_once()
             call_args = mock_bq.call_args
-            
+
             # CRITICAL: Should use personal_testuser, NOT staging_appsflyer
             assert call_args[0][0] == 'personal_testuser', \
                 f"Expected dev schema 'personal_testuser', got '{call_args[0][0]}'"

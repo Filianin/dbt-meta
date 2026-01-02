@@ -8,6 +8,7 @@ Provides common functionality for all model metadata extraction commands:
 """
 
 import contextlib
+import os
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 
@@ -76,7 +77,8 @@ class BaseCommand(ABC):
         self.use_dev = use_dev
         self.json_output = json_output
         self.warnings: list[dict[str, str]] = []
-        self._fallback_strategy = FallbackStrategy(config, manifest_path)
+        # CRITICAL: Use config.prod_manifest_path for fallback strategy
+        self._fallback_strategy = FallbackStrategy(config, config.prod_manifest_path)
 
     @abstractmethod
     def execute(self) -> Any:
@@ -118,9 +120,16 @@ class BaseCommand(ABC):
             - Emits warnings via emit_warnings()
         """
         # Get parsers for both prod and dev (for new model detection)
-        prod_parser = _get_cached_parser(self.manifest_path)
+        # CRITICAL: Use config.prod_manifest_path, NOT self.manifest_path
+        # self.manifest_path might be dev manifest if DBT_PROD_MANIFEST_PATH is not set
+        prod_manifest_path = self.config.prod_manifest_path
+        prod_parser = None
+        if prod_manifest_path and os.path.exists(prod_manifest_path):
+            with contextlib.suppress(ManifestNotFoundError, ManifestParseError):
+                prod_parser = _get_cached_parser(prod_manifest_path)
+
         dev_parser = None
-        dev_manifest = _find_dev_manifest(self.manifest_path)
+        dev_manifest = _find_dev_manifest(prod_manifest_path)
         if dev_manifest:
             with contextlib.suppress(ManifestNotFoundError, ManifestParseError):
                 dev_parser = _get_cached_parser(dev_manifest)
@@ -188,7 +197,11 @@ class BaseCommand(ABC):
         Returns:
             Model data if found, None otherwise
         """
-        parser = _get_cached_parser(self.manifest_path)
+        # CRITICAL: Use config.prod_manifest_path, NOT self.manifest_path
+        prod_manifest_path = self.config.prod_manifest_path
+        if not prod_manifest_path or not os.path.exists(prod_manifest_path):
+            return None
+        parser = _get_cached_parser(prod_manifest_path)
 
         # Build allowed fallback levels
         allowed_levels = [FallbackLevel.PROD_MANIFEST, FallbackLevel.DEV_MANIFEST]

@@ -128,6 +128,8 @@ def _build_commands_panel() -> Panel:
     table.add_row("  [cyan]list[/cyan]", "List models (optionally filter by pattern)")
     table.add_row("  [cyan]search[/cyan]", "Search by name or description")
     table.add_row("  [cyan]refresh[/cyan]", "Sync prod artifacts (or parse local with --dev)")
+    table.add_row("  [cyan]validate[/cyan]", "Validate SQL syntax (BigQuery dry run)")
+    table.add_row("  [cyan]cost[/cyan]", "Estimate query scan size (MB/GB)")
     table.add_row("", "")
 
     # Settings management (magenta)
@@ -850,6 +852,83 @@ def sql(
             sql_type = "Raw SQL:" if jinja else "Compiled SQL:"
             console.print(f"[bold green]{sql_type}[/]")
             print(result)
+
+    except DbtMetaError as e:
+        handle_error(e)
+
+
+@app.command()
+def validate(
+    model_name: str = typer.Argument(..., help="Model name"),
+    json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev manifest SQL"),
+) -> None:
+    """
+    Validate SQL syntax using BigQuery dry run
+
+    Examples:
+        meta validate model_name          # Validate production SQL
+        meta validate --dev model_name    # Validate dev SQL
+    """
+    try:
+        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+        result = commands.validate(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
+
+        if result is None:
+            console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
+            raise typer.Exit(code=1)
+
+        if json_output:
+            print(json.dumps(result, indent=2))
+        elif result['valid']:
+            console.print("[green]✅ Valid[/green]")
+        else:
+            console.print(f"[{STYLE_ERROR}]❌ Error:[/{STYLE_ERROR}] {result['error']}")
+            raise typer.Exit(code=1)
+
+    except DbtMetaError as e:
+        handle_error(e)
+
+
+@app.command()
+def cost(
+    model_name: str = typer.Argument(..., help="Model name"),
+    json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev manifest SQL"),
+) -> None:
+    """
+    Estimate query scan size using BigQuery dry run
+
+    Examples:
+        meta cost model_name              # Show scan size for production SQL
+        meta cost --dev model_name        # Show scan size for dev SQL
+    """
+    try:
+        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+        result = commands.cost(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
+
+        if result is None:
+            console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
+            raise typer.Exit(code=1)
+
+        if json_output:
+            print(json.dumps(result, indent=2))
+        elif result.get('error'):
+            console.print(f"[{STYLE_ERROR}]❌ Error:[/{STYLE_ERROR}] {result['error']}")
+            raise typer.Exit(code=1)
+        else:
+            # Color by size: <1GB green, <10GB yellow, >=10GB red
+            bytes_val = result.get('bytes', 0) or 0
+            gb = bytes_val / (1024 ** 3)
+            if gb < 1:
+                color = "green"
+            elif gb < 10:
+                color = "yellow"
+            else:
+                color = "red"
+            console.print(f"Scan size: [bold {color}]{result['formatted']}[/bold {color}]")
 
     except DbtMetaError as e:
         handle_error(e)

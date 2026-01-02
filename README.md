@@ -16,6 +16,8 @@
 - **🔎 Advanced filtering** - Filter models by tags, config, path with OR/AND logic
 - **🔀 Git-aware** - Find modified models and dependencies needing `--full-refresh`
 - **📋 Smart search** - Find models by name or description
+- **✅ SQL validation** - Validate SQL syntax using BigQuery dry run
+- **💰 Cost estimation** - Estimate query scan size before running
 - **🎨 Beautiful UI** - Rich terminal formatting with helpful examples
 - **⚡ Combined flags** - Use `-dj`, `-ajd`, `-mf` for faster typing
 
@@ -190,6 +192,8 @@ meta columns -j --manifest ~/path.json m     # → JSON + Custom manifest
 | `parents <model>` | Upstream dependencies (`-a` for all ancestors) | `meta parents -aj customers` |
 | `children <model>` | Downstream dependencies (`-a` for all descendants) | `meta children -a customers` |
 | `config <model>` | Full dbt config (29 fields: partition_by, cluster_by, etc.) | `meta config -j customers` |
+| `validate <model>` | Validate SQL syntax using BigQuery dry run | `meta validate customers` |
+| `cost <model>` | Estimate query scan size using BigQuery dry run | `meta cost -j customers` |
 
 ### Settings & Utilities
 
@@ -272,6 +276,33 @@ defer run --select customers
 TABLE=$(meta schema --dev customers)
 bq query "SELECT * FROM $TABLE LIMIT 10"
 # → SELECT * FROM personal_USERNAME.customers LIMIT 10
+```
+
+### Validating SQL and Estimating Cost
+
+```bash
+# Validate SQL syntax before running (uses BigQuery dry run)
+meta validate customers
+# → ✅ Valid
+
+# Check for syntax errors
+meta validate broken_model
+# → ❌ Error: Unrecognized name: unknown_column at [3:5]
+
+# Estimate query scan size (cost estimation)
+meta cost customers
+# → Scan size: 3.2 GB
+
+# JSON output for scripting
+meta cost -j customers | jq -r '.formatted'
+# → 3.2 GB
+
+# Use in CI/CD to prevent expensive queries
+BYTES=$(meta cost -j customers | jq -r '.bytes')
+if [ "$BYTES" -gt 10000000000 ]; then  # 10 GB limit
+  echo "Query too expensive: $BYTES bytes"
+  exit 1
+fi
 ```
 
 ### Search and Discovery

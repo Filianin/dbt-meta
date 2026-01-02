@@ -55,8 +55,9 @@ class TestInfoCommandCoverage:
 
         monkeypatch.setenv('DBT_PROD_MANIFEST_PATH', str(prod_manifest))
         monkeypatch.setenv('DBT_DEV_MANIFEST_PATH', str(dev_manifest))
+        # Clear DBT_DEV_SCHEMA to use USER-based calculation
+        monkeypatch.delenv('DBT_DEV_SCHEMA', raising=False)
         monkeypatch.setenv('USER', 'testuser')
-        monkeypatch.setenv('DBT_DEV_SCHEMA_PREFIX', 'personal')
 
         # Test with use_dev=True
         result = info(str(prod_manifest), 'test_model', use_dev=True, json_output=False)
@@ -84,8 +85,9 @@ class TestInfoCommandCoverage:
 
         monkeypatch.setenv('DBT_PROD_MANIFEST_PATH', str(prod_manifest))
         monkeypatch.setenv('DBT_DEV_MANIFEST_PATH', str(dev_manifest))
+        # Clear DBT_DEV_SCHEMA to use USER-based calculation
+        monkeypatch.delenv('DBT_DEV_SCHEMA', raising=False)
         monkeypatch.setenv('USER', 'testuser')
-        monkeypatch.setenv('DBT_DEV_SCHEMA_PREFIX', 'personal')
 
         # Mock BigQuery response
         mock_bq_metadata = {

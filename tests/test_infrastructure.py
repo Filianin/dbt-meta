@@ -420,8 +420,55 @@ class TestCheckManifestGitMismatch:
         assert len(warnings) == 1
         assert warnings[0]['type'] == 'dev_without_changes'
         assert warnings[0]['severity'] == 'warning'
-        assert 'has no changes in current branch' in warnings[0]['message']
+        assert 'has no changes' in warnings[0]['message']
         assert 'Remove --dev flag' in warnings[0]['suggestion']
+
+    def test_modified_not_compiled_warning(self, tmp_path, mocker):
+        """Should warn when model is modified but not compiled in dev manifest"""
+        import json
+        from dbt_meta.manifest.parser import ManifestParser
+
+        # Mock git status: model is modified
+        mocker.patch('dbt_meta.utils.git.is_modified', return_value=True)
+        mocker.patch('dbt_meta.utils.git.is_committed_but_not_in_main', return_value=False)
+
+        # Setup manifests
+        prod_manifest = tmp_path / ".dbt-state" / "manifest.json"
+        dev_manifest = tmp_path / "target" / "manifest.json"
+
+        prod_manifest.parent.mkdir(parents=True)
+        dev_manifest.parent.mkdir(parents=True)
+
+        # Production manifest: model present
+        prod_manifest.write_text(json.dumps({
+            "metadata": {},
+            "nodes": {
+                "model.test.test_model": {"name": "test_model"}
+            }
+        }))
+
+        # Dev manifest: model NOT present (not compiled)
+        dev_manifest.write_text(json.dumps({
+            "metadata": {},
+            "nodes": {}
+        }))
+
+        prod_parser = ManifestParser(str(prod_manifest))
+        dev_parser = ManifestParser(str(dev_manifest))
+
+        warnings = _check_manifest_git_mismatch(
+            "test_model",
+            use_dev=True,
+            dev_manifest_found=str(dev_manifest),
+            prod_parser=prod_parser,
+            dev_parser=dev_parser
+        )
+
+        assert len(warnings) == 1
+        assert warnings[0]['type'] == 'modified_not_compiled'
+        assert warnings[0]['severity'] == 'warning'
+        assert 'modified but not compiled' in warnings[0]['message']
+        assert 'Compile the model in dev environment first' in warnings[0]['suggestion']
 
     def test_dev_manifest_missing_warning(self, mocker):
         """Should warn when using --dev but dev manifest not found"""
@@ -438,7 +485,7 @@ class TestCheckManifestGitMismatch:
         error_warnings = [w for w in warnings if w['severity'] == 'error']
         assert len(error_warnings) == 1
         assert error_warnings[0]['type'] == 'dev_manifest_missing'
-        assert 'defer run' in error_warnings[0]['suggestion']
+        assert 'Build the model in dev environment' in error_warnings[0]['suggestion']
 
     def test_no_warnings_when_git_matches_command(self, mocker):
         """Should return empty list when git status matches command"""
@@ -448,14 +495,46 @@ class TestCheckManifestGitMismatch:
 
         assert warnings == []
 
-    def test_no_warnings_when_modified_and_using_dev(self, mocker):
-        """Should return empty list when model modified and using --dev"""
+    def test_no_warnings_when_modified_and_using_dev_with_compiled_model(self, tmp_path, mocker):
+        """Should return empty list when model modified and using --dev with compiled model"""
+        import json
+        from dbt_meta.manifest.parser import ManifestParser
+
         mocker.patch('dbt_meta.utils.git.is_modified', return_value=True)
+        mocker.patch('dbt_meta.utils.git.is_committed_but_not_in_main', return_value=False)
+
+        # Setup manifests
+        prod_manifest = tmp_path / ".dbt-state" / "manifest.json"
+        dev_manifest = tmp_path / "target" / "manifest.json"
+
+        prod_manifest.parent.mkdir(parents=True)
+        dev_manifest.parent.mkdir(parents=True)
+
+        # Production manifest: model present
+        prod_manifest.write_text(json.dumps({
+            "metadata": {},
+            "nodes": {
+                "model.test.test_model": {"name": "test_model"}
+            }
+        }))
+
+        # Dev manifest: model IS present (compiled)
+        dev_manifest.write_text(json.dumps({
+            "metadata": {},
+            "nodes": {
+                "model.test.test_model": {"name": "test_model"}
+            }
+        }))
+
+        prod_parser = ManifestParser(str(prod_manifest))
+        dev_parser = ManifestParser(str(dev_manifest))
 
         warnings = _check_manifest_git_mismatch(
             "test_model",
             use_dev=True,
-            dev_manifest_found="/path/to/manifest.json"
+            dev_manifest_found=str(dev_manifest),
+            prod_parser=prod_parser,
+            dev_parser=dev_parser
         )
 
         assert warnings == []
@@ -629,7 +708,7 @@ class TestCheckManifestGitMismatch:
         assert warnings[0]['severity'] == 'error'
         assert 'file detected' in warnings[0]['message'].lower()
         assert 'NOT in manifest' in warnings[0]['message']
-        assert 'dbt compile' in warnings[0]['suggestion']
+        assert 'Compile the model' in warnings[0]['suggestion']
         assert 'SQL syntax error' in warnings[0]['suggestion']  # Mentions possible causes
 
 
