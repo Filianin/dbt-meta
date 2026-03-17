@@ -7,6 +7,103 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **JSON error output for all commands** — errors now always return valid JSON when `-j` is used
+  - Before: errors wrote Rich-formatted text to stderr; `2>&1 | jq` received mixed input → exit code 5
+  - After: all errors emit `{"error": "..."}` to stdout when `-j` is passed
+  - Affects: `handle_error()`, `_not_found_error()` helpers + all 20 command error paths
+  - `ColumnsCommand._print_not_found_message()` suppressed in JSON mode (CLI layer handles it)
+  - Location: `cli.py:53-88`, `command_impl/columns.py:410`
+
+- **`bq` CLI not found when meta is run as installed package**
+  - `shutil.which('bq')` was returning `None` because shell `PATH` (from `.zshrc`) is not
+    inherited when running as a non-interactive subprocess
+  - Added `_find_bq_cmd()` with 3-level discovery: current `PATH` → extended PATH with common
+    SDK locations → direct file existence check
+  - Common paths searched: `/opt/homebrew/bin`, `/usr/local/bin`, `~/google-cloud-sdk/bin`
+  - subprocess `PATH` also extended so `bq` can find its own dependencies
+  - Location: `utils/bigquery.py:15-44`
+
+## [0.2.2] - 2026-03-12
+
+### Added
+- **`meta hotspots` command** - Find models with highest optimization potential
+  - Analyzes all tables using `dbt_bigquery_monitoring` data in parallel (ThreadPoolExecutor)
+  - Two output blocks: **Top by Score** (optimization priority) + **Top Storage Savings**
+  - Scoring algorithm v4 — calibrated in "cents equivalent" (€0.01 = 1pt):
+    - `query_cost`: direct spend, €0.01/week = 1pt (primary signal)
+    - `high_scan`: bytes/query × log2(frequency), up to 100pts
+    - `high_slot`: slot_sec/query × log2(frequency), up to 75pts
+    - `no_partition`: table_size × log2(frequency), up to 75pts
+    - `no_clustering`: table_size × log2(frequency), up to 50pts
+    - `low_cache`: wasted cost × 100 if cache_hit < 30%, up to 200pts
+    - `unused`: monthly storage cost × 100 if unused >30 days, up to 200pts
+  - Returns `scoring_details` with per-criterion recommendations
+  - Options: `--limit N` (default: 10), `--min-gb X` (default: 0.1), `-j` for JSON
+  - Location: `command_impl/hotspots.py`, `utils/monitoring.py`
+
+- **`meta analyze <model>` command** - Deep analysis of single model
+  - Combines manifest config with BigQuery monitoring data
+  - Storage metrics, partition stats, query frequency, clustering effectiveness
+  - Recommendations based on actual usage patterns
+  - Location: `command_impl/analyze.py`
+
+- **`meta branch <model>` command** - Optimization analysis across model lineage
+  - Examines upstream/downstream models for partition/cluster alignment
+  - Identifies filter patterns in downstream that should inform upstream config
+  - Location: `command_impl/branch.py`
+
+- **BigQuery monitoring queries** (`utils/monitoring.py`):
+  - `fetch_all_tables_storage()` — storage metrics from `storage_with_cost`
+  - `fetch_model_query_costs()` — costs from `most_expensive_models`
+  - `fetch_partition_info_all()` — partition config from `partitions_monitoring`
+  - `fetch_read_heavy_tables()` — read frequency from `read_heavy_tables`
+  - `fetch_unused_tables()` — unused tables from `unused_tables`
+  - `fetch_model_metrics()` — execution metrics from `models_costs_incremental`
+  - `fetch_table_query_frequency()` — query frequency per table
+  - `fetch_dataset_billing_recommendations()` — physical vs logical billing
+  - `fetch_total_bigquery_costs()` — total BQ spend for context
+
+- **`meta powerbi [workspace_id]` command** - Power BI integration
+  - Extracts BigQuery tables used by Power BI dashboards and maps to dbt models
+  - Default view: Workspace → Dataset → Reports → Tables hierarchy
+  - `--by-table` flag: aggregated view grouped by BigQuery table with usage counts
+  - `--measures` flag: DAX expressions with `parse_dax_references()` analysis
+  - `--columns` flag: column schemas with data types, formats, visibility
+  - `--full` flag: all metadata combined
+  - OAuth via Service Principal (client_credentials flow using `curl`)
+  - TOML config or `POWERBI_*` env vars
+  - Location: `command_impl/powerbi.py`, `utils/powerbi.py`
+
+### Changed
+- **Renamed `cost` command to `scan`** — better reflects the command's purpose
+  - `meta cost` → `meta scan`
+  - File: `command_impl/scan.py` (renamed from `cost.py`)
+
+- **Minimalist text output for `schema`, `path`, `sql`** — shell-friendly
+  - Removed decorative headers and blank lines
+  - Returns only the value: table name, file path, or SQL
+  - Enables: `TABLE=$(meta schema model_name)`
+  - JSON mode unchanged
+  - Location: `cli.py:665-674`, `cli.py:849-850`, `cli.py:958-960`
+
+- **Help message** — new command categories in `meta --help`
+  - **Optimization** section: `hotspots`, `analyze`, `branch`
+  - **Integration** section: `powerbi`
+  - Location: `cli.py:136-149`
+
+- **Configurable monitoring dataset** — no more hardcoded `"prod"` schema
+  - Added `monitoring_dataset` to Config (default: `"prod"`)
+  - TOML: `[bigquery] monitoring_dataset = "prod"`
+  - Env: `DBT_MONITORING_DATASET`
+  - Location: `config.py`, `utils/monitoring.py`
+
+### Fixed
+- **`meta hotspots` BigQuery CLI integration** — fixed on macOS
+  - Removed PYTHONPATH clearing that broke `bq` CLI
+  - Removed hardcoded `LIKE 'admirals%'` project filter
+  - Location: `utils/monitoring.py:14-53`
+
 ## [0.2.1] - 2026-01-02
 
 ### Added
@@ -401,6 +498,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLAUDE.md for AI agent integration
 - Apache 2.0 license
 
+[0.2.2]: https://github.com/Filianin/dbt-meta/releases/tag/v0.2.2
 [0.2.1]: https://github.com/Filianin/dbt-meta/releases/tag/v0.2.1
 [0.2.0]: https://github.com/Filianin/dbt-meta/releases/tag/v0.2.0
 [0.1.6]: https://github.com/Filianin/dbt-meta/releases/tag/v0.1.6

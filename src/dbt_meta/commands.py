@@ -9,14 +9,18 @@ import subprocess
 from pathlib import Path
 from typing import Any, Optional
 
+from dbt_meta.command_impl.analyze import AnalyzeCommand
+from dbt_meta.command_impl.branch import BranchCommand
 from dbt_meta.command_impl.children import ChildrenCommand
 from dbt_meta.command_impl.columns import ColumnsCommand
 from dbt_meta.command_impl.config import ConfigCommand
-from dbt_meta.command_impl.cost import CostCommand
+from dbt_meta.command_impl.scan import ScanCommand
 from dbt_meta.command_impl.deps import DepsCommand
+from dbt_meta.command_impl.hotspots import HotspotsCommand
 from dbt_meta.command_impl.info import InfoCommand
 from dbt_meta.command_impl.parents import ParentsCommand
 from dbt_meta.command_impl.path import PathCommand
+from dbt_meta.command_impl.powerbi import PowerBiCommand
 from dbt_meta.command_impl.schema import SchemaCommand
 from dbt_meta.command_impl.sql import SqlCommand
 from dbt_meta.command_impl.validate import ValidateCommand
@@ -242,7 +246,7 @@ def validate(manifest_path: str, model_name: str, use_dev: bool = False, json_ou
     return command.execute()
 
 
-def cost(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[dict[str, Any]]:
+def scan(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[dict[str, Any]]:
     """
     Estimate query scan size using BigQuery dry run.
 
@@ -261,7 +265,7 @@ def cost(manifest_path: str, model_name: str, use_dev: bool = False, json_output
         Returns None if model not found.
     """
     cfg = Config.from_config_or_env()
-    command = CostCommand(cfg, manifest_path, model_name, use_dev, json_output)
+    command = ScanCommand(cfg, manifest_path, model_name, use_dev, json_output)
     return command.execute()
 
 
@@ -1197,3 +1201,151 @@ def _find_path_between(
                 queue.append((node_uid, new_path))
 
     return []  # No path found
+
+
+# =============================================================================
+# Optimization Commands
+# =============================================================================
+
+
+def analyze(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[dict[str, Any]]:
+    """
+    Analyze model partitioning/clustering effectiveness.
+
+    Combines manifest metadata with BigQuery monitoring data to provide
+    deep analysis of optimization opportunities.
+
+    Args:
+        manifest_path: Path to manifest.json
+        model_name: Model name
+        use_dev: Not used (always analyzes production)
+        json_output: If True, suppress warnings
+
+    Returns:
+        Dictionary with:
+        - model: Model name
+        - table: Full table name (schema.table)
+        - config: Partition/cluster configuration from manifest
+        - storage: Storage metrics from dbt_bigquery_monitoring
+        - partitions: Partition statistics
+        - usage: Query frequency data
+        - recommendations: List of optimization recommendations
+
+        Returns None if model not found.
+    """
+    config = Config.from_config_or_env()
+    command = AnalyzeCommand(config, manifest_path, model_name, use_dev, json_output)
+    return command.execute()
+
+
+def hotspots(manifest_path: str, limit: int = 20, min_gb: float = 1.0, json_output: bool = False) -> dict[str, Any]:
+    """
+    Find models with highest optimization potential.
+
+    Analyzes all tables and scores them based on partitioning,
+    clustering, and query patterns to identify optimization candidates.
+
+    Args:
+        manifest_path: Path to manifest.json
+        limit: Maximum number of hotspots to return (default: 20)
+        min_gb: Minimum table size in GB to consider (default: 1.0)
+        json_output: If True, suppress warnings
+
+    Returns:
+        Dictionary with:
+        - hotspots: List of top optimization candidates, each with:
+            - model: dbt model name (if found)
+            - table: BigQuery table name
+            - score: Optimization score (higher = more potential)
+            - reasons: List of reasons for the score
+            - potential_savings_gb: Estimated storage savings
+        - summary: Overall statistics
+    """
+    config = Config.from_config_or_env()
+    command = HotspotsCommand(config, manifest_path, limit, min_gb, json_output)
+    return command.execute()
+
+
+def branch(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[dict[str, Any]]:
+    """
+    Analyze optimization across model branch.
+
+    Examines upstream and downstream models to identify alignment issues
+    between partitioning/clustering configurations.
+
+    Args:
+        manifest_path: Path to manifest.json
+        model_name: Model name
+        use_dev: Not used (always analyzes production)
+        json_output: If True, suppress warnings
+
+    Returns:
+        Dictionary with:
+        - root: Root model name
+        - root_config: Root model partition/cluster config
+        - upstream: List of upstream models with impact analysis
+        - downstream: List of downstream models with alignment analysis
+        - recommendations: Branch-level optimization recommendations
+
+        Returns None if model not found.
+    """
+    config = Config.from_config_or_env()
+    command = BranchCommand(config, manifest_path, model_name, use_dev, json_output)
+    return command.execute()
+
+
+def powerbi(
+    manifest_path: str,
+    workspace_id: Optional[str] = None,
+    json_output: bool = False,
+    show_measures: bool = False,
+    show_columns: bool = False,
+    show_full: bool = False,
+    by_table: bool = False,
+) -> dict[str, Any]:
+    """
+    Extract Power BI dashboard to BigQuery table mappings.
+
+    Scans Power BI workspace to extract datasets, reports, and their
+    BigQuery table dependencies. Maps tables to dbt model names.
+    Optionally includes measures (DAX) and column schemas.
+
+    Args:
+        manifest_path: Path to manifest.json
+        workspace_id: Power BI workspace ID (or use first from config)
+        json_output: If True, suppress warnings
+        show_measures: Include measures with DAX expressions
+        show_columns: Include column schemas
+        show_full: Include all metadata (measures + columns)
+        by_table: Group by tables instead of datasets
+
+    Returns:
+        Dictionary with:
+        - workspace: Workspace name
+        - workspace_id: Workspace ID
+        - datasets: List of datasets, each with:
+            - name: Dataset name
+            - id: Dataset ID
+            - reports: List of report names using this dataset
+            - tables: List of BigQuery tables with dbt mapping and optionally:
+                - measures: List of measures with DAX (if show_measures/show_full/json_output)
+                - columns: List of columns with types (if show_columns/show_full/json_output)
+            - refresh_count_30d: Number of refreshes in last 30 days
+            - last_refresh: Timestamp of last refresh
+        - summary: Totals for datasets, reports, tables
+
+    Raises:
+        ConfigurationError: If Power BI integration not configured
+    """
+    config = Config.from_config_or_env()
+    command = PowerBiCommand(
+        config,
+        manifest_path,
+        workspace_id,
+        json_output,
+        show_measures,
+        show_columns,
+        show_full,
+        by_table,
+    )
+    return command.execute()

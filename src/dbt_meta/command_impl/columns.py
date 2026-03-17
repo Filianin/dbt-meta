@@ -407,6 +407,10 @@ class ColumnsCommand(BaseCommand):
             state: Model state
             attempted_table: Table name that was attempted (if any)
         """
+        # In JSON mode the CLI layer emits {"error": "..."} - skip human-readable output
+        if self.json_output:
+            return
+
         print("\n❌ Model not found in BigQuery", file=sys.stderr)
 
         if attempted_table:

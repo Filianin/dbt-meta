@@ -16,7 +16,7 @@
 # Install in development mode
 pip install -e ".[dev]"
 
-# Run tests (95%+ coverage required)
+# Run tests (90%+ coverage required)
 pytest --cov=dbt_meta
 
 # Type checking + linting
@@ -306,18 +306,28 @@ settings_app = typer.Typer(
 - Consistent UX across main app and subcommands
 - Standard CLI convention
 
-**Schema command output** (v0.1.0):
+**Minimalist text output** (v0.2.2):
+Commands `schema`, `path`, `sql` return clean output without headers or blank lines:
+
 ```bash
-# Text mode - simple table name
+# schema - simple table name
 meta schema core_client__client_info
 # → admirals-bi-dwh.core_client.client_info
 
-# JSON mode - structured output
+# path - simple file path
+meta path core_client__client_info
+# → models/core_client/client_info.sql
+
+# sql - clean SQL code
+meta sql core_client__client_info
+# → WITH ... (SQL without headers)
+
+# JSON mode - structured output (unchanged)
 meta schema -j core_client__client_info
 # → {"model_name": "core_client__client_info", "full_name": "admirals-bi-dwh.core_client.client_info"}
 ```
 
-**Purpose:** Minimalist output optimized for shell scripting and AI consumption
+**Purpose:** Minimalist output optimized for shell scripting (`TABLE=$(meta schema model)`) and AI consumption
 
 **Username sanitization** (v0.1.0):
 ```python
@@ -418,14 +428,14 @@ meta validate -j model_name       # JSON output
 {"model": "model_name", "valid": true, "error": null}
 ```
 
-### `meta cost` - Estimate query scan size
+### `meta scan` - Estimate query scan size
 
 Shows estimated bytes scanned with color-coded output.
 
 ```bash
-meta cost model_name              # Show scan size
-meta cost --dev model_name        # Dev SQL scan size
-meta cost -j model_name           # JSON output
+meta scan model_name              # Show scan size
+meta scan --dev model_name        # Dev SQL scan size
+meta scan -j model_name           # JSON output
 ```
 
 **Color scheme:**
@@ -443,7 +453,256 @@ meta cost -j model_name           # JSON output
 **Implementation:**
 - `utils/bigquery.py`: `run_dry_run_query()`, `format_bytes()`
 - `command_impl/validate.py`: ValidateCommand
-- `command_impl/cost.py`: CostCommand
+- `command_impl/scan.py`: ScanCommand
+
+## Optimization Commands
+
+Three commands for BigQuery cost optimization using `dbt_bigquery_monitoring` data:
+
+### `meta hotspots` - Find optimization opportunities
+
+Analyzes all tables and scores them for optimization potential.
+Returns two blocks: **Top by Score** + **Top Storage Savings**.
+
+```bash
+meta hotspots                     # Top 10 by score + top 10 by savings
+meta hotspots --limit 20          # Top 20 each
+meta hotspots --min-gb 1.0        # Only tables >1GB
+meta hotspots -j                  # JSON output
+```
+
+**Scoring algorithm (v4) - calibrated in cents (€0.01 = 1pt):**
+
+| Criterion | Points | Threshold |
+|-----------|--------|-----------|
+| `query_cost` | cost_7d × 100 | direct spend, €0.01/week = 1pt (PRIMARY) |
+| `high_scan` | base × log2(freq), max 100 | >10GB/q=20, >1GB=10, >100MB=3 |
+| `high_slot` | base × log2(freq), max 75 | >10min/q=15, >2min=8, >30sec=3 |
+| `no_partition` | base × log2(freq), max 75 | >100GB=15, >10GB=8, >1GB=3 |
+| `no_clustering` | base × log2(freq), max 50 | >100GB=10, >10GB=5, >1GB=2 |
+| `low_cache` | wasted_cost × 100, max 200 | cache_hit < 30% |
+| `unused` | storage_cost × 100, max 200 | unused >30 days |
+
+**Returns (JSON):**
+```json
+{
+  "hotspots": [
+    {
+      "model": "core_client__events",
+      "table": "core_client.events",
+      "score": 115,
+      "scoring_details": [
+        {
+          "criterion": "no_partition",
+          "points": 60,
+          "value": "12.5 GB",
+          "recommendation": "Add partition_by config"
+        },
+        {
+          "criterion": "high_query_cost",
+          "points": 50,
+          "value": "€3.42/week",
+          "recommendation": "Optimize query patterns"
+        }
+      ],
+      "total_gb": 12.5,
+      "query_cost_7d": 3.42,
+      "slot_hours_7d": 0.5,
+      "storage_savings_eur": 0.04
+    }
+  ],
+  "top_storage_savings": [
+    {
+      "model": "raw_data__events",
+      "table": "raw_data.events",
+      "total_gb": 450.2,
+      "storage_savings_eur": 5.50
+    }
+  ],
+  "summary": {
+    "total_tables_analyzed": 450,
+    "tables_with_issues": 85,
+    "total_size_gb": 21794.4,
+    "total_slot_hours_7d": 4.0,
+    "total_storage_savings_eur": 39.21,
+    "total_query_cost_7d": 44.99
+  }
+}
+```
+
+### `meta analyze` - Deep analysis of single model
+
+Detailed optimization analysis for a specific model.
+
+```bash
+meta analyze core_client__events      # Analyze model
+meta analyze -j core_client__events   # JSON output
+```
+
+**Returns:** Storage metrics, partition info, query patterns, optimization recommendations.
+
+### `meta branch` - Branch-level optimization
+
+Analyze optimization impact of current branch changes.
+
+```bash
+meta branch                       # Analyze modified models
+meta branch -j                    # JSON output
+```
+
+**Implementation:**
+- `utils/monitoring.py`: BigQuery monitoring queries
+- `command_impl/hotspots.py`: HotspotsCommand
+- `command_impl/analyze.py`: AnalyzeCommand
+- `command_impl/branch.py`: BranchCommand
+
+## Power BI Integration
+
+Extract BigQuery table usage from Power BI dashboards and map to dbt models.
+
+### Setup
+
+1. Create App Registration in Azure AD with API permissions:
+   - `Tenant.Read.All` (Admin consent required)
+   - `Dataset.Read.All`
+
+2. Add Service Principal to Security Group and enable in Power BI Admin Portal:
+   - "Service principals can call Fabric public APIs"
+   - "Service principals can access read-only admin APIs"
+
+3. Configure dbt-meta via TOML or environment variables:
+
+**TOML config (`~/.config/dbt-meta/config.toml`):**
+```toml
+[powerbi]
+enabled = true
+tenant_id = "your-tenant-id"
+client_id = "your-client-id"
+client_secret = "your-client-secret"  # Or use env var
+workspaces = ["677db568-5923-4c5b-9b45-f14ec16a2b62"]
+```
+
+**Environment variables (override TOML):**
+```bash
+export POWERBI_ENABLED=true
+export POWERBI_TENANT_ID=your-tenant-id
+export POWERBI_CLIENT_ID=your-client-id
+export POWERBI_CLIENT_SECRET=your-client-secret
+export POWERBI_WORKSPACES=workspace1-id,workspace2-id
+```
+
+### `meta powerbi` - Extract Power BI table mappings
+
+```bash
+meta powerbi                      # Use default workspace from config
+meta powerbi <workspace_id>       # Specific workspace
+meta powerbi -j                   # JSON output
+meta powerbi --by-table           # Group by tables (usage view)
+meta powerbi --by-table -j        # Table usage as JSON
+```
+
+**Default view:** Dataset -> Reports -> Tables hierarchy
+
+**Table usage view (`--by-table`):** Aggregates table usage across all datasets/reports
+
+**Text output (default):**
+```
+BI Marketing (12 datasets, 30 reports, 43 BigQuery tables)
+
+Traffic Performance (23 refreshes/30d, last: 2026-01-14 08:00)
+   Report: Traffic Performance
+   Report: [App] Traffic Performance
+   Tables:
+      core_appsflyer.app_installs -> core_appsflyer__app_installs
+      core_balance_operations.primary_deposits -> core_balance_operations__primary_deposits
+      staging_amas.applications (not in manifest)
+
+Summary: 38/43 tables in dbt manifest (88%)
+```
+
+**Text output (`--by-table`):**
+```
+BI Marketing (43 BigQuery tables, 30 reports, 12 datasets)
+
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ BigQuery Table            ┃ Reports ┃ Datasets ┃ dbt Model               ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ core_appsflyer.app_insta… │       5 │        2 │ core_appsflyer__app_in… │
+│ staging_amas.applications │       3 │        1 │ (not in manifest)       │
+│ core_balance.deposits     │       2 │        1 │ core_balance__deposits  │
+└───────────────────────────┴─────────┴──────────┴─────────────────────────┘
+
+Summary: 38/43 tables in dbt manifest (88%)
+```
+
+**JSON output (default):**
+```json
+{
+  "workspace": "BI Marketing",
+  "workspace_id": "677db568-...",
+  "datasets": [
+    {
+      "name": "Traffic Performance",
+      "id": "dataset-id",
+      "reports": ["Traffic Performance", "[App] Traffic Performance"],
+      "tables": [
+        {"bigquery_table": "core_appsflyer.app_installs", "dbt_model": "core_appsflyer__app_installs", "in_manifest": true},
+        {"bigquery_table": "staging_amas.applications", "dbt_model": null, "in_manifest": false}
+      ],
+      "refresh_count_30d": 23,
+      "last_refresh": "2026-01-14T08:00:00Z"
+    }
+  ],
+  "summary": {
+    "total_datasets": 12,
+    "total_reports": 30,
+    "total_tables": 43,
+    "tables_in_manifest": 38,
+    "tables_not_in_manifest": 5
+  }
+}
+```
+
+**JSON output (`--by-table`):**
+```json
+{
+  "workspace": "BI Marketing",
+  "workspace_id": "677db568-...",
+  "view": "by_table",
+  "tables": [
+    {
+      "bigquery_table": "core_appsflyer.app_installs",
+      "dbt_model": "core_appsflyer__app_installs",
+      "in_manifest": true,
+      "report_count": 5,
+      "dataset_count": 2,
+      "datasets": ["Traffic Performance", "User Analytics"],
+      "reports": ["Report 1", "Report 2", "Report 3", "Report 4", "Report 5"]
+    },
+    {
+      "bigquery_table": "staging_amas.applications",
+      "dbt_model": null,
+      "in_manifest": false,
+      "report_count": 3,
+      "dataset_count": 1,
+      "datasets": ["User Analytics"],
+      "reports": ["Report 1", "Report 2", "Report 3"]
+    }
+  ],
+  "summary": {
+    "total_tables": 43,
+    "total_reports": 30,
+    "total_datasets": 12,
+    "tables_in_manifest": 38,
+    "tables_not_in_manifest": 5
+  }
+}
+```
+
+**Implementation:**
+- `utils/powerbi.py`: Power BI Admin API functions
+- `command_impl/powerbi.py`: PowerBiCommand
+- `config.py`: Power BI configuration fields
 
 ## Model Listing and Filtering (`meta list`)
 
@@ -567,7 +826,7 @@ Add to `_build_commands_panel()` if needed.
 ## Testing Strategy
 
 **Coverage requirement:** 90%+ (pyproject.toml:79)
-**Current coverage:** 91.43% (472 tests)
+**Current coverage:** 91% (678 tests)
 
 **Test markers:**
 - `@pytest.mark.unit` - Fast unit tests
@@ -622,11 +881,18 @@ Add to `_build_commands_panel()` if needed.
 | BigQuery schema resolution | `command_impl/columns.py:92-94, 160-167, 200-221` |
 | BigQuery dry run | `utils/bigquery.py:311-398` |
 | SQL validation | `command_impl/validate.py` |
-| Cost estimation | `command_impl/cost.py` |
+| Scan estimation | `command_impl/scan.py` |
+| Optimization hotspots | `command_impl/hotspots.py` |
+| Model analysis | `command_impl/analyze.py` |
+| Branch analysis | `command_impl/branch.py` |
+| Monitoring queries | `utils/monitoring.py` |
+| Power BI API | `utils/powerbi.py` |
+| Power BI command | `command_impl/powerbi.py` |
 | Dev schema resolution | `commands.py:934-1042` (deprecated, use `config.py`) |
 | Prod table naming | `commands.py:452-493` |
 | Lineage traversal | `commands.py:773-805` |
-| Help formatting | `cli.py:43-157` |
+| Help formatting | `cli.py:106-157` |
+| Minimalist CLI output | `cli.py:665-674` (schema), `cli.py:849-850` (sql), `cli.py:958-960` (path) |
 
 ## Environment Variables
 
@@ -650,6 +916,13 @@ Add to `_build_commands_panel()` if needed.
 - `DBT_PROD_SCHEMA_SOURCE` - `config_or_model` (default), `model`, `config`
 - `DBT_DEV_SCHEMA` - Direct dev schema name (overrides default `personal_{username}`)
 - `DBT_USER` - Override username for dev schema (default: `$USER`)
+
+**Power BI:**
+- `POWERBI_ENABLED` - Enable Power BI integration (default: `false`)
+- `POWERBI_TENANT_ID` - Azure AD tenant ID
+- `POWERBI_CLIENT_ID` - App registration client ID
+- `POWERBI_CLIENT_SECRET` - App registration client secret
+- `POWERBI_WORKSPACES` - Comma-separated list of workspace IDs
 
 **Deprecated:**
 - `DBT_DEV_DATASET` - Use `DBT_DEV_SCHEMA` instead (backward compatible with warning)

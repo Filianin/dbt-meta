@@ -50,27 +50,30 @@ STYLE_DIM = "dim"
 STYLE_GREEN = "green"
 
 
-def handle_error(error: DbtMetaError) -> None:
+def handle_error(error: DbtMetaError, json_output: bool = False) -> None:
     """Display formatted error message with suggestion and exit.
 
-    Args:
-        error: DbtMetaError instance with message and optional suggestion
-
-    This function formats errors with Rich console for better readability:
-    - Error message in red
-    - Suggestion in yellow (if available)
-    - Exits with code 1
+    When json_output=True, emits {"error": "..."} to stdout for machine consumption.
+    Otherwise, emits Rich-formatted text to stderr.
     """
+    if json_output:
+        print(json.dumps({"error": error.message}))
+        raise typer.Exit(code=1)
+
     error_console = Console(stderr=True)
-
-    # Display error message
     error_console.print(f"\n[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] {error.message}")
-
-    # Display suggestion if available
     if error.suggestion:
         error_console.print(f"[yellow]Suggestion:[/yellow] {error.suggestion}")
+    error_console.print()
+    raise typer.Exit(code=1)
 
-    error_console.print()  # Empty line for better readability
+
+def _not_found_error(model_name: str, json_output: bool) -> None:
+    """Emit 'model not found' error and exit, respecting json_output mode."""
+    if json_output:
+        print(json.dumps({"error": f"Model '{model_name}' not found"}))
+    else:
+        Console(stderr=True).print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
     raise typer.Exit(code=1)
 
 
@@ -125,11 +128,24 @@ def _build_commands_panel() -> Panel:
 
     # Utilities (cyan)
     table.add_row("[bold cyan]Utilities:[/bold cyan]", "")
-    table.add_row("  [cyan]list[/cyan]", "List models (optionally filter by pattern)")
+    table.add_row("  [cyan]list[/cyan]", "Filter models by selectors (tag:, config., path:)")
+    table.add_row("  [cyan]models[/cyan]", "Simple substring search in model names")
     table.add_row("  [cyan]search[/cyan]", "Search by name or description")
     table.add_row("  [cyan]refresh[/cyan]", "Sync prod artifacts (or parse local with --dev)")
     table.add_row("  [cyan]validate[/cyan]", "Validate SQL syntax (BigQuery dry run)")
-    table.add_row("  [cyan]cost[/cyan]", "Estimate query scan size (MB/GB)")
+    table.add_row("  [cyan]scan[/cyan]", "Estimate query scan size (MB/GB)")
+    table.add_row("", "")
+
+    # Optimization & Analysis (yellow)
+    table.add_row("[bold yellow]Optimization:[/bold yellow]", "")
+    table.add_row("  [yellow]hotspots[/yellow]", "Find optimization opportunities (query cost, partitioning)")
+    table.add_row("  [yellow]analyze[/yellow]", "Deep analysis of single model")
+    table.add_row("  [yellow]branch[/yellow]", "Branch-level optimization impact")
+    table.add_row("", "")
+
+    # Integration (blue)
+    table.add_row("[bold blue]Integration:[/bold blue]", "")
+    table.add_row("  [blue]powerbi[/blue]", "Extract Power BI table mappings from workspace")
     table.add_row("", "")
 
     # Settings management (magenta)
@@ -613,8 +629,7 @@ def info(
         result = commands.info(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
 
         if not result:
-            console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
-            raise typer.Exit(code=1)
+            _not_found_error(model_name, json_output)
 
         if json_output:
             print(json.dumps(result, indent=2))
@@ -636,7 +651,7 @@ def info(
             console.print(table)
 
     except DbtMetaError as e:
-        handle_error(e)
+        handle_error(e, json_output)
 
 
 @app.command()
@@ -658,8 +673,7 @@ def schema(
         result = commands.schema(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
 
         if not result or not result.get('full_name'):
-            console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
-            raise typer.Exit(code=1)
+            _not_found_error(model_name, json_output)
 
         if json_output:
             output = {
@@ -668,12 +682,10 @@ def schema(
             }
             print(json.dumps(output, indent=2))
         else:
-            console.print()
-            console.print("[bold green]Table:[/]")
             print(result['full_name'])
 
     except DbtMetaError as e:
-        handle_error(e)
+        handle_error(e, json_output)
 
 
 @app.command()
@@ -695,8 +707,7 @@ def columns(
         result = commands.columns(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
 
         if not result:
-            console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
-            raise typer.Exit(code=1)
+            _not_found_error(model_name, json_output)
 
         if json_output:
             print(json.dumps(result, indent=2))
@@ -713,7 +724,7 @@ def columns(
             console.print(table)
 
     except DbtMetaError as e:
-        handle_error(e)
+        handle_error(e, json_output)
 
 
 @app.command()
@@ -735,8 +746,7 @@ def config(
         result = commands.config(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
 
         if result is None:
-            console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
-            raise typer.Exit(code=1)
+            _not_found_error(model_name, json_output)
 
         if json_output:
             print(json.dumps(result, indent=2))
@@ -753,7 +763,7 @@ def config(
             console.print(table)
 
     except DbtMetaError as e:
-        handle_error(e)
+        handle_error(e, json_output)
 
 
 @app.command()
@@ -775,8 +785,7 @@ def deps(
         result = commands.deps(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
 
         if result is None:
-            console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
-            raise typer.Exit(code=1)
+            _not_found_error(model_name, json_output)
 
         if json_output:
             print(json.dumps(result, indent=2))
@@ -811,7 +820,7 @@ def deps(
                 console.print(table_macros)
 
     except DbtMetaError as e:
-        handle_error(e)
+        handle_error(e, json_output)
 
 
 @app.command()
@@ -835,8 +844,7 @@ def sql(
         result = commands.sql(manifest_path, model_name, use_dev=effective_use_dev, raw=jinja, json_output=json_output)
 
         if result is None:
-            console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
-            raise typer.Exit(code=1)
+            _not_found_error(model_name, json_output)
 
         # Empty string is valid result (e.g., compiled_code missing from manifest)
         # SqlCommand will print informational messages to stderr if needed
@@ -848,13 +856,10 @@ def sql(
             }
             print(json.dumps(output, indent=2))
         else:
-            console.print()
-            sql_type = "Raw SQL:" if jinja else "Compiled SQL:"
-            console.print(f"[bold green]{sql_type}[/]")
             print(result)
 
     except DbtMetaError as e:
-        handle_error(e)
+        handle_error(e, json_output)
 
 
 @app.command()
@@ -876,8 +881,7 @@ def validate(
         result = commands.validate(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
 
         if result is None:
-            console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
-            raise typer.Exit(code=1)
+            _not_found_error(model_name, json_output)
 
         if json_output:
             print(json.dumps(result, indent=2))
@@ -888,11 +892,11 @@ def validate(
             raise typer.Exit(code=1)
 
     except DbtMetaError as e:
-        handle_error(e)
+        handle_error(e, json_output)
 
 
 @app.command()
-def cost(
+def scan(
     model_name: str = typer.Argument(..., help="Model name"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
@@ -902,16 +906,15 @@ def cost(
     Estimate query scan size using BigQuery dry run
 
     Examples:
-        meta cost model_name              # Show scan size for production SQL
-        meta cost --dev model_name        # Show scan size for dev SQL
+        meta scan model_name              # Show scan size for production SQL
+        meta scan --dev model_name        # Show scan size for dev SQL
     """
     try:
         manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-        result = commands.cost(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
+        result = commands.scan(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
 
         if result is None:
-            console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
-            raise typer.Exit(code=1)
+            _not_found_error(model_name, json_output)
 
         if json_output:
             print(json.dumps(result, indent=2))
@@ -931,7 +934,7 @@ def cost(
             console.print(f"Scan size: [bold {color}]{result['formatted']}[/bold {color}]")
 
     except DbtMetaError as e:
-        handle_error(e)
+        handle_error(e, json_output)
 
 
 @app.command()
@@ -953,8 +956,7 @@ def path(
         result = commands.path(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
 
         if result is None:
-            console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
-            raise typer.Exit(code=1)
+            _not_found_error(model_name, json_output)
 
         if json_output:
             output = {
@@ -963,12 +965,10 @@ def path(
             }
             print(json.dumps(output, indent=2))
         else:
-            console.print()
-            console.print("[bold green]File path:[/]")
             print(result)
 
     except DbtMetaError as e:
-        handle_error(e)
+        handle_error(e, json_output)
 
 
 @app.command("models")
@@ -1004,7 +1004,7 @@ def models_cmd(
             console.print(table)
 
     except DbtMetaError as e:
-        handle_error(e)
+        handle_error(e, json_output)
 
 
 @app.command()
@@ -1038,7 +1038,7 @@ def search(
             console.print(table)
 
     except DbtMetaError as e:
-        handle_error(e)
+        handle_error(e, json_output)
 
 
 @app.command("list")
@@ -1140,7 +1140,7 @@ def list_cmd(
             print(result)
 
     except DbtMetaError as e:
-        handle_error(e)
+        handle_error(e, json_output)
 
 
 @app.command()
@@ -1164,8 +1164,7 @@ def parents(
         result = commands.parents(manifest_path, model_name, use_dev=effective_use_dev, recursive=all_ancestors, json_output=json_output)
 
         if result is None:
-            console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
-            raise typer.Exit(code=1)
+            _not_found_error(model_name, json_output)
 
         if json_output:
             print(json.dumps(result, indent=2))
@@ -1177,20 +1176,20 @@ def parents(
                 _build_tree_recursive(tree, result)
                 console.print(tree)
             else:
-                # Flat table output
+                # Tree-style output (no truncation)
                 mode = "All parents" if all_ancestors else "Direct parents"
-                table = Table(title=f"[bold green not italic]{mode} for {model_name} ({len(result)})[/bold green not italic]", header_style="bold green")
-                table.add_column("Path", style=STYLE_COMMAND)
-                table.add_column("Table", style="white", min_width=30)
-                table.add_column("Type", style="white", min_width=8)
-
-                for parent in result:
-                    table.add_row(parent['path'], parent['table'], parent.get('type', ''))
-
-                console.print(table)
+                console.print(f"[bold green]⬆️ {mode}: {model_name} ({len(result)})[/bold green]")
+                for i, parent in enumerate(result):
+                    is_last = (i == len(result) - 1)
+                    branch = "└── " if is_last else "├── "
+                    cont = "    " if is_last else "│   "
+                    ptype = parent.get('type', '')
+                    type_badge = f" [{STYLE_DIM}]{ptype}[/{STYLE_DIM}]" if ptype else ""
+                    console.print(f"[{STYLE_DIM}]{branch}[/{STYLE_DIM}][{STYLE_COMMAND}]{parent['path']}[/{STYLE_COMMAND}]{type_badge}")
+                    console.print(f"[{STYLE_DIM}]{cont}[/{STYLE_DIM}]{parent['table']}")
 
     except DbtMetaError as e:
-        handle_error(e)
+        handle_error(e, json_output)
 
 
 @app.command()
@@ -1214,8 +1213,7 @@ def children(
         result = commands.children(manifest_path, model_name, use_dev=effective_use_dev, recursive=all_descendants, json_output=json_output)
 
         if result is None:
-            console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
-            raise typer.Exit(code=1)
+            _not_found_error(model_name, json_output)
 
         if json_output:
             print(json.dumps(result, indent=2))
@@ -1227,20 +1225,20 @@ def children(
                 _build_tree_recursive(tree, result)
                 console.print(tree)
             else:
-                # Flat table output
+                # Tree-style output (no truncation)
                 mode = "All children" if all_descendants else "Direct children"
-                table = Table(title=f"[bold green not italic]{mode} for {model_name} ({len(result)})[/bold green not italic]", header_style="bold green")
-                table.add_column("Path", style=STYLE_COMMAND)
-                table.add_column("Table", style="white", min_width=30)
-                table.add_column("Type", style="white", min_width=8)
-
-                for child in result:
-                    table.add_row(child['path'], child['table'], child.get('type', ''))
-
-                console.print(table)
+                console.print(f"[bold green]⬇️ {mode}: {model_name} ({len(result)})[/bold green]")
+                for i, child in enumerate(result):
+                    is_last = (i == len(result) - 1)
+                    branch = "└── " if is_last else "├── "
+                    cont = "    " if is_last else "│   "
+                    ctype = child.get('type', '')
+                    type_badge = f" [{STYLE_DIM}]{ctype}[/{STYLE_DIM}]" if ctype else ""
+                    console.print(f"[{STYLE_DIM}]{branch}[/{STYLE_DIM}][{STYLE_COMMAND}]{child['path']}[/{STYLE_COMMAND}]{type_badge}")
+                    console.print(f"[{STYLE_DIM}]{cont}[/{STYLE_DIM}]{child['table']}")
 
     except DbtMetaError as e:
-        handle_error(e)
+        handle_error(e, json_output)
 
 
 @app.command()
@@ -1294,8 +1292,7 @@ def docs(
         result = commands.docs(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
 
         if not result:
-            console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{model_name}' not found")
-            raise typer.Exit(code=1)
+            _not_found_error(model_name, json_output)
 
         if json_output:
             print(json.dumps(result, indent=2))
@@ -1314,7 +1311,617 @@ def docs(
             console.print(table)
 
     except DbtMetaError as e:
-        handle_error(e)
+        handle_error(e, json_output)
+
+
+# =============================================================================
+# Optimization Commands
+# =============================================================================
+
+
+@app.command()
+def analyze(
+    model_name: str = typer.Argument(..., help="Model name"),
+    json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+) -> None:
+    """
+    Analyze model partitioning/clustering effectiveness
+
+    Combines manifest metadata with BigQuery monitoring data to identify
+    optimization opportunities.
+
+    Examples:
+        meta analyze core_client__events          # Full analysis
+        meta analyze -j core_client__events       # JSON output
+    """
+    try:
+        manifest_path, _ = get_manifest_path(manifest, False)
+        result = commands.analyze(manifest_path, model_name, use_dev=False, json_output=json_output)
+
+        if result is None:
+            _not_found_error(model_name, json_output)
+
+        if json_output:
+            print(json.dumps(result, indent=2))
+        else:
+            _print_analyze_result(result)
+
+    except DbtMetaError as e:
+        handle_error(e, json_output)
+
+
+def _print_analyze_result(result: dict) -> None:
+    """Pretty print analyze command result."""
+    print()
+    console.print(f"[bold green]Model:[/bold green] {result['model']}")
+    console.print(f"[bold green]Table:[/bold green] {result['table']}")
+    print()
+
+    # Config section
+    config = result.get('config', {})
+    console.print("[bold green]Config:[/bold green]")
+    partition = config.get('partition_by')
+    partition_type = config.get('partition_type', '')
+    if partition:
+        console.print(f"  partition_by: {partition} ({partition_type})")
+    else:
+        console.print(f"  partition_by: [{STYLE_DIM}]not set[/{STYLE_DIM}]")
+
+    cluster = config.get('cluster_by', [])
+    if cluster:
+        console.print(f"  cluster_by: [{', '.join(cluster)}]")
+    else:
+        console.print(f"  cluster_by: [{STYLE_DIM}]not set[/{STYLE_DIM}]")
+
+    console.print(f"  materialized: {config.get('materialized', 'unknown')}")
+
+    exp_days = config.get('partition_expiration_days')
+    if exp_days:
+        console.print(f"  partition_expiration: {exp_days} days")
+    print()
+
+    # Storage section
+    storage = result.get('storage')
+    if storage:
+        console.print("[bold green]Storage:[/bold green]")
+        console.print(f"  Total: {storage.get('total_gb', 0):.1f} GB | Active: {storage.get('active_gb', 0):.1f} GB")
+        console.print(f"  Partitions: {storage.get('partition_count', 0)} | Rows: {storage.get('row_count', 0):,}")
+        console.print(f"  Cost: ${storage.get('cost_monthly_usd', 0):.2f}/month")
+        print()
+
+    # Usage section
+    usage = result.get('usage')
+    if usage:
+        console.print("[bold green]Usage (30d):[/bold green]")
+        console.print(f"  Queries: {usage.get('query_count', 0):,}")
+        print()
+
+    # Recommendations section
+    recommendations = result.get('recommendations', [])
+    if recommendations:
+        console.print("[bold green]Recommendations:[/bold green]")
+        for i, rec in enumerate(recommendations, 1):
+            priority = rec.get('priority', 'MEDIUM')
+            if priority == 'HIGH':
+                color = 'red'
+            elif priority == 'MEDIUM':
+                color = 'yellow'
+            else:
+                color = 'dim'
+            console.print(f"  {i}. [{color}][{priority}][/{color}] {rec.get('message', '')}")
+            if rec.get('impact'):
+                console.print(f"     [{STYLE_DIM}]{rec['impact']}[/{STYLE_DIM}]")
+    else:
+        console.print(f"[{STYLE_DIM}]No optimization recommendations[/{STYLE_DIM}]")
+
+
+@app.command()
+def hotspots(
+    limit: int = typer.Option(10, "-n", "--limit", help="Number of hotspots to show"),
+    min_gb: float = typer.Option(1.0, "--min-gb", help="Minimum table size in GB"),
+    json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+) -> None:
+    """
+    Find models with highest optimization potential
+
+    Analyzes all tables and scores them based on partitioning,
+    clustering, and query patterns.
+
+    Examples:
+        meta hotspots                     # Top 20 optimization candidates
+        meta hotspots -n 10               # Top 10
+        meta hotspots --min-gb 10         # Only tables > 10 GB
+        meta hotspots -j                  # JSON output
+    """
+    try:
+        manifest_path, _ = get_manifest_path(manifest, False)
+        result = commands.hotspots(manifest_path, limit=limit, min_gb=min_gb, json_output=json_output)
+
+        if json_output:
+            print(json.dumps(result, indent=2))
+        else:
+            _print_hotspots_result(result, limit)
+
+    except DbtMetaError as e:
+        handle_error(e, json_output)
+
+
+def _print_hotspots_result(result: dict, limit: int) -> None:
+    """Pretty print hotspots command result."""
+    print()
+    summary = result.get('summary', {})
+    console.print(f"[bold green]Optimization Hotspots[/bold green] (top {limit})")
+    console.print(
+        f"Analyzed: {summary.get('total_tables_analyzed', 0)} tables | "
+        f"Issues: {summary.get('tables_with_issues', 0)} | "
+        f"Size: {summary.get('total_size_gb', 0):.1f} GB"
+    )
+    # Total BigQuery costs (all usage)
+    bq_cost = summary.get('bq_total_cost_7d', 0)
+    bq_slots = summary.get('bq_total_slot_hours_7d', 0)
+    bq_queries = summary.get('bq_total_queries_7d', 0)
+    bq_slots_str = f"{bq_slots:.0f}h" if bq_slots >= 1 else f"{bq_slots * 60:.0f}m"
+    console.print(
+        f"BigQuery (7d): €{bq_cost:.2f} cost | {bq_slots_str} compute | {bq_queries:,} queries"
+    )
+    # DBT runs only
+    dbt_cost = summary.get('dbt_query_cost_7d', 0)
+    dbt_slots = summary.get('dbt_slot_hours_7d', 0)
+    dbt_slots_str = f"{dbt_slots:.0f}h" if dbt_slots >= 1 else f"{dbt_slots * 60:.0f}m"
+    console.print(
+        f"DBT runs (7d): €{dbt_cost:.2f} cost | {dbt_slots_str} compute | "
+        f"Est. billing savings: €{summary.get('total_billing_savings_eur', 0):.2f}/mo"
+    )
+    print()
+
+    hotspots = result.get('hotspots', [])
+    if not hotspots:
+        console.print(f"[{STYLE_DIM}]No optimization opportunities found[/{STYLE_DIM}]")
+        return
+
+    # Create table for hotspots (use wide console to prevent truncation)
+    wide_console = Console(width=200)
+    table = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
+    table.add_column("#", style="bold", width=2)
+    table.add_column("Model", style="cyan")
+    table.add_column("Cost", justify="right")
+    table.add_column("Scan", justify="right")
+    table.add_column("Compute", justify="right")
+    table.add_column("Queries", justify="right")
+    table.add_column("Storage", justify="right")
+    table.add_column("Incr", justify="center")
+    table.add_column("Part", justify="center")
+    table.add_column("Clust", justify="center")
+
+    for i, hs in enumerate(hotspots, 1):
+        # Get triggered criteria for highlighting
+        scoring_details = hs.get('scoring_details', [])
+        triggered = {d.get('criterion') for d in scoring_details}
+
+        # Model name with color based on score
+        score = hs.get('score', 0)
+        model = hs.get('model') or hs.get('table', '')
+        if score >= 500:
+            model_fmt = f"[red]{model}[/red]"
+        elif score >= 200:
+            model_fmt = f"[yellow]{model}[/yellow]"
+        else:
+            model_fmt = model
+
+        # Metrics with bold red if triggered
+        query_cost = hs.get('query_cost_7d', 0)
+        cost_val = f"€{query_cost:.2f}/w"
+        cost_fmt = f"[bold red]{cost_val}[/bold red]" if 'query_cost' in triggered else cost_val
+
+        gb_per_query = hs.get('gb_per_query', 0)
+        scan_val = f"{gb_per_query:.1f} GB" if gb_per_query > 0.1 else "-"
+        scan_bold = 'ineffective_partition' in triggered or 'high_scan' in triggered
+        scan_fmt = f"[bold red]{scan_val}[/bold red]" if scan_bold else scan_val
+
+        query_count = hs.get('query_count_7d', 0)
+        slot_hours = hs.get('slot_hours_7d', 0)
+        mins_per_query = (slot_hours * 60) / query_count if slot_hours > 0 and query_count > 0 else 0
+        compute_val = f"{mins_per_query:.1f} min" if mins_per_query > 0 else "-"
+        compute_fmt = f"[bold red]{compute_val}[/bold red]" if 'high_slot' in triggered else compute_val
+
+        queries_val = f"{query_count}/w" if query_count > 0 else "-"
+
+        total_gb = hs.get('total_gb', 0)
+        storage_val = f"{total_gb:.1f} GB"
+        storage_fmt = f"[bold red]{storage_val}[/bold red]" if 'unused' in triggered else storage_val
+
+        # Config flags
+        incr_fmt = "[bold green]yes[/bold green]" if hs.get('is_incremental') else "[bold red]no[/bold red]"
+        part_fmt = "[bold green]yes[/bold green]" if hs.get('is_partitioned') else "[bold red]no[/bold red]"
+        clust_fmt = "[bold green]yes[/bold green]" if hs.get('is_clustered') else "[bold red]no[/bold red]"
+
+        table.add_row(
+            str(i), model_fmt, cost_fmt, scan_fmt, compute_fmt,
+            queries_val, storage_fmt, incr_fmt, part_fmt, clust_fmt
+        )
+
+    wide_console.print(table)
+    print()
+
+    # Dataset billing recommendations block
+    billing_recs = result.get('dataset_billing_recommendations', [])
+    if billing_recs:
+        console.print(f"[bold cyan]Dataset Billing Recommendations[/bold cyan] (top {len(billing_recs)})")
+        print()
+
+        for i, rec in enumerate(billing_recs, 1):
+            dataset = rec.get('dataset', '')
+            tables_physical = rec.get('tables_recommend_physical', 0)
+            total_tables = rec.get('total_tables', 0)
+            net_savings = rec.get('net_savings_eur', 0)
+            recommended = rec.get('recommended_billing', 'PHYSICAL')
+            console.print(f"[bold]{i}.[/bold] {dataset} ({tables_physical}/{total_tables} tables → {recommended})")
+            console.print(f"   [green]€{net_savings:.2f}/mo net savings[/green]")
+            print()
+
+        console.print(f"[{STYLE_DIM}]⚠ Run: ALTER SCHEMA `dataset` SET OPTIONS(storage_billing_model='..')[/{STYLE_DIM}]")
+
+
+@app.command()
+def branch(
+    model_name: str = typer.Argument(..., help="Model name"),
+    json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+) -> None:
+    """
+    Analyze optimization across model branch
+
+    Examines upstream and downstream models to identify alignment
+    issues between partitioning/clustering configurations.
+
+    Examples:
+        meta branch core_client__events          # Branch analysis
+        meta branch -j core_client__events       # JSON output
+    """
+    try:
+        manifest_path, _ = get_manifest_path(manifest, False)
+        result = commands.branch(manifest_path, model_name, use_dev=False, json_output=json_output)
+
+        if result is None:
+            _not_found_error(model_name, json_output)
+
+        if json_output:
+            print(json.dumps(result, indent=2))
+        else:
+            _print_branch_result(result)
+
+    except DbtMetaError as e:
+        handle_error(e, json_output)
+
+
+def _print_branch_result(result: dict) -> None:
+    """Pretty print branch command result."""
+    print()
+    console.print(f"[bold green]Branch Analysis:[/bold green] {result['root']}")
+
+    root_config = result.get('root_config', {})
+    partition = root_config.get('partition_by') or 'not set'
+    cluster = root_config.get('cluster_by', [])
+    cluster_str = ', '.join(cluster) if cluster else 'not set'
+    console.print(f"  partition_by: {partition} | cluster_by: [{cluster_str}]")
+    print()
+
+    # Upstream
+    upstream = result.get('upstream', [])
+    if upstream:
+        console.print(f"[bold green]Upstream ({len(upstream)} models):[/bold green]")
+        for i, u in enumerate(upstream):
+            is_last = (i == len(upstream) - 1)
+            branch_char = "└── " if is_last else "├── "
+            cont_char = "    " if is_last else "│   "
+
+            impact = u.get('impact', 'N/A')
+            if impact == 'HIGH':
+                impact_color = 'red'
+            elif impact == 'MEDIUM':
+                impact_color = 'yellow'
+            else:
+                impact_color = 'green'
+
+            console.print(f"[{STYLE_DIM}]{branch_char}[/{STYLE_DIM}][{STYLE_COMMAND}]{u.get('model', '')}[/{STYLE_COMMAND}]")
+
+            details = u.get('details', [])
+            for detail in details:
+                if 'aligned' in detail.lower():
+                    console.print(f"[{STYLE_DIM}]{cont_char}[/{STYLE_DIM}][green]✓ {detail}[/green]")
+                else:
+                    console.print(f"[{STYLE_DIM}]{cont_char}[/{STYLE_DIM}][{impact_color}]⚠️ {detail}[/{impact_color}]")
+        print()
+
+    # Downstream
+    downstream = result.get('downstream', [])
+    if downstream:
+        console.print(f"[bold green]Downstream ({len(downstream)} models):[/bold green]")
+        for i, d in enumerate(downstream):
+            is_last = (i == len(downstream) - 1)
+            branch_char = "└── " if is_last else "├── "
+            cont_char = "    " if is_last else "│   "
+
+            alignment = d.get('alignment', 'N/A')
+            if alignment == 'GOOD':
+                align_color = 'green'
+            elif alignment == 'SUBOPTIMAL':
+                align_color = 'yellow'
+            else:
+                align_color = 'red'
+
+            console.print(f"[{STYLE_DIM}]{branch_char}[/{STYLE_DIM}][{STYLE_COMMAND}]{d.get('model', '')}[/{STYLE_COMMAND}]")
+
+            details = d.get('details', [])
+            for detail in details:
+                if 'partition' in detail.lower() or 'cluster' in detail.lower():
+                    if 'not in' in detail.lower():
+                        console.print(f"[{STYLE_DIM}]{cont_char}[/{STYLE_DIM}][{align_color}]⚠️ {detail}[/{align_color}]")
+                    else:
+                        console.print(f"[{STYLE_DIM}]{cont_char}[/{STYLE_DIM}][green]✓ {detail}[/green]")
+                else:
+                    console.print(f"[{STYLE_DIM}]{cont_char}[/{STYLE_DIM}][{STYLE_DIM}]{detail}[/{STYLE_DIM}]")
+        print()
+
+    # Recommendations
+    recommendations = result.get('recommendations', [])
+    if recommendations:
+        console.print("[bold green]Recommendations:[/bold green]")
+        for i, rec in enumerate(recommendations, 1):
+            priority = rec.get('priority', 'MEDIUM')
+            if priority == 'HIGH':
+                color = 'red'
+            elif priority == 'MEDIUM':
+                color = 'yellow'
+            else:
+                color = 'dim'
+
+            model = rec.get('model', '')
+            action = rec.get('action', '')
+            impact = rec.get('impact', '')
+
+            console.print(f"  {i}. [{color}][{priority}][/{color}] {model}: {action}")
+            if impact:
+                console.print(f"     [{STYLE_DIM}]{impact}[/{STYLE_DIM}]")
+    else:
+        console.print(f"[{STYLE_DIM}]No branch optimization recommendations[/{STYLE_DIM}]")
+
+
+@app.command()
+def powerbi(
+    workspace_id: Optional[str] = typer.Argument(None, help="Power BI workspace ID"),
+    json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    measures: bool = typer.Option(False, "--measures", help="Include measures with DAX expressions"),
+    columns: bool = typer.Option(False, "--columns", help="Include column schemas"),
+    full: bool = typer.Option(False, "--full", help="Include all metadata (measures + columns)"),
+    by_table: bool = typer.Option(False, "--by-table", help="Group by tables instead of datasets"),
+) -> None:
+    """
+    Extract BigQuery tables used by Power BI dashboards
+
+    Maps Power BI datasets to BigQuery tables and dbt models.
+    Optionally includes measures (DAX) and column schemas.
+    Requires Power BI Admin API configured in settings.
+
+    Examples:
+        meta powerbi                          # Tables only
+        meta powerbi --measures               # + Measures with DAX
+        meta powerbi --columns                # + Column schemas
+        meta powerbi --full                   # All metadata
+        meta powerbi -j                       # JSON (always full)
+        meta powerbi --by-table               # Group by tables
+    """
+    try:
+        manifest_path, _ = get_manifest_path(manifest, False)
+        result = commands.powerbi(
+            manifest_path,
+            workspace_id=workspace_id,
+            json_output=json_output,
+            show_measures=measures,
+            show_columns=columns,
+            show_full=full,
+            by_table=by_table,
+        )
+
+        if json_output:
+            print(json.dumps(result, indent=2))
+        else:
+            # Route to appropriate print function
+            if result.get('view') == 'by_table':
+                _print_powerbi_by_table(result)
+            else:
+                _print_powerbi_result(result, show_measures=measures or full, show_columns=columns or full)
+
+    except DbtMetaError as e:
+        handle_error(e, json_output)
+
+
+def _print_powerbi_result(result: dict, show_measures: bool = False, show_columns: bool = False) -> None:
+    """Pretty print powerbi command result with optional extended metadata.
+
+    Args:
+        result: Power BI scan result dictionary
+        show_measures: Include measures with DAX expressions
+        show_columns: Include column schemas
+    """
+    print()
+    workspace = result.get('workspace', 'Unknown')
+    summary = result.get('summary', {})
+
+    console.print(f"[bold green]{workspace}[/bold green] ({summary.get('total_datasets', 0)} datasets, "
+                  f"{summary.get('total_reports', 0)} reports, {summary.get('total_tables', 0)} BigQuery tables)")
+    print()
+
+    datasets = result.get('datasets', [])
+    for dataset in datasets:
+        # Dataset header with mode and refresh schedule
+        name = dataset.get('name', '')
+        mode = dataset.get('mode', 'Import')
+        refresh = dataset.get('refresh_schedule')
+
+        console.print(f"[bold cyan]{name}[/bold cyan]")
+
+        # Configured by
+        configured_by = dataset.get('configured_by', '')
+        if configured_by:
+            console.print(f"   [dim]Owner:[/dim] {configured_by}")
+
+        # Mode and refresh schedule
+        if mode == 'DirectQuery':
+            console.print(f"   [dim]Mode:[/dim] [magenta]DirectQuery[/magenta] — real-time queries to BigQuery")
+        else:
+            # Import mode - show type and refresh schedule
+            console.print(f"   [dim]Mode:[/dim] Import — cached data, updated by schedule")
+            if refresh and refresh.get('enabled'):
+                freq = refresh.get('frequency', '')
+                times = refresh.get('times', [])
+                times_str = ', '.join(times) if times else ''
+                if times_str:
+                    console.print(f"   [dim]Refresh:[/dim] [green]{freq}[/green] at {times_str}")
+                else:
+                    console.print(f"   [dim]Refresh:[/dim] [green]{freq}[/green]")
+            elif refresh and not refresh.get('enabled'):
+                console.print(f"   [dim]Refresh:[/dim] [yellow]disabled[/yellow]")
+            else:
+                console.print(f"   [dim]Refresh:[/dim] [yellow]no schedule[/yellow]")
+
+        # Reports using this dataset (group similar reports)
+        reports = dataset.get('reports', [])
+        if reports:
+            # Find pairs: "Name" and "[App] Name"
+            app_reports = {r[6:] for r in reports if r.startswith('[App] ')}
+            shown = set()
+            report_lines = []
+
+            for report in reports:
+                if report in shown:
+                    continue
+
+                base_name = report[6:] if report.startswith('[App] ') else report
+                has_app = base_name in app_reports
+                has_regular = base_name in reports
+
+                if has_app and has_regular and not report.startswith('[App] '):
+                    # Both versions exist - show combined
+                    report_lines.append(f"{base_name} [dim](+ App)[/dim]")
+                    shown.add(base_name)
+                    shown.add(f'[App] {base_name}')
+                elif not report.startswith('[App] ') or base_name not in reports:
+                    # Only one version
+                    report_lines.append(report)
+                    shown.add(report)
+
+            for line in report_lines:
+                console.print(f"   [dim]Report:[/dim] {line}")
+
+        # Tables
+        tables = dataset.get('tables', [])
+        if tables:
+            console.print(f"   [dim]Tables:[/dim]")
+            for table in tables:
+                bq_table = table.get('bigquery_table', '')
+                dbt_model = table.get('dbt_model')
+                in_manifest = table.get('in_manifest', False)
+
+                if in_manifest:
+                    console.print(f"   [green]   {bq_table}[/green] -> {dbt_model}")
+                else:
+                    console.print(f"   [yellow]   {bq_table}[/yellow] [dim](not in manifest)[/dim]")
+
+                # Show measures if requested
+                if show_measures and 'measures' in table:
+                    measures = table['measures']
+                    console.print(f"      [dim]Measures ({len(measures)}):[/dim]")
+                    for measure in measures[:3]:  # Show first 3
+                        name = measure['name']
+                        expr = measure['expression'][:60] + '...' if len(measure['expression']) > 60 else measure['expression']
+                        console.print(f"      [cyan]•[/cyan] {name}: {expr}")
+                    if len(measures) > 3:
+                        console.print(f"      [dim]... and {len(measures) - 3} more[/dim]")
+
+                # Show columns if requested
+                if show_columns and 'columns' in table:
+                    columns = table['columns']
+                    console.print(f"      [dim]Columns ({len(columns)}):[/dim]")
+                    for col in columns[:5]:  # Show first 5
+                        name = col['name']
+                        dtype = col['data_type']
+                        hidden = '[dim](hidden)[/dim]' if col.get('is_hidden') else ''
+                        console.print(f"      [cyan]•[/cyan] {name} ({dtype}) {hidden}")
+                    if len(columns) > 5:
+                        console.print(f"      [dim]... and {len(columns) - 5} more[/dim]")
+
+        print()
+
+    # Summary
+    tables_in = summary.get('tables_in_manifest', 0)
+    tables_total = summary.get('total_tables', 0)
+    pct = (tables_in / tables_total * 100) if tables_total > 0 else 0
+
+    console.print(f"[dim]Summary: {tables_in}/{tables_total} tables in dbt manifest ({pct:.0f}%)[/dim]")
+
+
+def _print_powerbi_by_table(result: dict) -> None:
+    """Pretty print powerbi result in table-centric view.
+
+    Args:
+        result: Power BI scan result with tables aggregation
+    """
+    from rich.table import Table
+
+    print()
+    workspace = result.get('workspace', 'Unknown')
+    summary = result.get('summary', {})
+
+    # Workspace header
+    console.print(
+        f"[bold green]{workspace}[/bold green] "
+        f"({summary.get('total_tables', 0)} BigQuery tables, "
+        f"{summary.get('total_reports', 0)} reports, "
+        f"{summary.get('total_datasets', 0)} datasets)"
+    )
+    print()
+
+    # Create ASCII table
+    table = Table(show_header=True, header_style="bold cyan")
+    table.add_column("BigQuery Table", style="white", no_wrap=False, width=45)
+    table.add_column("Reports", justify="right", style="cyan", width=8)
+    table.add_column("Datasets", justify="right", style="cyan", width=9)
+    table.add_column("dbt Model", style="green", no_wrap=False, width=40)
+
+    # Add rows
+    tables = result.get('tables', [])
+    for table_info in tables:
+        bq_table = table_info['bigquery_table']
+        report_count = table_info['report_count']
+        dataset_count = table_info['dataset_count']
+        dbt_model = table_info['dbt_model'] or '[dim](not in manifest)[/dim]'
+
+        # Color code based on manifest status
+        if table_info['in_manifest']:
+            bq_table_styled = f"[green]{bq_table}[/green]"
+        else:
+            bq_table_styled = f"[yellow]{bq_table}[/yellow]"
+
+        table.add_row(
+            bq_table_styled,
+            str(report_count),
+            str(dataset_count),
+            dbt_model
+        )
+
+    console.print(table)
+    print()
+
+    # Summary
+    tables_in = summary.get('tables_in_manifest', 0)
+    tables_total = summary.get('total_tables', 0)
+    pct = (tables_in / tables_total * 100) if tables_total > 0 else 0
+
+    console.print(f"[dim]Summary: {tables_in}/{tables_total} tables in dbt manifest ({pct:.0f}%)[/dim]")
 
 
 if __name__ == "__main__":

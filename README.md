@@ -17,7 +17,9 @@
 - **🔀 Git-aware** - Find modified models and dependencies needing `--full-refresh`
 - **📋 Smart search** - Find models by name or description
 - **✅ SQL validation** - Validate SQL syntax using BigQuery dry run
-- **💰 Cost estimation** - Estimate query scan size before running
+- **📏 Scan estimation** - Estimate query scan size before running
+- **📊 Optimization analysis** - Find hotspots, analyze models, track branch impact
+- **🔗 Power BI integration** - Extract BigQuery table usage from Power BI dashboards
 - **🎨 Beautiful UI** - Rich terminal formatting with helpful examples
 - **⚡ Combined flags** - Use `-dj`, `-ajd`, `-mf` for faster typing
 
@@ -193,7 +195,21 @@ meta columns -j --manifest ~/path.json m     # → JSON + Custom manifest
 | `children <model>` | Downstream dependencies (`-a` for all descendants) | `meta children -a customers` |
 | `config <model>` | Full dbt config (29 fields: partition_by, cluster_by, etc.) | `meta config -j customers` |
 | `validate <model>` | Validate SQL syntax using BigQuery dry run | `meta validate customers` |
-| `cost <model>` | Estimate query scan size using BigQuery dry run | `meta cost -j customers` |
+| `scan <model>` | Estimate query scan size using BigQuery dry run | `meta scan -j customers` |
+
+### Optimization Commands
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `hotspots` | Find models with highest optimization potential | `meta hotspots -j --limit 20` |
+| `analyze <model>` | Deep optimization analysis of single model | `meta analyze -j customers` |
+| `branch` | Analyze optimization impact of current branch | `meta branch -j` |
+
+### Integration Commands
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `powerbi [workspace_id]` | Extract BigQuery table mappings from Power BI workspace | `meta powerbi --by-table -j` |
 
 ### Settings & Utilities
 
@@ -278,7 +294,7 @@ bq query "SELECT * FROM $TABLE LIMIT 10"
 # → SELECT * FROM personal_USERNAME.customers LIMIT 10
 ```
 
-### Validating SQL and Estimating Cost
+### Validating SQL and Estimating Scan Size
 
 ```bash
 # Validate SQL syntax before running (uses BigQuery dry run)
@@ -289,20 +305,70 @@ meta validate customers
 meta validate broken_model
 # → ❌ Error: Unrecognized name: unknown_column at [3:5]
 
-# Estimate query scan size (cost estimation)
-meta cost customers
+# Estimate query scan size
+meta scan customers
 # → Scan size: 3.2 GB
 
 # JSON output for scripting
-meta cost -j customers | jq -r '.formatted'
+meta scan -j customers | jq -r '.formatted'
 # → 3.2 GB
 
 # Use in CI/CD to prevent expensive queries
-BYTES=$(meta cost -j customers | jq -r '.bytes')
+BYTES=$(meta scan -j customers | jq -r '.bytes')
 if [ "$BYTES" -gt 10000000000 ]; then  # 10 GB limit
   echo "Query too expensive: $BYTES bytes"
   exit 1
 fi
+```
+
+### Optimization Analysis
+
+```bash
+# Find top optimization opportunities
+meta hotspots --limit 10
+# → Shows tables with highest optimization potential (scoring_details included)
+
+# Deep analysis of specific model
+meta analyze customers
+# → Storage metrics, query costs, partition info, recommendations
+
+# Analyze branch impact before merging
+meta branch
+# → Shows optimization impact of current branch changes
+
+# JSON output for AI agents (includes recommendations)
+meta hotspots -j | jq '.hotspots[0].scoring_details'
+# → [{"criterion": "no_partition", "points": 60, "recommendation": "Add partition_by config"}]
+```
+
+### Power BI Integration
+
+```bash
+# Extract table mappings from default workspace (from config)
+meta powerbi
+# → Shows datasets, reports, BigQuery tables, and dbt model mappings
+
+# Table usage view: aggregated by BigQuery table with report/dataset counts
+meta powerbi --by-table
+# → Table | Reports | Datasets | dbt Model
+
+# Specific workspace
+meta powerbi 677db568-5923-4c5b-9b45-f14ec16a2b62
+
+# JSON output for automation
+meta powerbi -j | jq '.datasets[] | {name: .name, tables: .tables | length}'
+
+# Table usage as JSON (includes report/dataset lists per table)
+meta powerbi --by-table -j | jq '.tables[] | select(.in_manifest == false) | .bigquery_table'
+# → BigQuery tables used in Power BI but not tracked in dbt
+
+# Configuration (in ~/.config/dbt-meta/config.toml)
+[powerbi]
+enabled = true
+tenant_id = "your-tenant-id"
+client_id = "your-client-id"
+client_secret = "your-secret"
+workspaces = ["workspace-id-1", "workspace-id-2"]
 ```
 
 ### Search and Discovery

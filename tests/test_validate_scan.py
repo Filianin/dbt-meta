@@ -1,8 +1,8 @@
-"""Tests for validate and cost commands.
+"""Tests for validate and scan commands.
 
 These commands use BigQuery dry run to:
 - validate: Check SQL syntax without executing
-- cost: Estimate query scan size
+- scan: Estimate query scan size
 """
 
 import json
@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from dbt_meta.commands import cost, validate
+from dbt_meta.commands import scan, validate
 
 
 class TestValidateCommand:
@@ -119,10 +119,10 @@ class TestValidateCommand:
         assert 'Cannot validate' in captured.err
 
 
-class TestCostCommand:
-    """Test cost command - query scan size estimation via BigQuery dry run."""
+class TestScanCommand:
+    """Test scan command - query scan size estimation via BigQuery dry run."""
 
-    def test_cost_with_valid_sql(self, tmp_path, monkeypatch):
+    def test_scan_with_valid_sql(self, tmp_path, monkeypatch):
         """Model with valid SQL returns bytes and formatted size."""
         manifest = tmp_path / "manifest.json"
         manifest.write_text(json.dumps({
@@ -141,11 +141,11 @@ class TestCostCommand:
         monkeypatch.setenv('DBT_PROD_MANIFEST_PATH', str(manifest))
 
         with patch('dbt_meta.config.Config.find_config_file', return_value=None), \
-             patch('dbt_meta.command_impl.cost.run_dry_run_query') as mock_dry_run:
+             patch('dbt_meta.command_impl.scan.run_dry_run_query') as mock_dry_run:
             # 3.5 GB
             mock_dry_run.return_value = {'valid': True, 'bytes_processed': 3758096384}
 
-            result = cost(str(manifest), 'my_model', use_dev=False, json_output=False)
+            result = scan(str(manifest), 'my_model', use_dev=False, json_output=False)
 
         assert result is not None
         assert result['bytes'] == 3758096384
@@ -153,7 +153,7 @@ class TestCostCommand:
         assert result['error'] is None
         assert result['model'] == 'my_model'
 
-    def test_cost_with_small_query(self, tmp_path, monkeypatch):
+    def test_scan_with_small_query(self, tmp_path, monkeypatch):
         """Small query returns size in MB."""
         manifest = tmp_path / "manifest.json"
         manifest.write_text(json.dumps({
@@ -172,18 +172,18 @@ class TestCostCommand:
         monkeypatch.setenv('DBT_PROD_MANIFEST_PATH', str(manifest))
 
         with patch('dbt_meta.config.Config.find_config_file', return_value=None), \
-             patch('dbt_meta.command_impl.cost.run_dry_run_query') as mock_dry_run:
+             patch('dbt_meta.command_impl.scan.run_dry_run_query') as mock_dry_run:
             # 150 MB
             mock_dry_run.return_value = {'valid': True, 'bytes_processed': 157286400}
 
-            result = cost(str(manifest), 'small_model', use_dev=False, json_output=False)
+            result = scan(str(manifest), 'small_model', use_dev=False, json_output=False)
 
         assert result is not None
         assert result['bytes'] == 157286400
         assert result['formatted'] == '150.0 MB'
         assert result['error'] is None
 
-    def test_cost_with_invalid_sql(self, tmp_path, monkeypatch):
+    def test_scan_with_invalid_sql(self, tmp_path, monkeypatch):
         """Model with invalid SQL returns error."""
         manifest = tmp_path / "manifest.json"
         manifest.write_text(json.dumps({
@@ -202,20 +202,20 @@ class TestCostCommand:
         monkeypatch.setenv('DBT_PROD_MANIFEST_PATH', str(manifest))
 
         with patch('dbt_meta.config.Config.find_config_file', return_value=None), \
-             patch('dbt_meta.command_impl.cost.run_dry_run_query') as mock_dry_run:
+             patch('dbt_meta.command_impl.scan.run_dry_run_query') as mock_dry_run:
             mock_dry_run.return_value = {
                 'valid': False,
                 'error': 'Table not found'
             }
 
-            result = cost(str(manifest), 'broken_model', use_dev=False, json_output=False)
+            result = scan(str(manifest), 'broken_model', use_dev=False, json_output=False)
 
         assert result is not None
         assert result['bytes'] is None
         assert result['formatted'] is None
         assert result['error'] == 'Table not found'
 
-    def test_cost_without_compiled_sql(self, tmp_path, monkeypatch):
+    def test_scan_without_compiled_sql(self, tmp_path, monkeypatch):
         """Model without compiled_code returns error."""
         manifest = tmp_path / "manifest.json"
         manifest.write_text(json.dumps({
@@ -233,14 +233,14 @@ class TestCostCommand:
         monkeypatch.setenv('DBT_PROD_MANIFEST_PATH', str(manifest))
 
         with patch('dbt_meta.config.Config.find_config_file', return_value=None):
-            result = cost(str(manifest), 'no_sql_model', use_dev=False, json_output=False)
+            result = scan(str(manifest), 'no_sql_model', use_dev=False, json_output=False)
 
         assert result is not None
         assert result['bytes'] is None
         assert result['formatted'] is None
         assert 'No compiled SQL' in result['error']
 
-    def test_cost_model_not_found(self, tmp_path, monkeypatch, capsys):
+    def test_scan_model_not_found(self, tmp_path, monkeypatch, capsys):
         """Non-existent model returns None with error message."""
         manifest = tmp_path / "manifest.json"
         manifest.write_text(json.dumps({"nodes": {}}))
@@ -250,13 +250,13 @@ class TestCostCommand:
         monkeypatch.setenv('DBT_FALLBACK_BIGQUERY', 'false')
 
         with patch('dbt_meta.config.Config.find_config_file', return_value=None):
-            result = cost(str(manifest), 'nonexistent', use_dev=False, json_output=False)
+            result = scan(str(manifest), 'nonexistent', use_dev=False, json_output=False)
 
         assert result is None
         captured = capsys.readouterr()
-        assert 'Cannot estimate cost' in captured.err
+        assert 'Cannot estimate scan' in captured.err
 
-    def test_cost_with_zero_bytes(self, tmp_path, monkeypatch):
+    def test_scan_with_zero_bytes(self, tmp_path, monkeypatch):
         """Query returning 0 bytes (cached or metadata query)."""
         manifest = tmp_path / "manifest.json"
         manifest.write_text(json.dumps({
@@ -275,14 +275,14 @@ class TestCostCommand:
         monkeypatch.setenv('DBT_PROD_MANIFEST_PATH', str(manifest))
 
         with patch('dbt_meta.config.Config.find_config_file', return_value=None), \
-             patch('dbt_meta.command_impl.cost.run_dry_run_query') as mock_dry_run:
+             patch('dbt_meta.command_impl.scan.run_dry_run_query') as mock_dry_run:
             mock_dry_run.return_value = {'valid': True, 'bytes_processed': 0}
 
-            result = cost(str(manifest), 'cached_model', use_dev=False, json_output=False)
+            result = scan(str(manifest), 'cached_model', use_dev=False, json_output=False)
 
         assert result is not None
         assert result['bytes'] == 0
-        # 0 is falsy, so formatted is None (see cost.py:72)
+        # 0 is falsy, so formatted is None (see scan.py:72)
         assert result['formatted'] is None
         assert result['error'] is None
 
@@ -320,6 +320,110 @@ class TestFormatBytes:
 
         # 999.9 MB should still be in MB
         assert format_bytes(1048471142) == '999.9 MB'
+
+
+class TestRunDryRunQuery:
+    """Test run_dry_run_query utility function directly."""
+
+    def test_bq_not_found_fallback(self):
+        """Test fallback when bq not in PATH."""
+        from dbt_meta.utils.bigquery import run_dry_run_query
+
+        with patch('dbt_meta.utils.bigquery.shutil.which', return_value=None), \
+             patch('dbt_meta.utils.bigquery.os.path.isfile', return_value=False), \
+             patch('dbt_meta.utils.bigquery.os.access', return_value=False):
+            result = run_dry_run_query("SELECT 1")
+
+        assert result['valid'] is False
+        assert 'not found' in result['error']
+
+    @patch('shutil.which')
+    @patch('subprocess.run')
+    def test_valid_query_with_bytes(self, mock_run, mock_which):
+        """Test valid query returns bytes processed."""
+        from dbt_meta.utils.bigquery import run_dry_run_query
+
+        mock_which.return_value = '/usr/bin/bq'
+        mock_run.return_value = type('Result', (), {
+            'stdout': 'Query successfully validated. Assuming the tables are not modified, running this query will process upper bound of 12345678 bytes of data.',
+            'stderr': '',
+            'returncode': 0
+        })()
+
+        result = run_dry_run_query("SELECT * FROM table")
+
+        assert result['valid'] is True
+        assert result['bytes_processed'] == 12345678
+        assert result['error'] is None
+
+    @patch('shutil.which')
+    @patch('subprocess.run')
+    def test_invalid_query(self, mock_run, mock_which):
+        """Test invalid query returns error."""
+        from dbt_meta.utils.bigquery import run_dry_run_query
+
+        mock_which.return_value = '/usr/bin/bq'
+        mock_run.return_value = type('Result', (), {
+            'stdout': '',
+            'stderr': 'Error in query string: Syntax error at position 10',
+            'returncode': 1
+        })()
+
+        result = run_dry_run_query("SELECT * FORM table")
+
+        assert result['valid'] is False
+        assert 'Syntax error' in result['error']
+
+    @patch('shutil.which')
+    @patch('subprocess.run')
+    def test_timeout(self, mock_run, mock_which):
+        """Test timeout handling."""
+        import subprocess
+        from dbt_meta.utils.bigquery import run_dry_run_query
+
+        mock_which.return_value = '/usr/bin/bq'
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd='bq', timeout=30)
+
+        result = run_dry_run_query("SELECT 1", timeout=30)
+
+        assert result['valid'] is False
+        assert 'timed out' in result['error']
+
+    @patch('shutil.which')
+    @patch('subprocess.run')
+    def test_valid_query_no_bytes_match(self, mock_run, mock_which):
+        """Test valid query without bytes in output."""
+        from dbt_meta.utils.bigquery import run_dry_run_query
+
+        mock_which.return_value = '/usr/bin/bq'
+        mock_run.return_value = type('Result', (), {
+            'stdout': 'Query successfully validated.',
+            'stderr': '',
+            'returncode': 0
+        })()
+
+        result = run_dry_run_query("SELECT 1")
+
+        assert result['valid'] is True
+        assert result['bytes_processed'] is None
+
+    @patch('shutil.which')
+    @patch('subprocess.run')
+    def test_error_in_stdout(self, mock_run, mock_which):
+        """Test error message in stdout is captured."""
+        from dbt_meta.utils.bigquery import run_dry_run_query
+
+        mock_which.return_value = '/usr/bin/bq'
+        mock_run.return_value = type('Result', (), {
+            'stdout': 'Error in query string: Table not found',
+            'stderr': '',
+            'returncode': 1
+        })()
+
+        result = run_dry_run_query("SELECT * FROM missing")
+
+        assert result['valid'] is False
+        assert 'Table not found' in result['error']
 
 
 if __name__ == '__main__':
