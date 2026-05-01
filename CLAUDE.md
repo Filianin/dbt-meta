@@ -10,6 +10,69 @@
 - Production-first: Automatically prioritizes production manifest
 - Fallback-enabled: BigQuery fallback when models missing from manifest
 
+## Command Inventory
+
+Complete list of commands, implemented in `cli.py` and routed to `command_impl/*` (or `commands.py` wrappers). All commands accept `-h/--help`; almost all accept `-j/--json`. Global `--manifest PATH` and `-d/--dev` are available on commands that read manifest data.
+
+**Core metadata** (require model name, support `-j`, `-d`):
+- `info <model>` — name, database, schema, table, full_name, materialized, file, tags
+- `schema <model>` — single full table name (e.g. `project.schema.table`)
+- `columns <model>` — column names + data types (catalog → BigQuery fallback)
+- `config <model>` — full dbt config dict
+- `sql <model>` — compiled SQL; `--jinja` returns raw SQL
+- `path <model>` — relative `.sql` file path
+- `docs <model>` — column names + types + descriptions
+- `deps <model>` — `{refs, sources, macros}`
+
+**Lineage** (require model name, support `-j`, `-d`, `-a/--all`):
+- `parents <model>` — direct parents; `-a` for all ancestors (tree/nested JSON ≤20 nodes)
+- `children <model>` — direct children; `-a` for all descendants
+
+**Discovery** (no model name required):
+- `list [selectors…]` — filter by selectors (`tag:`, `config.key:value`, `path:dir/`, `package:name`)
+  - Flags: `-j`, `-d`, `-m/--modified`, `-f/--full-refresh`, `-a/--all` (tree view, only with `-f`), `--and`, `--group`
+  - Default output: space-separated model names (copy/paste-friendly)
+  - `--group`: grouped by tag combinations with headers
+- `models [pattern]` — simple substring search; `-j`
+- `search <query>` — search by name or description; `-j`
+
+**SQL validation** (BigQuery dry run; support `-j`, `-d`):
+- `validate <model>` — syntax check (✅ Valid / ❌ Error, exit 1)
+- `scan <model>` — scan size estimate (🟢 <1GB, 🟡 1–10GB, 🔴 ≥10GB)
+
+**Optimization** (require `dbt_bigquery_monitoring`; support `-j`):
+- `hotspots` — ranked optimization candidates
+  - `-n/--limit N` (default: 10)
+  - `--min-gb GB` (default: 1.0)
+- `analyze <model>` — deep single-model analysis
+- `branch <model>` — upstream/downstream partitioning/clustering alignment
+
+**Integration** (support `-j`):
+- `powerbi [workspace_id]` — Power BI datasets → BigQuery tables → dbt models
+  - `--measures` — include DAX measure expressions
+  - `--columns` — include column schemas
+  - `--full` — include all metadata (measures + columns)
+  - `--by-table` — aggregated view grouped by BigQuery table
+
+**Artifacts:**
+- `refresh` — sync `~/dbt-state/` from remote storage (always `--force`)
+- `refresh --dev` — run `dbt parse --target dev` to populate `./target/manifest.json`
+
+**Settings** (subcommands under `meta settings`):
+- `settings init [-f/--force]` — create `~/.config/dbt-meta/config.toml` from template
+- `settings show [-j]` — display merged configuration (TOML + env)
+- `settings validate` — validate active config file
+- `settings path` — print path to active config file
+
+**Global flags** (main app):
+- `-v/--version` — print version and exit
+- `-h/--help` — show help panels
+- `--manifest PATH` — explicit manifest path (takes precedence over `-d/--dev`; no short form)
+- `-d/--dev` — use dev manifest and dev schema (`personal_USERNAME`)
+- `-j/--json` — JSON output (available on virtually every command)
+
+**Combined short flags** work in any order: `-dj`, `-adj`, `-mf`, `-fa`, etc.
+
 ## Development Setup
 
 ```bash
@@ -38,17 +101,34 @@ mypy src/dbt_meta && ruff check src/dbt_meta
 
 ```
 src/dbt_meta/
-├── cli.py                # Typer CLI + Rich formatting
-├── commands.py           # Command implementations + BigQuery fallback
-├── errors.py             # Exception hierarchy
-├── config.py             # Configuration management
-├── fallback.py           # 3-level fallback strategy
-├── utils/                # Utility modules
-│   ├── __init__.py       # Parser caching, warnings
-│   └── git.py            # Git operations
-└── manifest/
-    ├── parser.py         # Fast manifest parsing (orjson + caching)
-    └── finder.py         # 4-level manifest discovery
+├── cli.py                 # Typer CLI + Rich formatting (help panels, command wiring)
+├── commands.py            # Thin command wrappers + BigQuery fallback helpers
+├── errors.py              # Exception hierarchy (DbtMetaError + subclasses)
+├── config.py              # Config (TOML + env, XDG), with Power BI section
+├── fallback.py            # 3-level fallback strategy (prod → dev → BigQuery)
+├── command_impl/          # Per-command implementations
+│   ├── base.py            # Shared command orchestration (state detection, fallback)
+│   ├── info.py, schema.py, columns.py, config.py, deps.py, sql.py, path.py
+│   ├── parents.py, children.py, lineage_utils.py
+│   ├── validate.py, scan.py
+│   ├── analyze.py, hotspots.py, branch.py
+│   └── powerbi.py
+├── manifest/
+│   ├── parser.py          # Fast manifest parsing (orjson + caching)
+│   └── finder.py          # Manifest discovery (prod > dev > explicit)
+├── catalog/
+│   └── parser.py          # catalog.json parser (fast column lookup, mtime-based staleness)
+├── utils/
+│   ├── __init__.py        # Parser caching, warnings
+│   ├── bigquery.py        # `bq` CLI wrapper, dry run, retry, path discovery
+│   ├── compiled_sql.py    # 3-level compiled SQL lookup (manifest → disk → dbt compile)
+│   ├── monitoring.py      # dbt_bigquery_monitoring queries
+│   ├── powerbi.py         # Power BI Admin API client (OAuth via curl)
+│   ├── git.py             # Git state detection (modified/new/deleted)
+│   ├── dev.py             # Dev schema resolution
+│   └── model_state.py     # Model state classification
+└── templates/
+    └── dbt-meta.toml      # Config template used by `settings init`
 ```
 
 ### Key Patterns
@@ -407,7 +487,22 @@ Location: `fallback.py:18-198`
 
 ## SQL Validation and Cost Estimation
 
-Two commands use BigQuery dry run (`bq query --dry_run`) for SQL analysis:
+Two commands use BigQuery dry run (`bq query --dry_run`) for SQL analysis. Both share the same compiled-SQL fallback strategy via `utils/compiled_sql.py:get_compiled_sql()`:
+
+1. **Manifest** — `model['compiled_code']` (populated by `dbt compile`/`dbt run`/`defer run`)
+2. **Disk** — `{project_root}/target/compiled/{package_name}/{original_file_path}` (works when user ran `dbt compile` separately from `meta refresh --dev`)
+3. **Auto-compile** (only when `--dev`) — runs `dbt compile --select <model> --target dev` (cwd = project root, 180s timeout), then re-reads from disk
+
+Project root is found by walking up from the manifest path looking for `dbt_project.yml`. Package name is extracted from `model['package_name']` or parsed from `unique_id` (`model.<pkg>.<name>`).
+
+**Failure modes** (each returns a clear actionable error):
+- `dbt` not on PATH → `"dbt CLI not found in PATH"`
+- Compilation fails → captured stderr + suggestion to run manually
+- Compile timeout (180s default)
+- No `dbt_project.yml` found → suggests running from project directory
+- Without `--dev`, no fallback is run → suggests `meta validate --dev <model>` for local changes
+
+**Location:** `utils/compiled_sql.py`, `command_impl/validate.py:55-66`, `command_impl/scan.py:56-67`
 
 ### `meta validate` - Validate SQL syntax
 
@@ -452,6 +547,7 @@ meta scan -j model_name           # JSON output
 
 **Implementation:**
 - `utils/bigquery.py`: `run_dry_run_query()`, `format_bytes()`
+- `utils/compiled_sql.py`: `get_compiled_sql()` — 3-level fallback (manifest → disk → dbt compile)
 - `command_impl/validate.py`: ValidateCommand
 - `command_impl/scan.py`: ScanCommand
 
@@ -594,16 +690,28 @@ export POWERBI_WORKSPACES=workspace1-id,workspace2-id
 ### `meta powerbi` - Extract Power BI table mappings
 
 ```bash
-meta powerbi                      # Use default workspace from config
+meta powerbi                      # Default: datasets → tables (from config workspace)
 meta powerbi <workspace_id>       # Specific workspace
-meta powerbi -j                   # JSON output
-meta powerbi --by-table           # Group by tables (usage view)
+meta powerbi -j                   # JSON output (always full metadata)
+meta powerbi --by-table           # Group by BigQuery tables (usage view)
 meta powerbi --by-table -j        # Table usage as JSON
+
+# Extended metadata flags
+meta powerbi --measures           # Include DAX measure expressions (first 3 shown in text)
+meta powerbi --columns            # Include column schemas (name, data_type, is_hidden)
+meta powerbi --full               # Include both measures and columns
+meta powerbi --full -j            # All metadata as JSON
 ```
 
 **Default view:** Dataset -> Reports -> Tables hierarchy
 
 **Table usage view (`--by-table`):** Aggregates table usage across all datasets/reports
+
+**Metadata flags:**
+- `--measures` — DAX expressions (parsed via `parse_dax_references()` for cross-table deps)
+- `--columns` — column schemas with data type and visibility
+- `--full` — both measures + columns combined
+- With `-j`, all metadata is always returned in the JSON output regardless of these flags
 
 **Text output (default):**
 ```
@@ -880,6 +988,7 @@ Add to `_build_commands_panel()` if needed.
 | BigQuery fallback | `commands.py:399-446` |
 | BigQuery schema resolution | `command_impl/columns.py:92-94, 160-167, 200-221` |
 | BigQuery dry run | `utils/bigquery.py:311-398` |
+| Compiled SQL fallback (3-level) | `utils/compiled_sql.py:get_compiled_sql()` |
 | SQL validation | `command_impl/validate.py` |
 | Scan estimation | `command_impl/scan.py` |
 | Optimization hotspots | `command_impl/hotspots.py` |

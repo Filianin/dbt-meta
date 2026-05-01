@@ -31,28 +31,28 @@ class HotspotsCommand:
     1. query_cost: €0.01/week = 1pt (direct spend)
        Max ~600pts for €6/week
 
-    2. high_scan: bytes_per_query × log2(frequency)
+    2. high_scan: bytes_per_query * log2(frequency)
        >10GB/q = 20 base, >1GB = 10, >100MB = 3
        Max 100pts
 
-    3. high_slot: slot_sec_per_query × log2(frequency)
+    3. high_slot: slot_sec_per_query * log2(frequency)
        >10min/q = 15 base, >2min = 8, >30sec = 3
        Max 75pts
 
-    4. no_partition: table_size × log2(frequency)
+    4. no_partition: table_size * log2(frequency)
        >100GB = 15 base, >10GB = 8, >1GB = 3
        Max 75pts (only for optimizable tables)
 
-    5. no_clustering: table_size × log2(frequency)
+    5. no_clustering: table_size * log2(frequency)
        >100GB = 10 base, >10GB = 5, >1GB = 2
        Max 50pts (only for optimizable tables)
 
-    6. low_cache: wasted_cost × 100 (if cache_hit < 30%)
-       wasted = cost_7d × (70% - cache_hit%)
+    6. low_cache: wasted_cost * 100 (if cache_hit < 30%)
+       wasted = cost_7d * (70% - cache_hit%)
        Max ~200pts
 
-    7. unused: monthly_storage_cost × 100 (if >30 days unused)
-       storage = total_gb × €0.02
+    7. unused: monthly_storage_cost * 100 (if >30 days unused)
+       storage = total_gb * EUR 0.02
        Max 200pts
 
     Returns scoring_details with recommendations for each triggered criterion.
@@ -396,7 +396,6 @@ class HotspotsCommand:
         query_count = query_cost.get('query_count', 0)
         total_slot_ms = query_cost.get('total_slot_ms', 0)
         bytes_processed = query_cost.get('bytes_processed', 0)
-        cache_hit_ratio = query_cost.get('cache_hit_ratio', 1.0)
 
         # Calculate per-query metrics
         gb_per_query = (bytes_processed / query_count / 1e9) if query_count > 0 else 0
@@ -484,7 +483,7 @@ class HotspotsCommand:
                 scoring_details.append({
                     'criterion': 'high_slot',
                     'points': pts,
-                    'value': f"{slot_min:.1f}min/query × {query_count}/week",
+                    'value': f"{slot_min:.1f}min/query x{query_count}/week",
                     'recommendation': 'High compute — optimize SQL complexity',
                 })
 
@@ -504,7 +503,7 @@ class HotspotsCommand:
                 scoring_details.append({
                     'criterion': 'no_partition',
                     'points': pts,
-                    'value': f"{total_gb:.0f}GB × {query_count}/week",
+                    'value': f"{total_gb:.0f}GB x{query_count}/week",
                     'recommendation': 'Add partition_by config',
                 })
 
@@ -524,7 +523,7 @@ class HotspotsCommand:
                 scoring_details.append({
                     'criterion': 'no_clustering',
                     'points': pts,
-                    'value': f"{total_gb:.0f}GB × {query_count}/week",
+                    'value': f"{total_gb:.0f}GB x{query_count}/week",
                     'recommendation': 'Add cluster_by config',
                 })
 

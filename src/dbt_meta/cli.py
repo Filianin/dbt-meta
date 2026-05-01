@@ -9,7 +9,7 @@ Provides dbt-meta CLI with:
 """
 
 import json
-from typing import Any, Callable, Optional
+from typing import Any, Callable, NoReturn, Optional
 
 import typer
 from rich import print as rprint
@@ -50,7 +50,7 @@ STYLE_DIM = "dim"
 STYLE_GREEN = "green"
 
 
-def handle_error(error: DbtMetaError, json_output: bool = False) -> None:
+def handle_error(error: DbtMetaError, json_output: bool = False) -> NoReturn:
     """Display formatted error message with suggestion and exit.
 
     When json_output=True, emits {"error": "..."} to stdout for machine consumption.
@@ -68,7 +68,7 @@ def handle_error(error: DbtMetaError, json_output: bool = False) -> None:
     raise typer.Exit(code=1)
 
 
-def _not_found_error(model_name: str, json_output: bool) -> None:
+def _not_found_error(model_name: str, json_output: bool) -> NoReturn:
     """Emit 'model not found' error and exit, respecting json_output mode."""
     if json_output:
         print(json.dumps({"error": f"Model '{model_name}' not found"}))
@@ -138,19 +138,19 @@ def _build_commands_panel() -> Panel:
 
     # Optimization & Analysis (yellow)
     table.add_row("[bold yellow]Optimization:[/bold yellow]", "")
-    table.add_row("  [yellow]hotspots[/yellow]", "Find optimization opportunities (query cost, partitioning)")
+    table.add_row("  [yellow]hotspots[/yellow]", "Find optimization opportunities (-n LIMIT, --min-gb GB)")
     table.add_row("  [yellow]analyze[/yellow]", "Deep analysis of single model")
     table.add_row("  [yellow]branch[/yellow]", "Branch-level optimization impact")
     table.add_row("", "")
 
     # Integration (blue)
     table.add_row("[bold blue]Integration:[/bold blue]", "")
-    table.add_row("  [blue]powerbi[/blue]", "Extract Power BI table mappings from workspace")
+    table.add_row("  [blue]powerbi[/blue]", "Power BI table mappings (--measures, --columns, --full, --by-table)")
     table.add_row("", "")
 
     # Settings management (magenta)
     table.add_row("[bold magenta]Settings:[/bold magenta]", "")
-    table.add_row("  [magenta]settings init[/magenta]", "Create config file from template")
+    table.add_row("  [magenta]settings init[/magenta]", "Create config file from template (-f to overwrite)")
     table.add_row("  [magenta]settings show[/magenta]", "Display current configuration")
     table.add_row("  [magenta]settings validate[/magenta]", "Validate config file")
     table.add_row("  [magenta]settings path[/magenta]", "Show path to active config file")
@@ -173,13 +173,30 @@ def _build_flags_panel() -> Panel:
     table.add_row("[bold cyan]Output flags:[/bold cyan]", "")
     table.add_row("[green]-j, --json[/green]", "Output as JSON (AI-friendly structured data)")
     table.add_row("", "")
-    table.add_row("[bold cyan]Specific flags:[/bold cyan]", "")
-    table.add_row("-a, --all", "Recursive mode (parents/children commands)")
+    table.add_row("[bold cyan]Lineage flags:[/bold cyan]", "")
+    table.add_row("-a, --all", "Recursive mode (parents, children); tree view (list -f -a)")
+    table.add_row("", "")
+    table.add_row("[bold cyan]SQL flags:[/bold cyan]", "")
     table.add_row("--jinja", "Show raw SQL with Jinja (sql command)")
-    table.add_row("--and", "AND logic for selectors (list command)")
-    table.add_row("--group", "Group by tag combinations (list command)")
-    table.add_row("-m, --modified", "Show git-modified models (list command)")
-    table.add_row("-f, --full-refresh", "Show models for --full-refresh (list command)")
+    table.add_row("", "")
+    table.add_row("[bold cyan]list flags:[/bold cyan]", "")
+    table.add_row("--and", "Require ALL selectors (default: OR)")
+    table.add_row("--group", "Group by tag combinations")
+    table.add_row("-m, --modified", "Show only git-modified/new models")
+    table.add_row("-f, --full-refresh", "Show models needing --full-refresh (+downstream+intermediate)")
+    table.add_row("", "")
+    table.add_row("[bold cyan]hotspots flags:[/bold cyan]", "")
+    table.add_row("-n, --limit N", "Number of hotspots to show (default: 10)")
+    table.add_row("--min-gb GB", "Minimum table size in GB (default: 1.0)")
+    table.add_row("", "")
+    table.add_row("[bold cyan]powerbi flags:[/bold cyan]", "")
+    table.add_row("--measures", "Include DAX measure expressions")
+    table.add_row("--columns", "Include column schemas")
+    table.add_row("--full", "Include all metadata (measures + columns)")
+    table.add_row("--by-table", "Group by BigQuery tables instead of datasets")
+    table.add_row("", "")
+    table.add_row("[bold cyan]settings init flags:[/bold cyan]", "")
+    table.add_row("-f, --force", "Overwrite existing config file")
 
     return Panel(table, title="[bold white]🚩 Flags[/bold white]", title_align="left", border_style="white", padding=(0, 1))
 
@@ -190,30 +207,65 @@ def _build_examples_panel() -> Panel:
     table.add_column(style=STYLE_COMMAND, no_wrap=True, width=45)
     table.add_column(style=STYLE_DESCRIPTION)
 
-    table.add_row("[bold]Basic Usage:[/bold]", "")
+    table.add_row("[bold]Basic metadata:[/bold]", "")
     table.add_row("  meta schema customers", "my_project.analytics.customers")
     table.add_row("  meta path customers", "models/analytics/customers.sql")
     table.add_row("  meta columns -j orders", "Get columns as JSON")
+    table.add_row("  meta docs customers", "Columns with descriptions")
+    table.add_row("  meta config -j customers", "Full dbt config")
     table.add_row("  meta sql customers", "View compiled SQL")
+    table.add_row("  meta sql --jinja customers", "Raw SQL with Jinja")
     table.add_row('  meta search "customer"', "Search by name/description")
     table.add_row("", "")
-    table.add_row("[bold]Dev Workflow (with defer):[/bold]", "")
+    table.add_row("[bold]Lineage:[/bold]", "")
+    table.add_row("  meta parents customers", "Direct upstream dependencies")
+    table.add_row("  meta parents -a customers", "All ancestors (tree view)")
+    table.add_row("  meta children -a -j customers", "All descendants as nested JSON")
+    table.add_row("  meta deps -j customers", "Refs + sources + macros")
+    table.add_row("", "")
+    table.add_row("[bold]Dev workflow (with defer):[/bold]", "")
     table.add_row("  defer run --select customers", "Build dev table first")
     table.add_row("  meta schema --dev customers", "personal_USERNAME.customers")
     table.add_row("  meta columns --dev -j customers", "Get dev table columns")
+    table.add_row("  meta refresh", "Sync prod artifacts from remote storage")
+    table.add_row("  meta refresh --dev", "Parse local project (dbt parse)")
     table.add_row("", "")
-    table.add_row("[bold]Model filtering (list):[/bold]", "")
+    table.add_row("[bold]Filtering (list):[/bold]", "")
     table.add_row("  meta list tag:daily", "Models with daily tag")
-    table.add_row("  meta list path:models/core/ tag:daily --and", "Core models with daily tag")
+    table.add_row("  meta list tag:a tag:b --and", "Models with BOTH tags")
+    table.add_row("  meta list path:models/core/", "Models under path")
+    table.add_row("  meta list config.materialized:incremental", "Incremental models")
     table.add_row("  meta list -m", "Git-modified models")
+    table.add_row("  meta list -f", "Models needing --full-refresh")
+    table.add_row("  meta list -f -a", "Tree view: modified → downstream")
+    table.add_row("  meta list tag:daily --group", "Group by tag combinations")
+    table.add_row("", "")
+    table.add_row("[bold]SQL validation:[/bold]", "")
+    table.add_row("  meta validate customers", "Check SQL syntax (BigQuery dry run)")
+    table.add_row("  meta scan customers", "Estimate scan size (MB/GB)")
+    table.add_row("  meta scan --dev -j customers", "Dev SQL scan size as JSON")
+    table.add_row("", "")
+    table.add_row("[bold]Optimization:[/bold]", "")
+    table.add_row("  meta hotspots", "Top 10 optimization candidates")
+    table.add_row("  meta hotspots -n 20 --min-gb 10", "Top 20, tables >10 GB")
+    table.add_row("  meta analyze customers", "Deep analysis of one model")
+    table.add_row("  meta branch customers", "Upstream/downstream alignment")
+    table.add_row("", "")
+    table.add_row("[bold]Power BI integration:[/bold]", "")
+    table.add_row("  meta powerbi", "Datasets → tables hierarchy")
+    table.add_row("  meta powerbi --by-table", "Aggregated by BigQuery table")
+    table.add_row("  meta powerbi --full -j", "All metadata (measures + columns)")
     table.add_row("", "")
     table.add_row("[bold]Combined flags:[/bold]", "")
     table.add_row("  meta schema -dj customers", "Dev + JSON output")
+    table.add_row("  meta parents -adj customers", "All + JSON + Dev")
     table.add_row("", "")
     table.add_row("[bold]Configuration:[/bold]", "")
     table.add_row("  meta settings init", "Create config file")
+    table.add_row("  meta settings init --force", "Overwrite existing config")
     table.add_row("  meta settings show -j", "View current settings as JSON")
-    table.add_row("  meta -m ~/custom.json list", "Use custom manifest")
+    table.add_row("  meta settings validate", "Check config file")
+    table.add_row("  meta --manifest ~/custom.json list", "Use custom manifest")
 
     return Panel(table, title="[bold white]💡 Examples[/bold white]", title_align="left", border_style="white", padding=(0, 1))
 
@@ -257,8 +309,21 @@ def _build_configuration_panel() -> Panel:
     table.add_row("[bold cyan]Environment Variables (alternative to TOML):[/bold cyan]")
     table.add_row("  [cyan]DBT_PROD_MANIFEST_PATH[/cyan]  → Production manifest path")
     table.add_row("  [cyan]DBT_DEV_MANIFEST_PATH[/cyan]   → Dev manifest path")
+    table.add_row("  [cyan]DBT_PROD_CATALOG_PATH[/cyan]   → Production catalog.json path")
+    table.add_row("  [cyan]DBT_DEV_CATALOG_PATH[/cyan]    → Dev catalog.json path")
     table.add_row("  [cyan]DBT_DEV_SCHEMA[/cyan]          → Dev schema override")
     table.add_row("  [cyan]DBT_FALLBACK_TARGET[/cyan]     → Enable dev manifest fallback")
+    table.add_row("  [cyan]DBT_FALLBACK_BIGQUERY[/cyan]   → Enable BigQuery fallback")
+    table.add_row("  [cyan]DBT_FALLBACK_CATALOG[/cyan]    → Enable catalog fallback (columns)")
+    table.add_row("")
+
+    # Power BI (optional)
+    table.add_row("[bold cyan]Power BI (optional, for `meta powerbi`):[/bold cyan]")
+    table.add_row("  [cyan]POWERBI_ENABLED[/cyan]         → Enable integration (default: false)")
+    table.add_row("  [cyan]POWERBI_TENANT_ID[/cyan]       → Azure AD tenant ID")
+    table.add_row("  [cyan]POWERBI_CLIENT_ID[/cyan]       → App registration client ID")
+    table.add_row("  [cyan]POWERBI_CLIENT_SECRET[/cyan]   → App registration client secret")
+    table.add_row("  [cyan]POWERBI_WORKSPACES[/cyan]      → Comma-separated workspace IDs")
     table.add_row("")
 
     # Priority System
@@ -1043,7 +1108,7 @@ def search(
 
 @app.command("list")
 def list_cmd(
-    selectors: Optional[list[str]] = typer.Argument(None, help="Selectors: tag:name config.key:val path:dir package:name"),
+    selectors: Optional[list[str]] = typer.Argument(None, help="Selectors: tag:name config.key:val path:dir package:name"),  # noqa: B008
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     modified: bool = typer.Option(False, "-m", "--modified", help="Show only modified/new models (git-aware)"),
     full_refresh: bool = typer.Option(False, "-f", "--full-refresh", help="Show models requiring --full-refresh"),
@@ -1771,10 +1836,10 @@ def _print_powerbi_result(result: dict, show_measures: bool = False, show_column
 
         # Mode and refresh schedule
         if mode == 'DirectQuery':
-            console.print(f"   [dim]Mode:[/dim] [magenta]DirectQuery[/magenta] — real-time queries to BigQuery")
+            console.print("   [dim]Mode:[/dim] [magenta]DirectQuery[/magenta] — real-time queries to BigQuery")
         else:
             # Import mode - show type and refresh schedule
-            console.print(f"   [dim]Mode:[/dim] Import — cached data, updated by schedule")
+            console.print("   [dim]Mode:[/dim] Import — cached data, updated by schedule")
             if refresh and refresh.get('enabled'):
                 freq = refresh.get('frequency', '')
                 times = refresh.get('times', [])
@@ -1784,9 +1849,9 @@ def _print_powerbi_result(result: dict, show_measures: bool = False, show_column
                 else:
                     console.print(f"   [dim]Refresh:[/dim] [green]{freq}[/green]")
             elif refresh and not refresh.get('enabled'):
-                console.print(f"   [dim]Refresh:[/dim] [yellow]disabled[/yellow]")
+                console.print("   [dim]Refresh:[/dim] [yellow]disabled[/yellow]")
             else:
-                console.print(f"   [dim]Refresh:[/dim] [yellow]no schedule[/yellow]")
+                console.print("   [dim]Refresh:[/dim] [yellow]no schedule[/yellow]")
 
         # Reports using this dataset (group similar reports)
         reports = dataset.get('reports', [])
@@ -1820,7 +1885,7 @@ def _print_powerbi_result(result: dict, show_measures: bool = False, show_column
         # Tables
         tables = dataset.get('tables', [])
         if tables:
-            console.print(f"   [dim]Tables:[/dim]")
+            console.print("   [dim]Tables:[/dim]")
             for table in tables:
                 bq_table = table.get('bigquery_table', '')
                 dbt_model = table.get('dbt_model')

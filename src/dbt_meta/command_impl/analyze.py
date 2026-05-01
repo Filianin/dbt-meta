@@ -4,7 +4,7 @@ Provides deep analysis of model partitioning/clustering effectiveness
 by combining manifest metadata with BigQuery monitoring data.
 """
 
-from typing import Any, Optional
+from typing import Optional
 
 from dbt_meta.command_impl.base import BaseCommand
 from dbt_meta.config import Config
@@ -233,7 +233,6 @@ class AnalyzeCommand(BaseCommand):
         # 4. Config mismatch with actual BigQuery config
         if bq_columns:
             bq_partition = bq_columns.get('partition_column', {})
-            bq_clusters = bq_columns.get('cluster_columns', [])
 
             # Check if manifest partition differs from BigQuery
             if partition_by and bq_partition:

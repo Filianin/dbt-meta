@@ -9,7 +9,7 @@ import re
 import shutil
 import subprocess
 import time
-from typing import Any, Optional
+from typing import Optional
 
 
 def get_powerbi_token(

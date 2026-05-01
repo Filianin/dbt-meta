@@ -80,12 +80,11 @@ class PowerBiCommand:
                 suggestion="Set powerbi.enabled = true in config or POWERBI_ENABLED=true"
             )
 
-        # Validate credentials
-        if not all([
-            self.config.powerbi_tenant_id,
-            self.config.powerbi_client_id,
-            self.config.powerbi_client_secret,
-        ]):
+        # Validate credentials (capture into locals so the type narrows from Optional[str] to str)
+        tenant_id = self.config.powerbi_tenant_id
+        client_id = self.config.powerbi_client_id
+        client_secret = self.config.powerbi_client_secret
+        if not (tenant_id and client_id and client_secret):
             raise DbtMetaError(
                 "Power BI credentials not configured",
                 suggestion="Set powerbi.tenant_id, client_id, client_secret in config"
@@ -96,9 +95,9 @@ class PowerBiCommand:
 
         # Get OAuth token
         token = get_powerbi_token(
-            tenant_id=self.config.powerbi_tenant_id,
-            client_id=self.config.powerbi_client_id,
-            client_secret=self.config.powerbi_client_secret,
+            tenant_id=tenant_id,
+            client_id=client_id,
+            client_secret=client_secret,
         )
 
         if not token:

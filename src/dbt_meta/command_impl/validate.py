@@ -6,6 +6,7 @@ from typing import Optional
 from dbt_meta.command_impl.base import BaseCommand
 from dbt_meta.fallback import FallbackLevel
 from dbt_meta.utils.bigquery import run_dry_run_query
+from dbt_meta.utils.compiled_sql import get_compiled_sql
 
 
 class ValidateCommand(BaseCommand):
@@ -20,7 +21,7 @@ class ValidateCommand(BaseCommand):
         - error: Error message if invalid (None if valid)
 
     Behavior:
-        - Fetches compiled SQL from manifest
+        - Fetches compiled SQL (manifest → target/compiled → dbt compile)
         - Validates against BigQuery (checks syntax, table/column existence)
         - Does NOT execute the query
     """
@@ -52,12 +53,17 @@ class ValidateCommand(BaseCommand):
         Returns:
             Validation result dict
         """
-        sql = model.get('compiled_code', '')
-        if not sql:
+        sql, error = get_compiled_sql(
+            model=model,
+            model_name=self.model_name,
+            manifest_path=self.manifest_path,
+            use_dev=self.use_dev,
+        )
+        if sql is None:
             return {
                 'model': self.model_name,
                 'valid': False,
-                'error': 'No compiled SQL found in manifest'
+                'error': error or 'No compiled SQL available',
             }
 
         result = run_dry_run_query(sql)

@@ -5,22 +5,24 @@ Provides high-level commands for extracting metadata from dbt manifest.
 Each command returns formatted data matching bash version output.
 """
 
+from __future__ import annotations
+
 import subprocess
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from dbt_meta.command_impl.analyze import AnalyzeCommand
 from dbt_meta.command_impl.branch import BranchCommand
 from dbt_meta.command_impl.children import ChildrenCommand
 from dbt_meta.command_impl.columns import ColumnsCommand
 from dbt_meta.command_impl.config import ConfigCommand
-from dbt_meta.command_impl.scan import ScanCommand
 from dbt_meta.command_impl.deps import DepsCommand
 from dbt_meta.command_impl.hotspots import HotspotsCommand
 from dbt_meta.command_impl.info import InfoCommand
 from dbt_meta.command_impl.parents import ParentsCommand
 from dbt_meta.command_impl.path import PathCommand
 from dbt_meta.command_impl.powerbi import PowerBiCommand
+from dbt_meta.command_impl.scan import ScanCommand
 from dbt_meta.command_impl.schema import SchemaCommand
 from dbt_meta.command_impl.sql import SqlCommand
 from dbt_meta.command_impl.validate import ValidateCommand
@@ -38,7 +40,7 @@ from dbt_meta.utils.git import check_manifest_git_mismatch as _check_manifest_gi
 # Dev and BigQuery utility functions are now imported from utils.dev and utils.bigquery
 
 
-def info(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[dict[str, Any]]:
+def info(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> dict[str, Any] | None:
     """
     Extract basic model information
 
@@ -72,7 +74,7 @@ def info(manifest_path: str, model_name: str, use_dev: bool = False, json_output
     return command.execute()
 
 
-def schema(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[dict[str, str]]:
+def schema(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> dict[str, str] | None:
     """
     Extract schema/table location information
 
@@ -123,7 +125,7 @@ def schema(manifest_path: str, model_name: str, use_dev: bool = False, json_outp
     return command.execute()
 
 
-def columns(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[list[dict[str, str]]]:
+def columns(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> list[dict[str, str]] | None:
     """
     Extract column list with types
 
@@ -147,7 +149,7 @@ def columns(manifest_path: str, model_name: str, use_dev: bool = False, json_out
     return command.execute()
 
 
-def config(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[dict[str, Any]]:
+def config(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> dict[str, Any] | None:
     """
     Extract full dbt config
 
@@ -173,7 +175,7 @@ def config(manifest_path: str, model_name: str, use_dev: bool = False, json_outp
     return command.execute()
 
 
-def deps(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[dict[str, list[str]]]:
+def deps(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> dict[str, list[str]] | None:
     """
     Extract dependencies by type
 
@@ -200,7 +202,7 @@ def deps(manifest_path: str, model_name: str, use_dev: bool = False, json_output
     return command.execute()
 
 
-def sql(manifest_path: str, model_name: str, use_dev: bool = False, raw: bool = False, json_output: bool = False) -> Optional[str]:
+def sql(manifest_path: str, model_name: str, use_dev: bool = False, raw: bool = False, json_output: bool = False) -> str | None:
     """
     Extract SQL code
 
@@ -224,7 +226,7 @@ def sql(manifest_path: str, model_name: str, use_dev: bool = False, raw: bool = 
     return command.execute()
 
 
-def validate(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[dict[str, Any]]:
+def validate(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> dict[str, Any] | None:
     """
     Validate model SQL syntax using BigQuery dry run.
 
@@ -246,7 +248,7 @@ def validate(manifest_path: str, model_name: str, use_dev: bool = False, json_ou
     return command.execute()
 
 
-def scan(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[dict[str, Any]]:
+def scan(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> dict[str, Any] | None:
     """
     Estimate query scan size using BigQuery dry run.
 
@@ -269,7 +271,7 @@ def scan(manifest_path: str, model_name: str, use_dev: bool = False, json_output
     return command.execute()
 
 
-def path(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[str]:
+def path(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> str | None:
     """
     Get relative file path
 
@@ -291,7 +293,7 @@ def path(manifest_path: str, model_name: str, use_dev: bool = False, json_output
     command = PathCommand(cfg, manifest_path, model_name, use_dev, json_output)
     return command.execute()
 
-def list_models(manifest_path: str, pattern: Optional[str] = None) -> list[str]:
+def list_models(manifest_path: str, pattern: str | None = None) -> list[str]:
     """
     List all models, optionally filtered by pattern
 
@@ -350,7 +352,7 @@ def search(manifest_path: str, query: str) -> list[dict[str, str]]:
 def _get_all_relations_recursive(
     relation_map: dict[str, list[str]],
     node_id: str,
-    visited: Optional[set] = None
+    visited: set | None = None
 ) -> list[str]:
     """
     Recursively get all dependencies (parents or children)
@@ -382,7 +384,7 @@ def _get_all_relations_recursive(
     return list(dict.fromkeys(all_relations))
 
 
-def parents(manifest_path: str, model_name: str, use_dev: bool = False, recursive: bool = False, json_output: bool = False) -> Optional[list[dict[str, str]]]:
+def parents(manifest_path: str, model_name: str, use_dev: bool = False, recursive: bool = False, json_output: bool = False) -> list[dict[str, str]] | None:
     """Get upstream dependencies (parent models).
 
     Args:
@@ -400,7 +402,7 @@ def parents(manifest_path: str, model_name: str, use_dev: bool = False, recursiv
     return command.execute()
 
 
-def children(manifest_path: str, model_name: str, use_dev: bool = False, recursive: bool = False, json_output: bool = False) -> Optional[list[dict[str, str]]]:
+def children(manifest_path: str, model_name: str, use_dev: bool = False, recursive: bool = False, json_output: bool = False) -> list[dict[str, str]] | None:
     """Get downstream dependencies (child models).
 
     Args:
@@ -449,7 +451,7 @@ def refresh(use_dev: bool = False) -> None:
         print("✅ Production artifacts synced (~/dbt-state/)")
 
 
-def docs(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[list[dict[str, str]]]:
+def docs(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> list[dict[str, str]] | None:
     """
     Get columns with descriptions
 
@@ -527,7 +529,7 @@ def docs(manifest_path: str, model_name: str, use_dev: bool = False, json_output
 
 def ls(
     manifest_path: str,
-    selectors: Optional[list[str]] = None,
+    selectors: list[str] | None = None,
     modified: bool = False,
     refresh: bool = False,
     and_logic: bool = False,
@@ -785,8 +787,6 @@ def _format_refresh_tree(
             return
         visited.add(node_uid)
 
-        node_name = node_uid.split('.')[-1]
-
         # Find direct children in the refresh set
         children_uids = []
         for uid in all_model_uids:
@@ -964,7 +964,7 @@ def _filter_modified_models(models: dict[str, Any], parser: Any) -> list[dict[st
 
     # Filter models and add git status
     modified = []
-    for uid, model in models.items():
+    for _, model in models.items():
         file_path = model.get('original_file_path', '')
 
         # Check if model is in branch changes (committed) OR has uncommitted changes
@@ -1094,7 +1094,7 @@ def _filter_refresh_models(models: dict[str, Any], parser: Any, manifest_path: s
     - Find all modified models M = {m1, m2, ...}
     - For each mi in M: find all descendants D(mi)
     - Find intermediate models I = models on paths between any two modified models
-    - Return M ∪ D(m1) ∪ D(m2) ∪ ... ∪ I
+    - Return M | D(m1) | D(m2) | ... | I  (set union)
     """
     # Step 1: Find all modified models
     modified_models = _filter_modified_models(models, parser)
@@ -1191,7 +1191,7 @@ def _find_path_between(
         # Check children of current node
         for node_uid, parents in parent_map.items():
             if current in parents and node_uid not in visited:
-                new_path = path + [node_uid]
+                new_path = [*path, node_uid]
 
                 if node_uid == target:
                     # Found path! Return intermediate nodes (exclude source and target)
@@ -1208,7 +1208,7 @@ def _find_path_between(
 # =============================================================================
 
 
-def analyze(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[dict[str, Any]]:
+def analyze(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> dict[str, Any] | None:
     """
     Analyze model partitioning/clustering effectiveness.
 
@@ -1266,7 +1266,7 @@ def hotspots(manifest_path: str, limit: int = 20, min_gb: float = 1.0, json_outp
     return command.execute()
 
 
-def branch(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[dict[str, Any]]:
+def branch(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> dict[str, Any] | None:
     """
     Analyze optimization across model branch.
 
@@ -1296,7 +1296,7 @@ def branch(manifest_path: str, model_name: str, use_dev: bool = False, json_outp
 
 def powerbi(
     manifest_path: str,
-    workspace_id: Optional[str] = None,
+    workspace_id: str | None = None,
     json_output: bool = False,
     show_measures: bool = False,
     show_columns: bool = False,

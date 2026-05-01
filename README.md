@@ -6,22 +6,23 @@
 
 ## ✨ Features
 
-- **🎯 Works out-of-box** - Simple Mode: just run `dbt compile` and start using
-- **⚙️ TOML configuration** - Modern config files with XDG compliance (optional)
-- **⚡ Lightning fast** - Optimized Python with LRU caching and orjson parser
-- **🔄 Production Mode** - Full `defer` workflow support for multi-project setups and development environment
-- **📊 AI-friendly JSON** - Machine-readable structured output (`-j` flag)
-- **🔍 Rich metadata** - Schema, columns, dependencies, config, compiled SQL
-- **🌳 Dependency navigation** - Trace upstream/downstream models
-- **🔎 Advanced filtering** - Filter models by tags, config, path with OR/AND logic
-- **🔀 Git-aware** - Find modified models and dependencies needing `--full-refresh`
-- **📋 Smart search** - Find models by name or description
-- **✅ SQL validation** - Validate SQL syntax using BigQuery dry run
-- **📏 Scan estimation** - Estimate query scan size before running
-- **📊 Optimization analysis** - Find hotspots, analyze models, track branch impact
-- **🔗 Power BI integration** - Extract BigQuery table usage from Power BI dashboards
-- **🎨 Beautiful UI** - Rich terminal formatting with helpful examples
-- **⚡ Combined flags** - Use `-dj`, `-ajd`, `-mf` for faster typing
+- **🎯 Works out-of-box** — Simple Mode: just run `dbt compile` and start using
+- **⚙️ TOML configuration** — Modern config files with XDG compliance (optional)
+- **⚡ Lightning fast** — Optimized Python with LRU caching and orjson parser
+- **🔄 Production Mode** — Full `defer` workflow support for multi-project setups and development environment
+- **📊 AI-friendly JSON** — Machine-readable structured output (`-j` flag) on every command
+- **🔍 Rich metadata** — Schema, columns, dependencies, config, compiled SQL, column docs
+- **🌳 Dependency navigation** — Trace upstream/downstream models (flat or tree view)
+- **🔎 Advanced filtering** — Filter models by tags, config, path, package with OR/AND logic
+- **🔀 Git-aware** — Find modified models and dependencies needing `--full-refresh`
+- **📋 Smart search** — Find models by name or description
+- **✅ SQL validation** — Validate SQL syntax using BigQuery dry run
+- **📏 Scan estimation** — Estimate query scan size before running (MB / GB)
+- **📊 Optimization analysis** — Find hotspots, analyze single models, branch-level alignment
+- **🔗 Power BI integration** — Extract BigQuery tables (+ DAX measures & column schemas) from dashboards
+- **🔁 Artifact sync** — `meta refresh` pulls prod artifacts or parses local project
+- **🎨 Beautiful UI** — Rich terminal formatting with categorized help panels
+- **⚡ Combined flags** — Use `-dj`, `-adj`, `-mf` for faster typing (order-independent)
 
 
 ## 🤖 Built for AI Workflows
@@ -180,68 +181,110 @@ meta columns -j --manifest ~/path.json m     # → JSON + Custom manifest
 
 ## 📚 Commands Reference
 
-### Core Commands
+All commands accept `-h/--help` for detailed per-command help.
 
-| Command | Description | Example |
-|---------|-------------|---------|
-| `info <model>` | Model summary (name, schema, table, materialization, tags) | `meta info -j customers` |
-| `schema <model>` | Full table name (`database.schema.table`) | `meta schema customers` |
-| `path <model>` | Relative file path to .sql file | `meta path customers` |
-| `columns <model>` | Column names and types (`--dev` supported) | `meta columns -dj customers` |
-| `sql <model>` | Compiled SQL (or raw with `--jinja`) | `meta sql --jinja customers` |
-| `docs <model>` | Column names, types, and descriptions | `meta docs customers` |
-| `deps <model>` | Dependencies by type (refs, sources, macros) | `meta deps -j customers` |
-| `parents <model>` | Upstream dependencies (`-a` for all ancestors) | `meta parents -aj customers` |
-| `children <model>` | Downstream dependencies (`-a` for all descendants) | `meta children -a customers` |
-| `config <model>` | Full dbt config (29 fields: partition_by, cluster_by, etc.) | `meta config -j customers` |
-| `validate <model>` | Validate SQL syntax using BigQuery dry run | `meta validate customers` |
-| `scan <model>` | Estimate query scan size using BigQuery dry run | `meta scan -j customers` |
+### Core Metadata
 
-### Optimization Commands
+| Command | Description | Key flags | Example |
+|---------|-------------|-----------|---------|
+| `info <model>` | Model summary (name, schema, table, materialization, tags) | `-j`, `-d` | `meta info -j customers` |
+| `schema <model>` | Full table name (`database.schema.table`) | `-j`, `-d` | `meta schema customers` |
+| `path <model>` | Relative file path to .sql file | `-j`, `-d` | `meta path customers` |
+| `columns <model>` | Column names and types | `-j`, `-d` | `meta columns -dj customers` |
+| `config <model>` | Full dbt config (partition_by, cluster_by, incremental, etc.) | `-j`, `-d` | `meta config -j customers` |
+| `sql <model>` | Compiled SQL (default) or raw with `--jinja` | `-j`, `-d`, `--jinja` | `meta sql --jinja customers` |
+| `docs <model>` | Column names, types, and descriptions | `-j`, `-d` | `meta docs customers` |
+| `deps <model>` | Dependencies by type (refs, sources, macros) | `-j`, `-d` | `meta deps -j customers` |
 
-| Command | Description | Example |
-|---------|-------------|---------|
-| `hotspots` | Find models with highest optimization potential | `meta hotspots -j --limit 20` |
-| `analyze <model>` | Deep optimization analysis of single model | `meta analyze -j customers` |
-| `branch` | Analyze optimization impact of current branch | `meta branch -j` |
+### Lineage
 
-### Integration Commands
+| Command | Description | Key flags | Example |
+|---------|-------------|-----------|---------|
+| `parents <model>` | Upstream dependencies (direct or all ancestors) | `-j`, `-d`, `-a` | `meta parents -aj customers` |
+| `children <model>` | Downstream dependencies (direct or all descendants) | `-j`, `-d`, `-a` | `meta children -a customers` |
 
-| Command | Description | Example |
-|---------|-------------|---------|
-| `powerbi [workspace_id]` | Extract BigQuery table mappings from Power BI workspace | `meta powerbi --by-table -j` |
+- Without `-a`: direct parents/children only (classic format).
+- With `-a -j` and ≤20 nodes: nested JSON with `children` key; otherwise flat array.
 
-### Settings & Utilities
+### Discovery & Filtering
 
-| Command | Description | Example |
-|---------|-------------|---------|
-| `settings init` | Create config file from template | `meta settings init` |
-| `settings show` | Display current configuration | `meta settings show -j` |
-| `settings validate` | Validate config file | `meta settings validate` |
-| `settings path` | Show path to active config file | `meta settings path` |
-| `list [selectors]` | Advanced model filtering with selectors (`tag:`, `config.`, `path:`) | `meta list tag:daily --modified` |
-| `models [pattern]` | Simple substring search in model names | `meta models staging` |
-| `search <query>` | Search models by name or description | `meta search "customer" -j` |
-| `refresh` | Refresh manifest (runs `dbt parse`) | `meta refresh` |
+| Command | Description | Key flags | Example |
+|---------|-------------|-----------|---------|
+| `list [selectors…]` | Filter with selectors (`tag:`, `config.`, `path:`, `package:`) | `-j`, `-d`, `-m`, `-f`, `-a`, `--and`, `--group` | `meta list tag:daily --and tag:core` |
+| `models [pattern]` | Simple substring search over model names | `-j` | `meta models staging` |
+| `search <query>` | Search models by name or description | `-j` | `meta search "customer" -j` |
 
-**List command flags:**
-- `--and` - AND logic for multiple selectors (default: OR)
-- `--group` - Group results by tag combinations
-- `-m, --modified` - Show only git-modified models
-- `-f, --full-refresh` - Show models needing `--full-refresh` (modified + descendants)
+**`list` selectors:**
+- `tag:name` — filter by tag (OR logic by default)
+- `config.key:value` — filter by config value (e.g. `config.materialized:incremental`)
+- `path:dir/` — filter by file path prefix
+- `package:name` — filter by package
+
+**`list` flags:**
+- `--and` — require ALL selectors to match (default: OR)
+- `--group` — group output by tag combinations (headers)
+- `-m, --modified` — git-aware: only changed/new models
+- `-f, --full-refresh` — models needing `--full-refresh` (modified + downstream + intermediate models on paths between them)
+- `-a, --all` — only with `-f`: tree view showing lineage from modified models down
+
+### SQL Validation & Cost
+
+Uses BigQuery dry run (no rows processed, no charge for dry run itself). Both commands fall back through manifest → `target/compiled/` → auto `dbt compile` (with `--dev`) — see [details below](#validating-sql-and-estimating-scan-size).
+
+| Command | Description | Key flags | Example |
+|---------|-------------|-----------|---------|
+| `validate <model>` | Validate compiled SQL syntax | `-j`, `-d` | `meta validate customers` |
+| `scan <model>` | Estimate query scan size (🟢 <1 GB, 🟡 1–10 GB, 🔴 ≥10 GB) | `-j`, `-d` | `meta scan --dev -j customers` |
+
+### Optimization (requires `dbt_bigquery_monitoring`)
+
+| Command | Description | Key flags | Example |
+|---------|-------------|-----------|---------|
+| `hotspots` | Rank all tables by optimization score (cost, partitioning, clustering, cache) | `-j`, `-n/--limit`, `--min-gb` | `meta hotspots -n 20 --min-gb 10` |
+| `analyze <model>` | Deep analysis of a single model — storage, usage, recommendations | `-j` | `meta analyze -j customers` |
+| `branch <model>` | Branch-level analysis — upstream/downstream partitioning alignment | `-j` | `meta branch customers` |
+
+**`hotspots` flags:**
+- `-n, --limit N` — number of hotspots to display (default: 10)
+- `--min-gb GB` — minimum table size in GB (default: 1.0)
+
+### Integration — Power BI
+
+Requires Azure AD Service Principal with Power BI Admin API access.
+
+| Command | Description | Key flags | Example |
+|---------|-------------|-----------|---------|
+| `powerbi [workspace_id]` | Power BI → BigQuery → dbt model mapping | `-j`, `--by-table`, `--measures`, `--columns`, `--full` | `meta powerbi --by-table -j` |
+
+**`powerbi` flags:**
+- `--measures` — include DAX measure expressions
+- `--columns` — include column schemas with data types
+- `--full` — include all metadata (measures + columns)
+- `--by-table` — aggregated view grouped by BigQuery table
+
+### Artifacts & Settings
+
+| Command | Description | Key flags | Example |
+|---------|-------------|-----------|---------|
+| `refresh` | Sync production artifacts from remote storage | `-d/--dev` (parse local via `dbt parse`) | `meta refresh` |
+| `settings init` | Create config file from template | `-f/--force` (overwrite existing) | `meta settings init` |
+| `settings show` | Display merged configuration (TOML + env) | `-j` | `meta settings show -j` |
+| `settings validate` | Validate active config file | — | `meta settings validate` |
+| `settings path` | Show active config file path | — | `meta settings path` |
 
 ### Global Flags
 
-| Flag | Description |
-|------|-------------|
-| `-j, --json` | Output as JSON (AI-friendly structured data) |
-| `-d, --dev` | Use dev manifest and schema |
-| `--manifest PATH` | Explicit path to manifest.json |
-| `-a, --all` | Recursive mode (parents/children only) |
-| `-h, --help` | Show help with examples |
-| `-v, --version` | Show version |
+| Flag | Description | Applies to |
+|------|-------------|-----------|
+| `-h, --help` | Show help | All commands |
+| `-v, --version` | Show version and exit | Main app |
+| `--manifest PATH` | Explicit path to manifest.json (takes precedence over `--dev`) | All metadata commands |
+| `-d, --dev` | Use dev manifest/schema (`./target/manifest.json`, `personal_USERNAME`) | Most metadata commands |
+| `-j, --json` | Output as JSON (AI-friendly structured data) | Most commands |
 
-**Combined flags**: `-dj`, `-ajd`, `-mf` (order-independent)
+**Combined short flags** work in any order: `-dj`, `-adj`, `-mf`, `-fa`, etc.
+
+**Note:** `--manifest` has no short form. If `--manifest` and `--dev` are both provided, `--dev` is ignored with a warning.
 
 ## 💡 Common Use Cases
 
@@ -319,6 +362,30 @@ if [ "$BYTES" -gt 10000000000 ]; then  # 10 GB limit
   echo "Query too expensive: $BYTES bytes"
   exit 1
 fi
+
+# With local changes: --dev auto-compiles if needed
+meta validate --dev my_model
+# → ℹ️  No compiled SQL for 'my_model'. Running `dbt compile --select my_model --target dev`...
+# → ✅ Valid
+```
+
+**Compiled SQL lookup (validate / scan):** 3-level fallback strategy:
+1. `model['compiled_code']` from manifest (always works after `dbt compile`/`dbt run`)
+2. `target/compiled/{package}/{original_file_path}` on disk (works if you ran `dbt compile` separately)
+3. With `--dev`: auto-runs `dbt compile --select <model> --target dev` and re-reads from disk
+
+The third level only fires when `--dev` is set, since auto-compilation is only safe in your local project. If `dbt` isn't on PATH, compilation fails, or the project root can't be found, you get a clear error with a suggested manual command.
+
+### Refreshing Artifacts
+
+```bash
+# Sync production manifest.json + catalog.json from remote storage
+meta refresh
+# → Downloads to ~/dbt-state/ (always --force)
+
+# Parse local project to ./target/manifest.json (use after editing models)
+meta refresh --dev
+# → Runs: dbt parse --target dev
 ```
 
 ### Optimization Analysis
@@ -352,10 +419,19 @@ meta powerbi
 meta powerbi --by-table
 # → Table | Reports | Datasets | dbt Model
 
+# Include DAX measure expressions
+meta powerbi --measures
+
+# Include column schemas (name, data type, visibility)
+meta powerbi --columns
+
+# All metadata: tables + measures + columns
+meta powerbi --full
+
 # Specific workspace
 meta powerbi 677db568-5923-4c5b-9b45-f14ec16a2b62
 
-# JSON output for automation
+# JSON output for automation (always returns full metadata when -j is set)
 meta powerbi -j | jq '.datasets[] | {name: .name, tables: .tables | length}'
 
 # Table usage as JSON (includes report/dataset lists per table)
@@ -464,15 +540,42 @@ meta settings path      # Show active config file path
 
 ### Environment Variables (Alternative)
 
-All TOML settings can be set via environment variables with `DBT_` prefix:
+All TOML settings can be set via environment variables. **CLI flags > TOML > env vars > defaults.**
+
+**Manifest & catalog:**
+
+| TOML key | Environment variable | Default |
+|----------|---------------------|---------|
+| `prod_manifest_path` | `DBT_PROD_MANIFEST_PATH` | `~/dbt-state/manifest.json` |
+| `dev_manifest_path` | `DBT_DEV_MANIFEST_PATH` | `./target/manifest.json` |
+| `prod_catalog_path` | `DBT_PROD_CATALOG_PATH` | `~/dbt-state/catalog.json` |
+| `dev_catalog_path` | `DBT_DEV_CATALOG_PATH` | `./target/catalog.json` |
+| `dev_schema` | `DBT_DEV_SCHEMA` | `personal_{USER}` |
+
+**Fallback behavior:**
+
+| TOML key | Environment variable | Default |
+|----------|---------------------|---------|
+| `fallback_dev_enabled` | `DBT_FALLBACK_TARGET` | `true` |
+| `fallback_bigquery_enabled` | `DBT_FALLBACK_BIGQUERY` | `true` |
+| `fallback_catalog_enabled` | `DBT_FALLBACK_CATALOG` | `true` |
+
+**Production naming strategy:**
+
+| TOML key | Environment variable | Options |
+|----------|---------------------|---------|
+| `prod_table_name_strategy` | `DBT_PROD_TABLE_NAME` | `alias_or_name` (default), `name`, `alias` |
+| `prod_schema_source` | `DBT_PROD_SCHEMA_SOURCE` | `config_or_model` (default), `model`, `config` |
+
+**Power BI integration (optional):**
 
 | TOML key | Environment variable |
 |----------|---------------------|
-| `prod_manifest_path` | `DBT_PROD_MANIFEST_PATH` |
-| `dev_manifest_path` | `DBT_DEV_MANIFEST_PATH` |
-| `dev_schema` | `DBT_DEV_SCHEMA` |
-| `fallback_dev_enabled` | `DBT_FALLBACK_TARGET` |
-| `fallback_bigquery_enabled` | `DBT_FALLBACK_BIGQUERY` |
+| `powerbi.enabled` | `POWERBI_ENABLED` |
+| `powerbi.tenant_id` | `POWERBI_TENANT_ID` |
+| `powerbi.client_id` | `POWERBI_CLIENT_ID` |
+| `powerbi.client_secret` | `POWERBI_CLIENT_SECRET` |
+| `powerbi.workspaces` | `POWERBI_WORKSPACES` (comma-separated) |
 
 ## 🧪 Development
 

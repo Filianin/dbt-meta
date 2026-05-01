@@ -6,6 +6,7 @@ from typing import Optional
 from dbt_meta.command_impl.base import BaseCommand
 from dbt_meta.fallback import FallbackLevel
 from dbt_meta.utils.bigquery import format_bytes, run_dry_run_query
+from dbt_meta.utils.compiled_sql import get_compiled_sql
 
 
 class ScanCommand(BaseCommand):
@@ -21,7 +22,7 @@ class ScanCommand(BaseCommand):
         - error: Error message if validation failed
 
     Behavior:
-        - Fetches compiled SQL from manifest
+        - Fetches compiled SQL (manifest → target/compiled → dbt compile)
         - Runs dry_run to get estimated scan size
         - Does NOT execute the query
     """
@@ -53,13 +54,18 @@ class ScanCommand(BaseCommand):
         Returns:
             Scan estimate dict
         """
-        sql = model.get('compiled_code', '')
-        if not sql:
+        sql, error = get_compiled_sql(
+            model=model,
+            model_name=self.model_name,
+            manifest_path=self.manifest_path,
+            use_dev=self.use_dev,
+        )
+        if sql is None:
             return {
                 'model': self.model_name,
                 'bytes': None,
                 'formatted': None,
-                'error': 'No compiled SQL found in manifest'
+                'error': error or 'No compiled SQL available',
             }
 
         result = run_dry_run_query(sql)

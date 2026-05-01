@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-05-01
+
+### Added
+- **3-level compiled SQL fallback for `validate` and `scan`** — both commands now degrade gracefully when `compiled_code` is missing from the manifest (e.g. dev manifest produced by `dbt parse`).
+  - **Level 1:** `model['compiled_code']` from manifest (default fast path)
+  - **Level 2:** read `{project_root}/target/compiled/{package}/{original_file_path}` from disk (works when user ran `dbt compile` separately from `meta refresh --dev`)
+  - **Level 3 (`--dev` only):** auto-runs `dbt compile --select <model> --target dev` (180s timeout) and re-reads from disk
+  - Project root is found by walking up from manifest path to a `dbt_project.yml`. Package name extracted from `model['package_name']` or `unique_id`.
+  - Failure modes return clear actionable errors: `dbt` not on PATH, compile timeout, compile error, no `dbt_project.yml`. Without `--dev`, suggests adding `--dev` for local changes.
+  - Location: `utils/compiled_sql.py`, integrated in `command_impl/validate.py` and `command_impl/scan.py`
+
 ### Fixed
 - **JSON error output for all commands** — errors now always return valid JSON when `-j` is used
   - Before: errors wrote Rich-formatted text to stderr; `2>&1 | jq` received mixed input → exit code 5
@@ -23,6 +34,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Common paths searched: `/opt/homebrew/bin`, `/usr/local/bin`, `~/google-cloud-sdk/bin`
   - subprocess `PATH` also extended so `bq` can find its own dependencies
   - Location: `utils/bigquery.py:15-44`
+
+### Documentation
+- **Comprehensive doc audit** — README, CLAUDE.md, and `meta --help` now reflect every command and flag (including previously undocumented `hotspots -n/--limit/--min-gb`, `powerbi --measures/--columns/--full/--by-table`, `settings init -f/--force`).
+- New **Command Inventory** section in CLAUDE.md (24 commands + subcommands, all flags, defaults).
+- README **Commands Reference** rewritten as grouped tables with a "Key flags" column per command.
+- README + CLAUDE.md document the new 3-level compiled SQL fallback strategy.
+
+### Tests
+- **Coverage raised from 91.30% → 95.86%** (756 → 784 tests).
+- New test files closing gaps: `test_powerbi_command_gaps.py`, `test_hotspots_gaps.py`, `test_monitoring_gaps.py`, `test_catalog_gaps.py`, `test_columns_command_gaps.py`, `test_path_command_gaps.py`, `test_compiled_sql.py`.
+- 10 modules now at 100% coverage: `command_impl/columns.py`, `command_impl/hotspots.py`, `command_impl/powerbi.py`, `command_impl/scan.py`, `command_impl/sql.py`, `command_impl/validate.py`, `utils/compiled_sql.py`, `utils/monitoring.py`, `utils/powerbi.py`, `errors.py`.
 
 ## [0.2.2] - 2026-03-12
 

@@ -8,7 +8,7 @@ import json
 import os
 import shutil
 import subprocess
-from typing import Any, Optional
+from typing import Optional
 
 
 def run_monitoring_query(sql: str, timeout: int = 30) -> Optional[list[dict]]:
