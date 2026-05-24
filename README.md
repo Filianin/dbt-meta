@@ -19,6 +19,8 @@
 - **✅ SQL validation** — Validate SQL syntax using BigQuery dry run
 - **📏 Scan estimation** — Estimate query scan size before running (MB / GB)
 - **📊 Optimization analysis** — Find hotspots, analyze single models, branch-level alignment
+- **🧬 Column-level lineage** — `meta lineage build/column/downstream/stats` with rustworkx graph (sub-10ms queries)
+- **🎯 Column-usage-aware advisors** — `meta optimize cluster/partition/refresh` recommends BigQuery clustering/partition keys and minimal `--full-refresh` plan based on real downstream WHERE/JOIN usage
 - **🔗 Power BI integration** — Extract BigQuery tables (+ DAX measures & column schemas) from dashboards
 - **🔁 Artifact sync** — `meta refresh` pulls prod artifacts or parses local project
 - **🎨 Beautiful UI** — Rich terminal formatting with categorized help panels
@@ -196,7 +198,7 @@ All commands accept `-h/--help` for detailed per-command help.
 | `docs <model>` | Column names, types, and descriptions | `-j`, `-d` | `meta docs customers` |
 | `deps <model>` | Dependencies by type (refs, sources, macros) | `-j`, `-d` | `meta deps -j customers` |
 
-### Lineage
+### Lineage (model-level)
 
 | Command | Description | Key flags | Example |
 |---------|-------------|-----------|---------|
@@ -205,6 +207,58 @@ All commands accept `-h/--help` for detailed per-command help.
 
 - Without `-a`: direct parents/children only (classic format).
 - With `-a -j` and ≤20 nodes: nested JSON with `children` key; otherwise flat array.
+
+### Column-level lineage (`meta lineage`)
+
+Backed by SQLGlot 30.7+ (`sqlglot.lineage`, all-columns mode) and rustworkx for native graph traversal. The graph is built once into a JSON artifact (`~/dbt-state/lineage.json`), then queried in sub-10 ms.
+
+| Command | Description | Key flags | Example |
+|---------|-------------|-----------|---------|
+| `lineage build` | Build the lineage artifact from manifest + catalog | `-d`, `-j`, `-v`, `--timeout N`, `-o PATH`, `--manifest`, `--catalog` | `meta lineage build -v` |
+| `lineage column <model>.<col>` | Direct + transitive upstream lineage for a column | `-d`, `-j`, `--artifact` | `meta lineage column core_clients.client_id` |
+| `lineage downstream <model>.<col>` | Direct + transitive downstream impact for a column | `-d`, `-j`, `--artifact` | `meta lineage downstream raw.events.user_id` |
+| `lineage stats` | Print artifact summary (nodes, edges, generated_at, warnings) | `-d`, `-j`, `--artifact` | `meta lineage stats -j` |
+
+**`build` flags:**
+- `-v, --verbose` — print per-model progress (`[123/934] model_name (0.42s) ok`)
+- `--timeout N` — per-model SIGALRM budget in seconds (default 30, 0 disables)
+- `-o PATH` — explicit output path (default: `~/dbt-state/lineage.json` for prod, `./target/lineage.json` for `--dev`)
+
+For best performance install the mypyc-compiled SQLGlot: `pip install 'dbt-meta[lineage]' 'sqlglot[c]'` — gives 2-4× speedup on large projects (~470 s → ~150 s for 934 models).
+
+### Optimization advisors (`meta optimize`)
+
+Column-usage-aware advisors. They read each downstream model's compiled SQL via SQLGlot and apply explainable heuristics. No `INFORMATION_SCHEMA.JOBS_BY_PROJECT`, no LLM, no extra build step — pure AST analysis on existing artifacts. On-demand only (no extra CI artifact).
+
+| Command | Description | Key flags | Example |
+|---------|-------------|-----------|---------|
+| `optimize cluster <model>` | Recommend BigQuery clustering keys (≤4) from downstream WHERE/JOIN/GROUP BY usage | `-d`, `-j`, `--top N` | `meta optimize cluster core_sessions` |
+| `optimize partition <model>` | Recommend a single partition column (DATE/DATETIME/TIMESTAMP/INT64) + granularity | `-d`, `-j` | `meta optimize partition core_clients` |
+| `optimize refresh [<models>...]` | Column-aware `--full-refresh` planner with chain-aware propagation | `-m`, `--base BRANCH`, `--cols MODEL:c1,c2`, `-d`, `-j`, `--no-compile` | `meta optimize refresh -m` |
+
+**`optimize cluster` heuristic:** per-column score = `WHERE eq×3.0 + WHERE in×2.5 + WHERE between/range×2.0 + JOIN×2.0 + GROUP BY×1.0 + WHERE fn-wrapped×0.5`, multiplied by `log2(downstream_count_using_column + 1)`. Excludes the model's own `partition_by` column and types unfit for clustering (`STRUCT`, `ARRAY`, `GEOGRAPHY`, `JSON`).
+
+**`optimize partition` heuristic:** range/equality filter weights × type bonus (TIMESTAMP/DATE × 1.5, DATETIME × 1.3, INT64 × 1.0). Granularity heuristic: TIMESTAMP/DATE → `DAY`, INT64 → `RANGE_BUCKET`. Returns one primary recommendation + up to 4 alternatives + `pruning_impact_pct` (% of downstream queries that would benefit).
+
+**`optimize refresh` algorithm:** topological BFS over transitive downstream. Affectedness propagates through the chain — a 3-level descendant `C` that never directly mentions changed `A` is still classified correctly when `A → B → C` and `B` consumes `A`'s changed columns. `SELECT *` propagates whole-row affectedness through the chain via SQLGlot AST detection (not regex). Per-model bucket: `full_refresh` (incremental key collision, SELECT *, or non-incremental materialization) / `incremental` (incremental + only safe columns affected) / `skip`.
+
+**`optimize refresh` flags:**
+- `-m, --modified` — auto-detect changed models from git (committed-vs-base + uncommitted + untracked)
+- `--base BRANCH` — explicit base for git diff (auto: `origin/main` → `origin/master` → `main` → `master`)
+- `--cols MODEL:c1,c2` — column-level diff for precise propagation; without it the planner conservatively treats the entire changed model as affected
+- `--no-compile` — skip the on-demand `dbt compile` fallback (level 3 of compiled-SQL chain)
+
+**Compiled-SQL fallback chain** (used by `optimize refresh`): manifest `compiled_code` → `<project>/target/compiled/<pkg>/<path>.sql` on disk → one bulk `dbt compile --select <downstream models>` per run. Only triggers when project root is found (`dbt_project.yml`), `dbt` is in PATH, and >50 % of a sampled downstream slice lacks SQL.
+
+**Output (text mode)** ends with a ready-to-paste shell command:
+
+```
+Suggested commands:
+  dbt run -fs core_sessions stg_clients core_orders ...
+  dbt run -s some_incremental_model
+```
+
+The line is emitted via plain `print()` (not Rich) so terminal copy-paste returns one uninterrupted command.
 
 ### Discovery & Filtering
 
@@ -224,8 +278,8 @@ All commands accept `-h/--help` for detailed per-command help.
 - `--and` — require ALL selectors to match (default: OR)
 - `--group` — group output by tag combinations (headers)
 - `-m, --modified` — git-aware: only changed/new models
-- `-f, --full-refresh` — models needing `--full-refresh` (modified + downstream + intermediate models on paths between them)
-- `-a, --all` — only with `-f`: tree view showing lineage from modified models down
+
+For refresh planning of changed models, use `meta optimize refresh` (column-aware chain analysis).
 
 ### SQL Validation & Cost
 
@@ -408,6 +462,66 @@ meta hotspots -j | jq '.hotspots[0].scoring_details'
 # → [{"criterion": "no_partition", "points": 60, "recommendation": "Add partition_by config"}]
 ```
 
+### Column-Level Lineage
+
+```bash
+# Build the lineage artifact (one-time, runs SQLGlot on every model's compiled SQL)
+meta lineage build --verbose
+# → Wrote ~/dbt-state/lineage.json (8.7 MB, 27,059 nodes, 23,815 edges in 470 s)
+
+# Where does a column come from?
+meta lineage column core_internal_tracking__sessions.session_channel
+# → Direct: stg_traffic_channel__mapping.assigned_channel
+# → Ancestors: source.raw_traffic_channel.traffic_channel_mapping.assigned_channel, …
+
+# What breaks if I change this column?
+meta lineage downstream stg_traffic_channel__mapping.assigned_channel
+# → 30 direct downstream columns across core_client__*, core_plausible__*, …
+
+# Artifact stats (size, age, warnings)
+meta lineage stats
+# → schema 1.0, 27,059 nodes, 23,815 edges, generated 2026-05-08T10:20:03+00:00
+```
+
+### Refresh Planner — Minimum `--full-refresh` Set
+
+```bash
+# Detect changed models from git, classify their downstream
+cd ~/Projects/reports
+meta optimize refresh -m
+# → 12 full_refresh, 0 incremental, 99 skip (out of 110 transitive downstream)
+# → Suggested: dbt run -fs core_internal_tracking__events core_plausible__pageviews …
+
+# Column-precision (drastically narrows the set when you know the diff)
+meta optimize refresh --cols core_internal_tracking__events:event_type
+# → 1 full_refresh, 1 incremental (sessions uses event_type in WHERE), 103 skip
+
+# Override base branch (auto-detects origin/main → origin/master → main → master)
+meta optimize refresh -m --base origin/develop
+
+# Programmatic use
+meta optimize refresh -m -j | jq -r '.dbt_commands.full_refresh'
+# → "dbt run -fs core_internal_tracking__events …"
+```
+
+### Clustering & Partitioning Recommendations
+
+```bash
+# What columns should I cluster `core_sessions` on?
+meta optimize cluster core_internal_tracking__sessions
+# → match_utm_source (JOIN ×30 in 6 models, score 168.44)
+# → match_utm_medium (JOIN ×30, score 168.44)
+# → … (excluded: existing partition column, STRUCT/ARRAY/JSON columns)
+
+# What's the right partition column for this model?
+meta optimize partition amas_client_profiles
+# → status (INT64) RANGE_BUCKET, pruning ~4.5%
+# → Alternatives: client_id (INT64) score=1.5
+
+# JSON for tooling
+meta optimize cluster core_sessions -j | jq '.recommendations[].column'
+```
+
 ### Power BI Integration
 
 ```bash
@@ -468,7 +582,7 @@ meta list tag:daily tag:core --and
 
 # Git-aware filtering
 meta list -m                                  # Show modified models
-meta list -f                                  # Models needing --full-refresh
+# For chain-aware refresh planning: `meta optimize refresh -m`
 
 # Group by tag combinations
 meta list tag:daily tag:core --group

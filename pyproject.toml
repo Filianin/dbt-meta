@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dbt-meta"
-version = "0.2.3"
+version = "0.3.0"
 description = "AI-first CLI for dbt metadata extraction - Fast, modern Python tool"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -38,6 +38,12 @@ dev = [
     "pytest-mock>=3.12.0",
     "ruff>=0.8.0",
     "mypy>=1.8.0",
+    "sqlglot>=30.0.0",
+    "rustworkx>=0.15.0",
+]
+lineage = [
+    "sqlglot>=30.0.0",
+    "rustworkx>=0.15.0",
 ]
 
 [project.scripts]

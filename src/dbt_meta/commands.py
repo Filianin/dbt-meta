@@ -531,10 +531,8 @@ def ls(
     manifest_path: str,
     selectors: list[str] | None = None,
     modified: bool = False,
-    refresh: bool = False,
     and_logic: bool = False,
     group: bool = False,
-    tree_view: bool = False,
     use_dev: bool = False,
     json_output: bool = False
 ) -> str | list[dict[str, Any]] | dict[str, list[dict[str, Any]]]:
@@ -545,7 +543,6 @@ def ls(
         manifest_path: Path to manifest.json
         selectors: List of selectors (tag:name, config.key:value, path:pattern, package:name)
         modified: Show only modified/new models (git-aware)
-        refresh: Show models requiring --full-refresh (modified + intermediate + downstream)
         and_logic: Require ALL tags (default: OR - at least one)
         group: Group by tag combinations
         use_dev: Use dev manifest
@@ -569,7 +566,8 @@ def ls(
         meta ls tag:verified tag:active --group   # Grouped output
         meta ls config.materialized:incremental
         meta ls --modified                        # Git-modified only
-        meta ls --refresh                         # Models needing --full-refresh
+
+    For chain-aware refresh planning, use `meta optimize refresh` instead.
     """
     parser = _get_cached_parser(manifest_path)
     models = parser.get_all_models()
@@ -577,16 +575,8 @@ def ls(
     # Extract tag selectors for grouping
     tag_selectors = [s.split(':', 1)[1] for s in (selectors or []) if s.startswith('tag:')]
 
-    # Save modified models for tree view (before refresh expansion)
-    modified_models_for_tree = []
-
-    # Filter by refresh requirement (modified + intermediate + downstream)
-    if refresh:
-        # Get modified models first (for tree view)
-        modified_models_for_tree = _filter_modified_models(models, parser)
-        filtered_models = _filter_refresh_models(models, parser, manifest_path)
     # Filter by git status only (modified models)
-    elif modified:
+    if modified:
         filtered_models = _filter_modified_models(models, parser)
     # Filter by selectors
     elif selectors:
@@ -610,48 +600,29 @@ def ls(
             json_output
         )
 
-    # Print git warnings for modified/refresh modes
-    if modified or refresh:
+    # Print git warnings for modified mode
+    if modified:
         if filtered_models:
             warnings = _generate_git_warnings(filtered_models, use_dev)
             _print_warnings(warnings, json_output=json_output)
         else:
-            # Empty result - provide helpful warning
-            if modified:
-                empty_warnings = [{
+            _print_warnings(
+                [{
                     "type": "no_modified_models",
                     "severity": "info",
                     "message": "No modified models found",
                     "detail": "No models changed compared to main/master branch",
-                    "suggestion": "All models are in sync with production"
-                }]
-            else:  # refresh
-                empty_warnings = [{
-                    "type": "no_refresh_needed",
-                    "severity": "info",
-                    "message": "No models need refresh",
-                    "detail": "No modified models found, so no downstream models to refresh",
-                    "suggestion": "All models are in sync with production"
-                }]
-            _print_warnings(empty_warnings, json_output=json_output)
-
-    # Tree view for --refresh --all (text mode only)
-    if tree_view and refresh and not json_output:
-        return _format_refresh_tree(filtered_models, modified_models_for_tree, parser, models)
+                    "suggestion": "All models are in sync with production",
+                }],
+                json_output=json_output,
+            )
 
     # Standard format output
     if json_output:
-        # Compact format for refresh mode, detailed format otherwise
-        if refresh or modified:
+        if modified:
             return _format_models_json_compact(filtered_models, parser, use_dev)
-        else:
-            return _format_models_json(filtered_models, parser, use_dev)
-    else:
-        # Text mode: add + suffix for refresh mode (for dbt select syntax)
-        if refresh:
-            return _format_models_text_with_suffix(filtered_models, suffix="+")
-        else:
-            return _format_models_text(filtered_models)
+        return _format_models_json(filtered_models, parser, use_dev)
+    return _format_models_text(filtered_models)
 
 
 def _filter_by_selectors_or(models: dict[str, Any], selectors: list[str], parser: Any) -> list[dict[str, Any]]:
@@ -755,93 +726,9 @@ def _generate_git_warnings(models: list[dict[str, Any]], use_dev: bool) -> list[
     return warnings
 
 
-def _format_refresh_tree(
-    all_models: list[dict[str, Any]],
-    modified_models: list[dict[str, Any]],
-    parser: Any,
-    models_dict: dict[str, Any]
-) -> str:
-    """Format refresh models as tree view showing lineage from modified to downstream
-
-    Args:
-        all_models: All models in refresh set (modified + downstream)
-        modified_models: Only modified models (roots of trees)
-        parser: Manifest parser
-        models_dict: Full models dictionary from manifest
-
-    Returns:
-        Tree-formatted string showing modified models and their descendants
-    """
-    if not modified_models:
-        return "No modified models found"
-
-    output_lines = []
-    all_model_uids = {m['unique_id'] for m in all_models}
-
-    def print_tree(node_uid: str, prefix: str = "", is_last: bool = True, visited: set[str] | None = None) -> None:
-        """Recursively print tree structure"""
-        if visited is None:
-            visited = set()
-
-        if node_uid in visited:  # Avoid infinite loops
-            return
-        visited.add(node_uid)
-
-        # Find direct children in the refresh set
-        children_uids = []
-        for uid in all_model_uids:
-            if uid == node_uid or uid in visited:
-                continue
-            model = models_dict.get(uid)
-            if model:
-                depends_on = model.get('depends_on', {}).get('nodes', [])
-                if node_uid in depends_on:
-                    children_uids.append(uid)
-
-        # Print children recursively
-        children_sorted = sorted(children_uids, key=lambda u: u.split('.')[-1])
-        for i, child_uid in enumerate(children_sorted):
-            is_last_child = (i == len(children_sorted) - 1)
-            child_prefix = "└── " if is_last_child else "├── "
-            child_name = child_uid.split('.')[-1]
-            output_lines.append(f"{prefix}{child_prefix}{child_name}")
-
-            # Recursive call with updated prefix
-            new_prefix = prefix + ("    " if is_last_child else "│   ")
-            print_tree(child_uid, new_prefix, is_last_child, visited)
-
-    for modified in modified_models:
-        mod_uid = modified['unique_id']
-        mod_name = mod_uid.split('.')[-1]
-
-        # Get git status indicator
-        git_status = modified.get('_git_status', '')
-        if git_status == 'uncommitted':
-            status_icon = "🔴"  # Uncommitted changes (red circle)
-        elif git_status == 'committed':
-            status_icon = "✅"  # Committed changes (green checkmark)
-        else:
-            status_icon = "•"
-
-        output_lines.append(f"{status_icon} {mod_name}")
-
-        # Print full tree starting from this modified model
-        print_tree(mod_uid, "  ")
-
-        output_lines.append("")  # Empty line between trees
-
-    return '\n'.join(output_lines)
-
-
 def _format_models_text(models: list[dict[str, Any]]) -> str:
     """Format as space-separated model names"""
     model_names = [m['unique_id'].split('.')[-1] for m in models]
-    return ' '.join(sorted(model_names))
-
-
-def _format_models_text_with_suffix(models: list[dict[str, Any]], suffix: str = "+") -> str:
-    """Format as space-separated model names with suffix (for dbt select syntax)"""
-    model_names = [m['unique_id'].split('.')[-1] + suffix for m in models]
     return ' '.join(sorted(model_names))
 
 
@@ -1045,162 +932,6 @@ def _format_models_grouped(
                 output_lines.append("")  # Empty line between groups
 
         return '\n'.join(output_lines).rstrip()
-
-
-def _get_all_descendants_recursive(node_uid: str, all_models: dict[str, Any]) -> set[str]:
-    """Find all descendant models recursively using BFS
-
-    Args:
-        node_uid: Starting node unique_id
-        all_models: Dict of all models {unique_id: model_dict}
-
-    Returns:
-        Set of unique_ids of all descendants
-    """
-    from collections import deque
-
-    descendants = set()
-    queue = deque([node_uid])
-    visited = {node_uid}
-
-    while queue:
-        current_uid = queue.popleft()
-
-        # Find all models that depend on current model
-        for uid, model in all_models.items():
-            if uid in visited:
-                continue
-
-            # Check if this model depends on current
-            depends_on = model.get('depends_on', {}).get('nodes', [])
-            if current_uid in depends_on:
-                descendants.add(uid)
-                visited.add(uid)
-                queue.append(uid)
-
-    return descendants
-
-
-def _filter_refresh_models(models: dict[str, Any], parser: Any, manifest_path: str) -> list[dict[str, Any]]:
-    """
-    Filter models requiring --full-refresh
-
-    Includes:
-    1. All modified/new models (via git)
-    2. All downstream dependencies of modified models
-    3. Intermediate models between multiple modified models
-
-    Algorithm:
-    - Find all modified models M = {m1, m2, ...}
-    - For each mi in M: find all descendants D(mi)
-    - Find intermediate models I = models on paths between any two modified models
-    - Return M | D(m1) | D(m2) | ... | I  (set union)
-    """
-    # Step 1: Find all modified models
-    modified_models = _filter_modified_models(models, parser)
-    if not modified_models:
-        return []
-
-    result_set = set(m['unique_id'] for m in modified_models)
-
-    # Step 2: Find all downstream for each modified model
-    # Use direct manifest traversal to avoid duplicate warnings from children()
-    for modified_model in modified_models:
-        uid = modified_model['unique_id']
-        # Find all descendants recursively using BFS
-        descendants = _get_all_descendants_recursive(uid, models)
-        result_set.update(descendants)
-
-    # Step 3: Find intermediate models (if 2+ modified models)
-    if len(modified_models) >= 2:
-        intermediate = _find_intermediate_models(modified_models, models, parser)
-        result_set.update(uid for uid in intermediate)
-
-    # Create dict of modified models with git status
-    modified_uid_to_status = {m['unique_id']: m.get('_git_status') for m in modified_models}
-
-    # Convert unique_ids back to model dicts, preserving git status
-    result_models = []
-    for uid in result_set:
-        if uid in models:
-            model_copy = models[uid].copy()
-            # Add git status if this was a modified model
-            if uid in modified_uid_to_status:
-                model_copy['_git_status'] = modified_uid_to_status[uid]
-            result_models.append(model_copy)
-
-    return result_models
-
-
-def _find_intermediate_models(
-    modified_models: list[dict[str, Any]],
-    all_models: dict[str, Any],
-    parser: Any
-) -> set[str]:
-    """
-    Find models on paths between modified models
-
-    For each pair of modified models (m1, m2):
-    - If m2 is downstream of m1: include all models on path m1 -> m2
-    - Build dependency graph and use BFS to find paths
-    """
-    intermediate = set()
-
-    # Build parent-child relationship map for all models
-    parent_map: dict[str, list[str]] = {}  # model_uid -> list of parent unique_ids
-    for uid, model in all_models.items():
-        parents = model.get('depends_on', {}).get('nodes', [])
-        parent_map[uid] = parents
-
-    # For each pair of modified models
-    for i, m1 in enumerate(modified_models):
-        for m2 in modified_models[i+1:]:
-            uid1 = m1['unique_id']
-            uid2 = m2['unique_id']
-
-            # Find if there's a path from m1 to m2 (or vice versa)
-            path_1_to_2 = _find_path_between(uid1, uid2, parent_map)
-            if path_1_to_2:
-                intermediate.update(path_1_to_2)
-
-            path_2_to_1 = _find_path_between(uid2, uid1, parent_map)
-            if path_2_to_1:
-                intermediate.update(path_2_to_1)
-
-    return intermediate
-
-
-def _find_path_between(
-    source: str,
-    target: str,
-    parent_map: dict[str, list[str]]
-) -> list[str]:
-    """
-    Find models on path from source to target using BFS
-    Returns list of unique_ids on the path (excluding source and target)
-    """
-    from collections import deque
-
-    # BFS to find path
-    queue: deque = deque([(source, [source])])
-    visited = {source}
-
-    while queue:
-        current, path = queue.popleft()
-
-        # Check children of current node
-        for node_uid, parents in parent_map.items():
-            if current in parents and node_uid not in visited:
-                new_path = [*path, node_uid]
-
-                if node_uid == target:
-                    # Found path! Return intermediate nodes (exclude source and target)
-                    return new_path[1:-1]
-
-                visited.add(node_uid)
-                queue.append((node_uid, new_path))
-
-    return []  # No path found
 
 
 # =============================================================================

@@ -38,6 +38,20 @@ settings_app = typer.Typer(
 )
 app.add_typer(settings_app, name="settings")
 
+# Column-level lineage subcommand group
+lineage_app = typer.Typer(
+    help="Column-level lineage queries (build/column/downstream/stats)",
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+app.add_typer(lineage_app, name="lineage")
+
+# Column-usage-aware optimization advisors
+optimize_app = typer.Typer(
+    help="Optimization advisors based on downstream column usage (refresh/cluster/partition)",
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+app.add_typer(optimize_app, name="optimize")
+
 # Rich console for formatted output
 console = Console()
 
@@ -141,6 +155,17 @@ def _build_commands_panel() -> Panel:
     table.add_row("  [yellow]hotspots[/yellow]", "Find optimization opportunities (-n LIMIT, --min-gb GB)")
     table.add_row("  [yellow]analyze[/yellow]", "Deep analysis of single model")
     table.add_row("  [yellow]branch[/yellow]", "Branch-level optimization impact")
+    table.add_row("  [yellow]optimize cluster[/yellow]", "Recommend cluster keys from downstream WHERE/JOIN")
+    table.add_row("  [yellow]optimize partition[/yellow]", "Recommend partition column from downstream filters")
+    table.add_row("  [yellow]optimize refresh[/yellow]", "Column-aware --full-refresh planner")
+    table.add_row("", "")
+
+    # Column-level lineage (magenta)
+    table.add_row("[bold magenta]Lineage:[/bold magenta]", "")
+    table.add_row("  [magenta]lineage build[/magenta]", "Build column-level lineage artifact (SQLGlot + rustworkx)")
+    table.add_row("  [magenta]lineage column[/magenta]", "Upstream lineage for a column (model.col)")
+    table.add_row("  [magenta]lineage downstream[/magenta]", "Downstream impact for a column")
+    table.add_row("  [magenta]lineage stats[/magenta]", "Artifact summary (nodes, edges, generated_at)")
     table.add_row("", "")
 
     # Integration (blue)
@@ -174,7 +199,7 @@ def _build_flags_panel() -> Panel:
     table.add_row("[green]-j, --json[/green]", "Output as JSON (AI-friendly structured data)")
     table.add_row("", "")
     table.add_row("[bold cyan]Lineage flags:[/bold cyan]", "")
-    table.add_row("-a, --all", "Recursive mode (parents, children); tree view (list -f -a)")
+    table.add_row("-a, --all", "Recursive mode (parents, children)")
     table.add_row("", "")
     table.add_row("[bold cyan]SQL flags:[/bold cyan]", "")
     table.add_row("--jinja", "Show raw SQL with Jinja (sql command)")
@@ -183,7 +208,6 @@ def _build_flags_panel() -> Panel:
     table.add_row("--and", "Require ALL selectors (default: OR)")
     table.add_row("--group", "Group by tag combinations")
     table.add_row("-m, --modified", "Show only git-modified/new models")
-    table.add_row("-f, --full-refresh", "Show models needing --full-refresh (+downstream+intermediate)")
     table.add_row("", "")
     table.add_row("[bold cyan]hotspots flags:[/bold cyan]", "")
     table.add_row("-n, --limit N", "Number of hotspots to show (default: 10)")
@@ -236,8 +260,6 @@ def _build_examples_panel() -> Panel:
     table.add_row("  meta list path:models/core/", "Models under path")
     table.add_row("  meta list config.materialized:incremental", "Incremental models")
     table.add_row("  meta list -m", "Git-modified models")
-    table.add_row("  meta list -f", "Models needing --full-refresh")
-    table.add_row("  meta list -f -a", "Tree view: modified → downstream")
     table.add_row("  meta list tag:daily --group", "Group by tag combinations")
     table.add_row("", "")
     table.add_row("[bold]SQL validation:[/bold]", "")
@@ -250,6 +272,13 @@ def _build_examples_panel() -> Panel:
     table.add_row("  meta hotspots -n 20 --min-gb 10", "Top 20, tables >10 GB")
     table.add_row("  meta analyze customers", "Deep analysis of one model")
     table.add_row("  meta branch customers", "Upstream/downstream alignment")
+    table.add_row("", "")
+    table.add_row("[bold]Column-level lineage:[/bold]", "")
+    table.add_row("  meta lineage build", "Build prod artifact from manifest+catalog")
+    table.add_row("  meta lineage build --dev", "Build dev artifact (./target/lineage.json)")
+    table.add_row("  meta lineage column model.col", "Upstream lineage (where does column come from)")
+    table.add_row("  meta lineage downstream model.col", "Impact analysis (what breaks if column changes)")
+    table.add_row("  meta lineage stats -j", "Artifact stats as JSON")
     table.add_row("", "")
     table.add_row("[bold]Power BI integration:[/bold]", "")
     table.add_row("  meta powerbi", "Datasets → tables hierarchy")
@@ -895,6 +924,7 @@ def sql(
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
+    no_compile: bool = typer.Option(False, "--no-compile", help="Skip auto `dbt compile` when the local manifest lacks compiled SQL"),
 ) -> None:
     """
     Compiled SQL (default) or raw SQL with --jinja
@@ -906,6 +936,10 @@ def sql(
     """
     try:
         manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+        # Compiled SQL is the whole point of this command — make sure the
+        # manifest has it. ``jinja`` mode is exempt (it reads raw SQL).
+        if not jinja:
+            _preflight_compiled_sql_by_path(manifest_path, manifest, no_compile, json_output)
         result = commands.sql(manifest_path, model_name, use_dev=effective_use_dev, raw=jinja, json_output=json_output)
 
         if result is None:
@@ -933,6 +967,7 @@ def validate(
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev manifest SQL"),
+    no_compile: bool = typer.Option(False, "--no-compile", help="Skip auto `dbt compile` when the local manifest lacks compiled SQL"),
 ) -> None:
     """
     Validate SQL syntax using BigQuery dry run
@@ -943,6 +978,7 @@ def validate(
     """
     try:
         manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+        _preflight_compiled_sql_by_path(manifest_path, manifest, no_compile, json_output)
         result = commands.validate(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
 
         if result is None:
@@ -966,6 +1002,7 @@ def scan(
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev manifest SQL"),
+    no_compile: bool = typer.Option(False, "--no-compile", help="Skip auto `dbt compile` when the local manifest lacks compiled SQL"),
 ) -> None:
     """
     Estimate query scan size using BigQuery dry run
@@ -976,6 +1013,7 @@ def scan(
     """
     try:
         manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+        _preflight_compiled_sql_by_path(manifest_path, manifest, no_compile, json_output)
         result = commands.scan(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
 
         if result is None:
@@ -1111,10 +1149,8 @@ def list_cmd(
     selectors: Optional[list[str]] = typer.Argument(None, help="Selectors: tag:name config.key:val path:dir package:name"),  # noqa: B008
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     modified: bool = typer.Option(False, "-m", "--modified", help="Show only modified/new models (git-aware)"),
-    full_refresh: bool = typer.Option(False, "-f", "--full-refresh", help="Show models requiring --full-refresh"),
     and_logic: bool = typer.Option(False, "--and", help="Require ALL tags (default: OR - at least one)"),
     group: bool = typer.Option(False, "--group", help="Group by tag combinations"),
-    all_tree: bool = typer.Option(False, "-a", "--all", help="Tree view (--full-refresh only): show lineage from modified to downstream"),
     manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema"),
 ) -> None:
@@ -1132,7 +1168,6 @@ def list_cmd(
       --and                  - Use AND logic for tags (default: OR)
       --group                - Group results by tag combinations
       -m, --modified         - Show only git-modified/new models
-      -f, --full-refresh     - Show models needing --full-refresh
       --dev / -d             - Use dev manifest (personal schema)
       --json / -j            - Output as JSON
 
@@ -1145,7 +1180,6 @@ def list_cmd(
       meta list config.materialized:incremental   # Incremental models
       meta list path:models/staging/              # Staging models
       meta list -m                                # Git-modified models
-      meta list -f                                # Models for --full-refresh
       meta list tag:verified -j                   # JSON output
 
     \b
@@ -1153,24 +1187,22 @@ def list_cmd(
       Default    - Space-separated model names (for copy-paste)
       --group    - Grouped by tag combinations with headers
       --json     - Structured metadata [{"model": "...", "tags": [...]}]
+
+    For full-refresh / incremental / skip planning of changed models, use
+    `meta optimize refresh` — it does proper column-aware chain analysis
+    instead of the naïve "everything downstream" listing this command used
+    to do via the now-removed --full-refresh flag.
     """
     try:
         manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
         selector_list = list(selectors) if selectors else None
 
-        # Validate --all flag usage
-        if all_tree and not full_refresh:
-            console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] --all flag only works with --full-refresh")
-            raise typer.Exit(code=1)
-
         result = commands.ls(
             manifest_path,
             selectors=selector_list,
             modified=modified,
-            refresh=full_refresh,
             and_logic=and_logic,
             group=group,
-            tree_view=all_tree,
             use_dev=effective_use_dev,
             json_output=json_output
         )
@@ -1634,6 +1666,7 @@ def branch(
     model_name: str = typer.Argument(..., help="Model name"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    no_compile: bool = typer.Option(False, "--no-compile", help="Skip auto `dbt compile` when the local manifest lacks compiled SQL"),
 ) -> None:
     """
     Analyze optimization across model branch
@@ -1647,6 +1680,11 @@ def branch(
     """
     try:
         manifest_path, _ = get_manifest_path(manifest, False)
+        # Branch reads root's compiled_code to extract filter patterns
+        # for upstream/downstream alignment — without it the output is
+        # heavily degraded (no filter analysis), so apply the same
+        # pre-flight as the optimize advisors.
+        _preflight_compiled_sql_by_path(manifest_path, manifest, no_compile, json_output)
         result = commands.branch(manifest_path, model_name, use_dev=False, json_output=json_output)
 
         if result is None:
@@ -1987,6 +2025,1060 @@ def _print_powerbi_by_table(result: dict) -> None:
     pct = (tables_in / tables_total * 100) if tables_total > 0 else 0
 
     console.print(f"[dim]Summary: {tables_in}/{tables_total} tables in dbt manifest ({pct:.0f}%)[/dim]")
+
+
+# ============================================================================
+# Column-Level Lineage Commands
+# ============================================================================
+
+def _lineage_artifact_path(explicit: Optional[str], use_dev: bool) -> str:
+    """Locate lineage.json or exit with a clear error."""
+    from dbt_meta.command_impl import lineage as lineage_impl
+
+    try:
+        return lineage_impl.find_artifact(use_dev=use_dev, explicit=explicit)
+    except FileNotFoundError as e:
+        Console(stderr=True).print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] {e!s}")
+        raise typer.Exit(code=1) from None
+
+
+def _validate_column_ref(column_ref: str, json_output: bool) -> None:
+    """Reject inputs that can't possibly identify a model.column pair.
+
+    Caught here rather than letting the lookup fail with the generic
+    "not found in lineage graph" message — that message is correct for
+    ``unknown_model.col`` but actively misleading when the user typed
+    ``some_model`` (no separator) or left the column empty.
+    """
+    has_separator = "." in column_ref or ":" in column_ref
+    parts_ok = False
+    if has_separator:
+        if ":" in column_ref:
+            model_part, _, col_part = column_ref.rpartition(":")
+        else:
+            model_part, _, col_part = column_ref.rpartition(".")
+        parts_ok = bool(model_part) and bool(col_part)
+    if has_separator and parts_ok:
+        return
+    msg = (
+        f"Invalid column reference {column_ref!r}: expected 'model.column' "
+        "or 'model:column'"
+    )
+    if json_output:
+        print(json.dumps({"error": msg}))
+    else:
+        Console(stderr=True).print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] {msg}")
+    raise typer.Exit(code=1)
+
+
+@lineage_app.command("build")
+def lineage_build(
+    use_dev: bool = typer.Option(False, "-d", "--dev", help="Build dev artifact (./target/lineage.json)"),
+    output: Optional[str] = typer.Option(None, "-o", "--output", help="Custom output path"),
+    manifest_path: Optional[str] = typer.Option(None, "--manifest", help="Explicit manifest.json path"),
+    catalog_path: Optional[str] = typer.Option(None, "--catalog", help="Explicit catalog.json path"),
+    json_output: bool = typer.Option(False, "-j", "--json", help="JSON output (build summary)"),
+    verbose: bool = typer.Option(False, "-v", "--verbose", help="Print per-model progress"),
+    timeout: int = typer.Option(30, "--timeout", help="Per-model timeout in seconds (0 disables)"),
+    no_compile: bool = typer.Option(False, "--no-compile", help="Skip auto `dbt compile` when the local manifest lacks compiled SQL"),
+) -> None:
+    """Build column-level lineage artifact from manifest + catalog.
+
+    Reads compiled SQL from manifest.json, parses with SQLGlot, resolves
+    column-to-column dependencies and writes lineage.json.
+
+    Defaults:
+        prod: writes to ~/dbt-state/lineage.json (or ./target/lineage.json
+              if simple-mode manifest is in target/)
+        dev:  writes to ./target/lineage.json
+
+    Examples:
+        meta lineage build              # build prod artifact
+        meta lineage build --dev        # build dev artifact from local target/
+        meta lineage build -o my.json   # custom output
+    """
+    import os
+    import time
+
+    import orjson
+
+    from dbt_meta.lineage import LineageBuilder, save_artifact
+
+    # Resolve manifest path (reuse existing finder)
+    manifest_file, _ = get_manifest_path(manifest_path, use_dev=use_dev)
+
+    # Resolve catalog path
+    if catalog_path:
+        catalog_file: Optional[str] = catalog_path
+    else:
+        config = Config.from_config_or_env()
+        catalog_file = config.dev_catalog_path if use_dev else config.prod_catalog_path
+
+    # Load manifest + catalog
+    try:
+        manifest = orjson.loads(open(manifest_file, "rb").read())
+    except Exception as e:
+        Console(stderr=True).print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] failed to read manifest: {e!s}")
+        raise typer.Exit(code=1) from None
+
+    # Mandatory compiled-SQL pre-flight. SQLGlot's column lineage extractor
+    # needs every model's compiled_code; building the graph on a `dbt parse`
+    # manifest produces an artifact that's mostly "skipped: no compiled_code"
+    # — useless. Force a full ``dbt compile`` when the manifest is local
+    # and most models are uncompiled; hard-fail otherwise.
+    manifest = _ensure_manifest_compiled(
+        manifest=manifest,
+        manifest_file=manifest_file,
+        explicit_manifest_path=manifest_path,
+        no_compile=no_compile,
+        json_output=json_output,
+    )
+
+    catalog: dict[str, Any] = {}
+    if catalog_file and os.path.exists(catalog_file):
+        try:
+            catalog = orjson.loads(open(catalog_file, "rb").read())
+        except Exception as e:
+            Console(stderr=True).print(f"[yellow]Warning:[/yellow] failed to read catalog ({e!s}); continuing without column types")
+
+    # Resolve output path
+    if output:
+        out_path = output
+    elif use_dev:
+        out_path = os.path.join(os.path.dirname(manifest_file), "lineage.json")
+    else:
+        # Mirror manifest location: same dir as the production manifest
+        out_path = os.path.join(os.path.dirname(manifest_file), "lineage.json")
+
+    if not json_output:
+        console.print(f"[dim]Manifest:[/dim] {manifest_file}")
+        console.print(f"[dim]Catalog:[/dim]  {catalog_file or '(none)'}")
+        console.print(f"[dim]Output:[/dim]   {out_path}")
+        console.print(f"[dim]Per-model timeout:[/dim] {timeout}s")
+        console.print("[cyan]Building lineage graph...[/cyan]")
+
+    progress_callback = None
+    if verbose and not json_output:
+        def progress_callback(idx, total, name, model_elapsed):
+            tag = "[yellow]slow[/yellow]" if model_elapsed >= 3.0 else "[dim]ok[/dim]"
+            console.print(f"  [{idx}/{total}] {name} ({model_elapsed:.2f}s) {tag}")
+
+    builder = LineageBuilder(
+        manifest,
+        catalog,
+        per_model_timeout=timeout,
+        progress_callback=progress_callback,
+    )
+    t0 = time.time()
+    graph, stats = builder.build()
+    elapsed = time.time() - t0
+
+    artifact = save_artifact(graph, out_path, warnings=stats.warnings)
+
+    if json_output:
+        print(json.dumps({
+            "artifact": artifact,
+            "elapsed_seconds": round(elapsed, 2),
+            "models_total": stats.models_total,
+            "models_parsed": stats.models_parsed,
+            "models_skipped_no_sql": stats.models_skipped_no_sql,
+            "models_skipped_parse_error": stats.models_skipped_parse_error,
+            "models_skipped_timeout": stats.models_skipped_timeout,
+            "nodes": graph.node_count,
+            "edges": graph.edge_count,
+            "warnings_count": len(stats.warnings),
+            "slow_models": [{"model": m, "elapsed": round(e, 2)} for m, e in stats.slow_models],
+        }, indent=2))
+        return
+
+    console.print(f"[green]✅ Built in {elapsed:.1f}s[/green]")
+    console.print(f"   Parsed: {stats.models_parsed}/{stats.models_total} models")
+    if stats.models_skipped_no_sql:
+        console.print(f"   [yellow]Skipped (no compiled_code):[/yellow] {stats.models_skipped_no_sql}")
+    if stats.models_skipped_parse_error:
+        console.print(f"   [yellow]Skipped (parse error):[/yellow] {stats.models_skipped_parse_error}")
+    if stats.models_skipped_timeout:
+        console.print(f"   [yellow]Skipped (timeout >{timeout}s):[/yellow] {stats.models_skipped_timeout}")
+    console.print(f"   Graph: {graph.node_count} columns, {graph.edge_count} edges")
+    console.print(f"   Artifact: {artifact}")
+    if stats.slow_models:
+        console.print(f"   [yellow]Slowest models (top 5):[/yellow]")
+        for name, sec in sorted(stats.slow_models, key=lambda x: -x[1])[:5]:
+            console.print(f"     · {name}: {sec:.1f}s")
+
+
+@lineage_app.command("column")
+def lineage_column(
+    column_ref: str = typer.Argument(..., help="Column reference: 'model.column' or 'model:column'"),
+    use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev lineage artifact"),
+    json_output: bool = typer.Option(False, "-j", "--json", help="JSON output"),
+    artifact: Optional[str] = typer.Option(None, "--artifact", help="Explicit lineage.json path"),
+) -> None:
+    """Show upstream lineage for a column ('where does this column come from').
+
+    Examples:
+        meta lineage column core_clients.client_id
+        meta lineage column -j core_clients:client_id
+        meta lineage column -d staging_clients.id
+    """
+    from dbt_meta.command_impl import lineage as lineage_impl
+
+    _validate_column_ref(column_ref, json_output)
+    artifact_path = _lineage_artifact_path(artifact, use_dev)
+    result = lineage_impl.column_lineage(artifact_path, column_ref, direction="upstream")
+
+    if result is None:
+        if json_output:
+            print(json.dumps({"error": f"Column '{column_ref}' not found in lineage graph"}))
+        else:
+            Console(stderr=True).print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Column '{column_ref}' not found in lineage graph")
+            Console(stderr=True).print(f"[yellow]Hint:[/yellow] try `meta lineage build{' --dev' if use_dev else ''}` to refresh the artifact")
+        raise typer.Exit(code=1)
+
+    if json_output:
+        print(json.dumps(result, indent=2))
+        return
+
+    target = result["target"]
+    console.print(f"[bold green]{target['model']}.{target['column']}[/bold green] [dim]({target['data_type'] or '?'})[/dim]")
+    console.print(f"[dim]Direct upstream ({result['stats']['direct_count']}):[/dim]")
+    for n in result["direct"]:
+        console.print(f"  ← {n['model']}.{n['column']}")
+    if result["stats"]["total_count"] > result["stats"]["direct_count"]:
+        console.print(f"[dim]All ancestors ({result['stats']['total_count']}):[/dim]")
+        for n in result["all"]:
+            console.print(f"  · {n['model']}.{n['column']}")
+
+
+@lineage_app.command("downstream")
+def lineage_downstream(
+    column_ref: str = typer.Argument(..., help="Column reference: 'model.column' or 'model:column'"),
+    use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev lineage artifact"),
+    json_output: bool = typer.Option(False, "-j", "--json", help="JSON output"),
+    artifact: Optional[str] = typer.Option(None, "--artifact", help="Explicit lineage.json path"),
+) -> None:
+    """Show downstream impact for a column ('what breaks if this changes').
+
+    Examples:
+        meta lineage downstream raw_clients.id
+        meta lineage downstream -j staging_clients.client_id
+    """
+    from dbt_meta.command_impl import lineage as lineage_impl
+
+    _validate_column_ref(column_ref, json_output)
+    artifact_path = _lineage_artifact_path(artifact, use_dev)
+    result = lineage_impl.column_lineage(artifact_path, column_ref, direction="downstream")
+
+    if result is None:
+        if json_output:
+            print(json.dumps({"error": f"Column '{column_ref}' not found in lineage graph"}))
+        else:
+            Console(stderr=True).print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Column '{column_ref}' not found in lineage graph")
+        raise typer.Exit(code=1)
+
+    if json_output:
+        print(json.dumps(result, indent=2))
+        return
+
+    target = result["target"]
+    console.print(f"[bold green]{target['model']}.{target['column']}[/bold green] [dim]({target['data_type'] or '?'})[/dim]")
+    console.print(f"[dim]Direct downstream ({result['stats']['direct_count']}):[/dim]")
+    for n in result["direct"]:
+        console.print(f"  → {n['model']}.{n['column']}")
+    if result["stats"]["total_count"] > result["stats"]["direct_count"]:
+        console.print(f"[dim]All descendants ({result['stats']['total_count']}):[/dim]")
+        for n in result["all"]:
+            console.print(f"  · {n['model']}.{n['column']}")
+
+
+@lineage_app.command("stats")
+def lineage_stats_cmd(
+    use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev lineage artifact"),
+    json_output: bool = typer.Option(False, "-j", "--json", help="JSON output"),
+    artifact: Optional[str] = typer.Option(None, "--artifact", help="Explicit lineage.json path"),
+) -> None:
+    """Print summary stats for a lineage artifact (size, age, warnings).
+
+    Examples:
+        meta lineage stats
+        meta lineage stats -j
+    """
+    from dbt_meta.command_impl import lineage as lineage_impl
+
+    artifact_path = _lineage_artifact_path(artifact, use_dev)
+    info = lineage_impl.lineage_stats(artifact_path)
+
+    if json_output:
+        print(json.dumps({"artifact": artifact_path, **info}, indent=2))
+        return
+
+    console.print(f"[dim]Artifact:[/dim] {artifact_path}")
+    console.print(f"   Schema version: {info['schema_version']}")
+    console.print(f"   Generated:      {info['generated_at']}")
+    console.print(f"   Nodes:          {info['nodes']}")
+    console.print(f"   Edges:          {info['edges']}")
+    if info["warnings"]:
+        console.print(f"   [yellow]Warnings:[/yellow]      {len(info['warnings'])}")
+
+
+# ============================================================================
+# Optimization Advisors (column-usage-aware)
+# ============================================================================
+
+def _load_manifest_and_catalog(
+    use_dev: bool,
+    manifest_path: Optional[str],
+    catalog_path: Optional[str],
+) -> tuple[dict[str, Any], dict[str, Any], str]:
+    """Load manifest + catalog (best-effort) for advisor commands.
+
+    Returns ``(manifest_dict, catalog_dict, resolved_manifest_path)``.
+    The resolved path is used by advisors to locate the dbt project root
+    for the disk-compiled SQL fallback and the on-demand ``dbt compile``.
+    """
+    import os
+
+    import orjson
+
+    manifest_file, _ = get_manifest_path(manifest_path, use_dev=use_dev)
+    try:
+        manifest = orjson.loads(open(manifest_file, "rb").read())
+    except (OSError, ValueError) as e:
+        Console(stderr=True).print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] failed to read manifest: {e!s}")
+        raise typer.Exit(code=1) from None
+
+    if catalog_path is None:
+        config = Config.from_config_or_env()
+        catalog_path = config.dev_catalog_path if use_dev else config.prod_catalog_path
+
+    catalog: dict[str, Any] = {}
+    if catalog_path and os.path.exists(catalog_path):
+        try:
+            catalog = orjson.loads(open(catalog_path, "rb").read())
+        except (OSError, ValueError) as e:
+            Console(stderr=True).print(
+                f"[yellow]Warning:[/yellow] failed to read catalog ({e!s}); proceeding without column types"
+            )
+    return manifest, catalog, manifest_file
+
+
+def _preflight_compiled_sql_by_path(
+    manifest_file: str,
+    explicit_manifest_path: Optional[str],
+    no_compile: bool,
+    json_output: bool,
+) -> None:
+    """Path-based pre-flight wrapper for commands that pass manifest as a path.
+
+    Single-model commands (``sql``, ``validate``, ``scan``, ``analyze``,
+    ``branch``) hand the manifest path straight into the ``commands``
+    layer; they never materialise the dict in the CLI. To still enforce
+    "manifest must be compiled or auto-compile it", this wrapper loads,
+    checks, and (if needed) runs ``dbt compile`` — re-writing the file
+    on disk so the downstream layer reads the freshly compiled version.
+    """
+    import orjson
+
+    try:
+        manifest = orjson.loads(open(manifest_file, "rb").read())
+    except (OSError, ValueError):
+        # Let the downstream layer surface the load error; preflight is
+        # advisory.
+        return
+    _ensure_manifest_compiled(
+        manifest=manifest,
+        manifest_file=manifest_file,
+        explicit_manifest_path=explicit_manifest_path,
+        no_compile=no_compile,
+        json_output=json_output,
+    )
+
+
+def _ensure_manifest_compiled(
+    *,
+    manifest: dict[str, Any],
+    manifest_file: str,
+    explicit_manifest_path: Optional[str],
+    no_compile: bool,
+    json_output: bool,
+) -> dict[str, Any]:
+    """Mandatory pre-flight for commands that need compiled SQL (universal).
+
+    Used by ``lineage build`` and ``optimize cluster/partition``. The
+    rule is the same in every case: if fewer than half the manifest's
+    models have a populated ``compiled_code`` field, the manifest is
+    almost certainly from ``dbt parse`` (no Jinja rendering). Either run
+    ``dbt compile`` for the WHOLE project (no ``--select``, per project
+    convention — selective compiles leave gaps), or fail with a path-
+    tagged error.
+
+    Why full-project compile rather than ``<target>+``: incremental
+    selectors only compile the requested chain, leaving siblings and
+    unrelated upstreams empty in the manifest. The next command — and
+    even the same command on a different target — would re-trigger a
+    compile. One full pass amortises the cost.
+    """
+    from pathlib import Path
+
+    import orjson
+
+    model_nodes = [
+        node
+        for uid, node in manifest.get("nodes", {}).items()
+        if uid.startswith("model.")
+    ]
+    if not model_nodes:
+        return manifest
+    with_sql = sum(
+        1 for n in model_nodes if (n.get("compiled_code") or "").strip()
+    )
+    total = len(model_nodes)
+    if with_sql * 2 >= total:
+        return manifest
+
+    home_state = str(Path.home() / "dbt-state" / "manifest.json")
+    using_prod = manifest_file == home_state
+    is_explicit = explicit_manifest_path is not None
+
+    def _fail(extra: Optional[str] = None) -> None:
+        coverage = f"{with_sql}/{total} models"
+        if using_prod:
+            msg = (
+                f"Production manifest at {manifest_file} has compiled SQL "
+                f"for only {coverage}. Re-sync it from your dbt-state "
+                "source — this command needs compiled_code across the "
+                "project."
+            )
+        elif is_explicit:
+            msg = (
+                f"Explicit manifest at {manifest_file} has compiled SQL for "
+                f"only {coverage}. Pass a manifest produced by `dbt compile` "
+                "(not `dbt parse`)."
+            )
+        elif no_compile:
+            msg = (
+                f"Manifest at {manifest_file} has compiled SQL for only "
+                f"{coverage} and `--no-compile` was set. Remove `--no-compile` "
+                "to let the command auto-run `dbt compile`, or run "
+                "`dbt compile` manually in the project."
+            )
+        else:
+            msg = (
+                f"Manifest at {manifest_file} has compiled SQL for only "
+                f"{coverage} — this command can't analyse uncompiled models. "
+                "Most likely cause: manifest produced by `dbt parse`. Fixes:\n"
+                "  - run `dbt compile` in the project (populates all "
+                "compiled_code), or\n"
+                f"  - use the prod manifest: `--manifest {home_state}`, or\n"
+                f"  - set DBT_PROD_MANIFEST_PATH={home_state} so the lookup "
+                "prefers prod by default."
+            )
+        if extra:
+            msg = f"{msg}\n\n{extra}"
+        if json_output:
+            print(json.dumps({"error": msg}))
+        else:
+            Console(stderr=True).print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] {msg}")
+        raise typer.Exit(code=1)
+
+    if no_compile or using_prod or is_explicit:
+        _fail()
+
+    from dbt_meta.usage.advisor_refresh import (
+        _find_dbt_executable,
+        _infer_project_root,
+    )
+
+    project_root = _infer_project_root(manifest_file)
+    dbt_cmd = _find_dbt_executable(project_root) if project_root else None
+    if not project_root or not dbt_cmd:
+        _fail(
+            "Auto-compile skipped: "
+            + ("dbt CLI not found on PATH or in project venv." if project_root
+               else "no `dbt_project.yml` found walking up from the manifest path.")
+        )
+
+    Console(stderr=True).print(
+        f"[dim]ℹ️  Only {with_sql}/{total} models have compiled SQL — "
+        f"running full `dbt compile` in {project_root} to populate the "
+        "rest. This can take 5-15 min on large projects; pass "
+        "`--no-compile` to skip.[/dim]"
+    )
+    import subprocess as _subprocess
+
+    try:
+        result = _subprocess.run(
+            [dbt_cmd, "compile"],  # type: ignore[list-item]
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            timeout=1800,  # 30 min — full-project compile budget
+        )
+    except (_subprocess.TimeoutExpired, OSError) as exc:
+        _fail(f"`dbt compile` failed to launch: {exc}")
+
+    if result.returncode != 0:
+        tail = "\n      ".join((result.stderr or result.stdout or "").splitlines()[-10:])
+        _fail(f"`dbt compile` exited with code {result.returncode}:\n      {tail}")
+
+    try:
+        manifest = orjson.loads(open(manifest_file, "rb").read())
+    except (OSError, ValueError) as e:
+        Console(stderr=True).print(
+            f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] failed to reload manifest after compile: {e!s}"
+        )
+        raise typer.Exit(code=1) from None
+
+    new_model_nodes = [
+        n
+        for uid, n in manifest.get("nodes", {}).items()
+        if uid.startswith("model.")
+    ]
+    new_with_sql = sum(
+        1 for n in new_model_nodes if (n.get("compiled_code") or "").strip()
+    )
+    new_total = len(new_model_nodes)
+    if new_with_sql * 2 < new_total:
+        _fail(
+            "`dbt compile` finished but compiled_code is still sparse "
+            f"({new_with_sql}/{new_total}); check dbt project config or "
+            "run `dbt compile` manually."
+        )
+
+    Console(stderr=True).print(
+        f"[dim]✓ Manifest now has {new_with_sql}/{new_total} models with "
+        "compiled SQL.[/dim]"
+    )
+    return manifest
+
+
+@optimize_app.command("cluster")
+def optimize_cluster(
+    model: str = typer.Argument(..., help="Target model short name (e.g. core_clients)"),
+    use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev manifest/catalog"),
+    json_output: bool = typer.Option(False, "-j", "--json", help="JSON output"),
+    top_n: int = typer.Option(4, "--top", help="Max recommendations (BigQuery cap is 4)"),
+    manifest_path: Optional[str] = typer.Option(None, "--manifest", help="Explicit manifest.json path"),
+    catalog_path: Optional[str] = typer.Option(None, "--catalog", help="Explicit catalog.json path"),
+    no_compile: bool = typer.Option(False, "--no-compile", help="Skip auto `dbt compile` when the local manifest lacks compiled SQL"),
+) -> None:
+    """Recommend BigQuery clustering keys based on downstream WHERE/JOIN usage.
+
+    Examples:
+        meta optimize cluster core_internal_tracking__sessions
+        meta optimize cluster -j core_clients
+    """
+    from dataclasses import asdict
+
+    from dbt_meta.usage import ClusterAdvisor
+
+    manifest, catalog, manifest_file = _load_manifest_and_catalog(use_dev, manifest_path, catalog_path)
+    manifest = _ensure_manifest_compiled(
+        manifest=manifest,
+        manifest_file=manifest_file,
+        explicit_manifest_path=manifest_path,
+        no_compile=no_compile,
+        json_output=json_output,
+    )
+    advisor = ClusterAdvisor(manifest, catalog, top_n=top_n)
+    result = advisor.recommend(model)
+
+    if json_output:
+        payload = {
+            "target_model": result.target_model,
+            "direct_downstream_count": result.direct_downstream_count,
+            "analysed_downstream_count": result.analysed_downstream_count,
+            "current_partition_by": result.target_partition_by,
+            "current_cluster_by": result.current_cluster_by,
+            "matches_current": result.matches_current,
+            "recommendations": [asdict(r) for r in result.recommendations],
+            "excluded": result.excluded,
+            "warnings": result.warnings,
+        }
+        print(json.dumps(payload, indent=2))
+        return
+
+    if result.warnings:
+        for w in result.warnings:
+            console.print(f"[yellow]⚠ {w}[/yellow]")
+        if not result.recommendations:
+            raise typer.Exit(code=1)
+
+    console.print(f"[bold green]Clustering advisor for {result.target_model}[/bold green]")
+    console.print(f"   Manifest: [dim]{manifest_file}[/dim]")
+    console.print(
+        f"   Direct downstream: {result.direct_downstream_count} models, "
+        f"{result.analysed_downstream_count} with analyzable column references"
+    )
+    if result.target_partition_by:
+        console.print(f"   Current partition_by: {', '.join(result.target_partition_by)}")
+    if result.current_cluster_by:
+        console.print(f"   Current cluster_by:   {', '.join(result.current_cluster_by)}")
+    if not result.recommendations:
+        console.print("[yellow]No clustering recommendations (no qualifying downstream usage)[/yellow]")
+        return
+    if result.matches_current:
+        console.print(
+            "\n[bold green]✓ Current cluster_by is already optimal "
+            "— no changes needed.[/bold green]"
+        )
+    console.print(f"\n   Recommended cluster keys (top {len(result.recommendations)}):")
+    for i, rec in enumerate(result.recommendations, 1):
+        console.print(f"     {i}. [cyan]{rec.column}[/cyan] ({rec.data_type or '?'})  score={rec.score}")
+        for line in rec.reasoning:
+            console.print(f"        · {line}")
+    if result.excluded:
+        console.print(f"\n   [dim]Excluded:[/dim]")
+        for e in result.excluded:
+            console.print(f"     · {e['column']} — {e['reason']}")
+
+
+@optimize_app.command("partition")
+def optimize_partition(
+    model: str = typer.Argument(..., help="Target model short name"),
+    use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev manifest/catalog"),
+    json_output: bool = typer.Option(False, "-j", "--json", help="JSON output"),
+    manifest_path: Optional[str] = typer.Option(None, "--manifest", help="Explicit manifest.json path"),
+    catalog_path: Optional[str] = typer.Option(None, "--catalog", help="Explicit catalog.json path"),
+    no_compile: bool = typer.Option(False, "--no-compile", help="Skip auto `dbt compile` when the local manifest lacks compiled SQL"),
+) -> None:
+    """Recommend BigQuery partition column based on downstream range/equality filters.
+
+    Examples:
+        meta optimize partition core_clients
+        meta optimize partition -j core_events
+    """
+    from dataclasses import asdict
+
+    from dbt_meta.usage import PartitionAdvisor
+
+    manifest, catalog, manifest_file = _load_manifest_and_catalog(use_dev, manifest_path, catalog_path)
+    manifest = _ensure_manifest_compiled(
+        manifest=manifest,
+        manifest_file=manifest_file,
+        explicit_manifest_path=manifest_path,
+        no_compile=no_compile,
+        json_output=json_output,
+    )
+    advisor = PartitionAdvisor(manifest, catalog)
+    result = advisor.recommend(model)
+
+    if json_output:
+        payload = {
+            "target_model": result.target_model,
+            "direct_downstream_count": result.direct_downstream_count,
+            "analysed_downstream_count": result.analysed_downstream_count,
+            "incremental_count": result.incremental_count,
+            "non_incremental_count": result.non_incremental_count,
+            "current_partition_by": result.current_partition_by,
+            "matches_current": result.matches_current,
+            "recommendation": asdict(result.recommendation) if result.recommendation else None,
+            "alternatives": [asdict(a) for a in result.alternatives],
+            "warnings": result.warnings,
+        }
+        print(json.dumps(payload, indent=2))
+        return
+
+    if result.warnings:
+        for w in result.warnings:
+            console.print(f"[yellow]⚠ {w}[/yellow]")
+        if not result.recommendation:
+            raise typer.Exit(code=1)
+
+    console.print(f"[bold green]Partition advisor for {result.target_model}[/bold green]")
+    console.print(f"   Manifest: [dim]{manifest_file}[/dim]")
+    console.print(
+        f"   Direct downstream: {result.direct_downstream_count} models "
+        f"({result.incremental_count} incremental, "
+        f"{result.non_incremental_count} table/view); "
+        f"{result.analysed_downstream_count} with analyzable references"
+    )
+    if result.current_partition_by:
+        console.print(f"   Current partition_by: {', '.join(result.current_partition_by)}")
+
+    rec = result.recommendation
+    if rec is None:
+        console.print("[yellow]No partition recommendation (no qualifying downstream usage)[/yellow]")
+        return
+
+    if result.matches_current:
+        console.print(
+            f"\n[bold green]✓ Current partitioning by '{rec.column}' is already "
+            "optimal — no changes needed.[/bold green]"
+        )
+    else:
+        console.print(f"\n   [cyan]Recommended:[/cyan]")
+        console.print(f"     Column:      {rec.column} ({rec.data_type or '?'})")
+        console.print(f"     Granularity: {rec.granularity}")
+        console.print(f"     Score:       {rec.score}")
+        console.print(f"     Reasoning:")
+        for line in rec.reasoning:
+            console.print(f"       · {line}")
+
+    _print_partition_breakdown(rec)
+
+    if not result.matches_current and result.alternatives:
+        console.print(f"\n   [dim]Alternatives:[/dim]")
+        for alt in result.alternatives:
+            console.print(f"     · {alt.column} ({alt.data_type or '?'}) score={alt.score} pruning=~{alt.pruning_impact_pct}%")
+
+
+def _print_partition_breakdown(rec: Any) -> None:
+    """Render the materialization-aware downstream breakdown.
+
+    Three buckets matter to the reader:
+      1. Incremental WITH pruning — correctly implemented.
+      2. Incremental WITHOUT pruning — the bug class. Each one means
+         the incremental run scans the whole upstream every time.
+      3. Non-incremental — full scan is expected (table/view refresh).
+    """
+    inc_with = rec.incremental_with_pruning
+    inc_without = rec.incremental_without_pruning
+    non_inc_with = rec.non_incremental_with_pruning
+    non_inc_scan = rec.non_incremental_full_scan
+
+    if inc_with:
+        console.print(
+            f"\n   [green]✓ {len(inc_with)} incremental downstream use "
+            f"partition pruning on '{rec.column}':[/green]"
+        )
+        for m in inc_with[:10]:
+            console.print(f"     · {m}")
+        if len(inc_with) > 10:
+            console.print(f"     [dim](+{len(inc_with) - 10} more)[/dim]")
+
+    if inc_without:
+        console.print(
+            f"\n   [bold red]❗ {len(inc_without)} incremental downstream "
+            f"read this table WITHOUT pruning on '{rec.column}' — every "
+            f"incremental run scans the whole upstream:[/bold red]"
+        )
+        for m in inc_without:
+            console.print(f"     · [red]{m}[/red]")
+        console.print(
+            "     [dim]Fix: add a WHERE clause filtering "
+            f"'{rec.column}' (or a derived range) in each model's SQL.[/dim]"
+        )
+
+    if non_inc_with:
+        console.print(
+            f"\n   [dim]{len(non_inc_with)} table/view downstream still "
+            "filter on this column (good practice, helps cache hits):[/dim]"
+        )
+        for m in non_inc_with[:5]:
+            console.print(f"     · [dim]{m}[/dim]")
+        if len(non_inc_with) > 5:
+            console.print(f"     [dim](+{len(non_inc_with) - 5} more)[/dim]")
+
+    if non_inc_scan:
+        console.print(
+            f"\n   [dim]{len(non_inc_scan)} table/view downstream "
+            "scan the whole table (expected for full-refresh "
+            "materializations):[/dim]"
+        )
+        for m in non_inc_scan[:5]:
+            console.print(f"     · [dim]{m}[/dim]")
+        if len(non_inc_scan) > 5:
+            console.print(f"     [dim](+{len(non_inc_scan) - 5} more)[/dim]")
+
+
+@optimize_app.command("refresh")
+def optimize_refresh(
+    models: list[str] = typer.Argument(None, help="Changed model short names (omit with -m to auto-detect from git)"),
+    use_modified: bool = typer.Option(False, "-m", "--modified", help="Auto-detect changed models from git (committed-vs-base + uncommitted + untracked)"),
+    base_branch: Optional[str] = typer.Option(None, "--base", help="Base branch for git diff (default: auto-detect origin/main → origin/master → main → master)"),
+    cols: list[str] = typer.Option(None, "--cols", help="Limit changes to specific columns: --cols MODEL:c1,c2 (repeatable). Without it, the whole model is treated as affected and chain propagation is conservative."),
+    json_output: bool = typer.Option(False, "-j", "--json", help="JSON output"),
+    manifest_path: Optional[str] = typer.Option(None, "--manifest", help="Explicit dev manifest.json path (overrides default ./target/manifest.json)"),
+    catalog_path: Optional[str] = typer.Option(None, "--catalog", help="Explicit catalog.json path"),
+    no_compile: bool = typer.Option(False, "--no-compile", help="Skip auto `dbt parse` / `dbt compile` when manifest is stale or compiled SQL is missing"),
+) -> None:
+    """Plan minimal --full-refresh / incremental / skip set for changed models.
+
+    Always uses the **dev** manifest. This command exists to plan the impact
+    of *branch-local* changes, which exist only in dev — the production
+    manifest is irrelevant here and is intentionally not supported.
+
+    When ``-m`` is used and ``--no-compile`` is not set, the command runs
+    ``dbt compile --select <changed>+`` in the project root once before
+    planning. A single compile regenerates the manifest (picking up new
+    branch-only models) AND populates ``compiled_code`` for every changed
+    model plus its downstream — exactly what SQLGlot needs to attribute
+    column usage. ``dbt parse`` alone would not be enough: it doesn't
+    render Jinja, so ``compiled_code`` would stay empty and SQLGlot would
+    have no SQL to parse.
+
+    Examples:
+        meta optimize refresh -m                          # auto from git
+        meta optimize refresh model_a model_b             # explicit list
+        meta optimize refresh -mj | jq '.summary'         # JSON output
+        meta optimize refresh -m --no-compile             # use whatever manifest is on disk as-is
+    """
+    from dbt_meta.usage import RefreshAdvisor, changed_models_from_git
+    from dbt_meta.usage.advisor_refresh import _find_dbt_executable, _infer_project_root
+
+    manifest, catalog, manifest_file = _load_manifest_and_catalog(True, manifest_path, catalog_path)
+
+    # Will be populated below from git output (when -m). Used twice: once
+    # to drive the bulk `dbt compile`, then to map paths back to unique_ids.
+    modified_files: set[str] = set()
+
+    changes: dict[str, Optional[set[str]]] = {}
+    used_base: Optional[str] = None
+    file_sources: dict[str, str] = {}
+    if use_modified:
+        import subprocess
+
+        def _git(cmd: list[str]) -> tuple[int, str]:
+            try:
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+                return r.returncode, r.stdout
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                return 1, ""
+
+        # 1) Committed changes vs base branch
+        bases_to_try = (
+            (base_branch,) if base_branch
+            else ("origin/main", "origin/master", "main", "master")
+        )
+        for base in bases_to_try:
+            rc, out = _git(["git", "diff", f"{base}...HEAD", "--name-only"])
+            if rc == 0:
+                used_base = base
+                for f in out.splitlines():
+                    if f:
+                        file_sources.setdefault(f, "committed")
+                break
+        if base_branch and used_base is None:
+            Console(stderr=True).print(
+                f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] explicit --base '{base_branch}' not found"
+            )
+            raise typer.Exit(code=1)
+
+        # 2) Uncommitted (unstaged + staged) and untracked
+        rc, out = _git(["git", "diff", "HEAD", "--name-only"])
+        if rc == 0:
+            for f in out.splitlines():
+                if f:
+                    file_sources[f] = "uncommitted"  # overrides 'committed'
+        rc, out = _git(["git", "diff", "--cached", "--name-only"])
+        if rc == 0:
+            for f in out.splitlines():
+                if f:
+                    file_sources[f] = "uncommitted"
+        # --untracked-files=all so git lists each new .sql file inside
+        # untracked directories instead of collapsing the dir to a single
+        # entry (e.g. ``?? models/intermediate/client/``). Without this
+        # flag, models added in brand-new directories never match any
+        # node's ``original_file_path`` and silently fall out of the plan.
+        rc, out = _git(["git", "status", "--porcelain", "--untracked-files=all"])
+        if rc == 0:
+            for line in out.splitlines():
+                if line.startswith("??"):
+                    f = line[3:].strip()
+                    if f:
+                        file_sources[f] = "untracked"
+
+        modified_files = set(file_sources.keys())
+        if not modified_files and not models:
+            Console(stderr=True).print(
+                "[yellow]No git changes detected.[/yellow] "
+                f"Base used: {used_base or '(none)'}. Try passing model names explicitly."
+            )
+
+        # Run `dbt compile --select <changed>+` ONCE before classification:
+        # this single call regenerates the manifest (catching new branch-only
+        # models) AND populates compiled_code for every changed model plus
+        # its full downstream chain — exactly what SQLGlot needs. We derive
+        # the model short name from the file basename (dbt's convention).
+        cli_compile_attempted = False
+        if modified_files and not no_compile:
+            from pathlib import Path as _Path
+            import subprocess as _subprocess
+
+            project_root = _infer_project_root(manifest_file)
+            selectors = sorted({
+                f"{_Path(f).stem}+"
+                for f in modified_files
+                if f.endswith(".sql") and "models/" in f and _Path(f).stem
+            })
+            dbt_cmd = _find_dbt_executable(project_root) if project_root else None
+            if project_root and dbt_cmd and selectors:
+                cli_compile_attempted = True
+                Console(stderr=True).print(
+                    f"[dim]ℹ️  Running `dbt compile --select {' '.join(selectors)}` "
+                    f"in {project_root} to refresh manifest + compiled SQL of the impacted chain "
+                    f"(may take 1-5 min on first run)…[/dim]"
+                )
+                try:
+                    compile_result = _subprocess.run(
+                        [dbt_cmd, "compile", "--select", *selectors],
+                        cwd=project_root,
+                        capture_output=True,
+                        text=True,
+                        timeout=600,
+                    )
+                except (_subprocess.TimeoutExpired, OSError) as exc:
+                    Console(stderr=True).print(
+                        f"[yellow]⚠️  `dbt compile` did not complete ({exc}); using the on-disk manifest as-is.[/yellow]"
+                    )
+                    compile_result = None
+                if compile_result is not None and compile_result.returncode == 0:
+                    manifest, catalog, manifest_file = _load_manifest_and_catalog(True, manifest_path, catalog_path)
+                elif compile_result is not None:
+                    # Show the LAST chunk of stderr/stdout — dbt-fusion prints
+                    # an "Execution Summary" footer and the actual error lines
+                    # right above it, so the meaningful content is near the
+                    # tail of the output.
+                    err_text = (compile_result.stderr or compile_result.stdout or "").strip()
+                    err_tail = "\n      ".join(err_text.splitlines()[-12:]) if err_text else "(no output captured)"
+                    Console(stderr=True).print(
+                        f"[yellow]⚠️  `dbt compile` failed (exit {compile_result.returncode}). "
+                        f"Last lines of output:\n      {err_tail}\n"
+                        f"    Falling back to the on-disk manifest — models without compiled_code "
+                        f"will land in `full_refresh` conservatively.\n"
+                        f"    Fix dbt project errors above and retry, or pass --no-compile to "
+                        f"silence the auto-compile attempt.[/yellow]"
+                    )
+
+        for short in changed_models_from_git(modified_files, manifest):
+            changes[short] = None
+    if models:
+        for m in models:
+            changes[m] = None  # Whole-model change unless caller has a column-level diff
+
+    # --cols MODEL:c1,c2 narrows specific models from whole-model to column-level
+    for spec in (cols or []):
+        if ":" not in spec:
+            Console(stderr=True).print(
+                f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] --cols expects 'MODEL:col1,col2', got: {spec!r}"
+            )
+            raise typer.Exit(code=1)
+        model_part, _, col_part = spec.partition(":")
+        col_set = {c.strip().lower() for c in col_part.split(",") if c.strip()}
+        if not col_set:
+            continue
+        # Add the model to changes if not already there
+        if model_part not in changes:
+            changes[model_part] = set()
+        existing = changes[model_part]
+        if existing is None:
+            changes[model_part] = col_set
+        else:
+            changes[model_part] = existing | col_set
+
+    if not changes:
+        msg = "No changed models specified. Use -m to auto-detect from git or pass model names."
+        if json_output:
+            print(json.dumps({"error": msg}))
+        else:
+            Console(stderr=True).print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] {msg}")
+        raise typer.Exit(code=1)
+
+    # Reject runs where none of the requested models exist in the active
+    # manifest — otherwise the plan exits 0 with an empty summary plus a
+    # buried warning, which scripts and humans both read as "nothing to do
+    # / success". A user passing a typo or pointing at the wrong manifest
+    # needs a hard failure, not a silent no-op.
+    manifest_short_names = {
+        uid.split(".")[-1]
+        for uid in manifest.get("nodes", {})
+        if uid.startswith("model.")
+    }
+    missing = [m for m in changes if m not in manifest_short_names]
+    if missing and len(missing) == len(changes):
+        msg = (
+            f"None of the specified models exist in the active manifest: "
+            f"{', '.join(sorted(missing))}. "
+            f"The dev manifest is at {manifest_file}; "
+            "run `dbt parse` (or `dbt compile`) in your project to refresh it."
+        )
+        if json_output:
+            print(json.dumps({"error": msg}))
+        else:
+            Console(stderr=True).print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] {msg}")
+        raise typer.Exit(code=1)
+
+    advisor = RefreshAdvisor(
+        manifest, catalog,
+        manifest_path=manifest_file,
+        auto_compile=not no_compile,
+    )
+    plan = advisor.plan(changes)
+
+    # Map each changed-model short name → source (committed / uncommitted /
+    # untracked / explicit) for display.
+    changes_source: dict[str, str] = {}
+    if use_modified and file_sources:
+        for unique_id, node in manifest.get("nodes", {}).items():
+            if not unique_id.startswith("model."):
+                continue
+            short = unique_id.split(".")[-1]
+            if short not in changes:
+                continue
+            path = node.get("original_file_path", "")
+            if path in file_sources:
+                changes_source[short] = file_sources[path]
+    for m in changes:
+        changes_source.setdefault(m, "explicit")
+
+    if json_output:
+        payload = plan.to_dict()
+        payload["git"] = {
+            "base_branch": used_base,
+            "changed_models_source": changes_source,
+        }
+        full_list = [d["model"] for d in payload["needs_full_refresh"]]
+        inc_list = [d["model"] for d in payload["needs_incremental"]]
+        payload["dbt_commands"] = {
+            "full_refresh": f"dbt run -fs {' '.join(full_list)}" if full_list else "",
+            "incremental": f"dbt run -s {' '.join(inc_list)}" if inc_list else "",
+        }
+        print(json.dumps(payload, indent=2))
+        return
+
+    s = plan.to_dict()["summary"]
+    console.print(f"[bold green]Refresh plan[/bold green]")
+    if use_modified:
+        console.print(f"   Git base: [cyan]{used_base or '(unknown)'}[/cyan]")
+    formatted_changes = ", ".join(
+        f"{m} [dim]({changes_source.get(m, '?')})[/dim]" for m in sorted(changes)
+    )
+    console.print(f"   Changed models: {len(changes)} — {formatted_changes}")
+    console.print(f"   Summary: full_refresh={s['full_refresh']}  incremental={s['incremental']}  skip={s['skip']}")
+
+    def _print_bucket(label, color, bucket, limit=30):
+        if not bucket:
+            return
+        console.print(f"\n   [{color}]{label} ({len(bucket)}):[/{color}]")
+        for d in bucket[:limit]:
+            reason = d.reasons[0] if d.reasons else ""
+            console.print(f"     · {d.model}  [dim]{reason[:80]}[/dim]")
+        if len(bucket) > limit:
+            console.print(f"     [dim](+{len(bucket) - limit} more — use -j for full list)[/dim]")
+
+    _print_bucket("FULL REFRESH", "red", plan.needs_full_refresh)
+    _print_bucket("INCREMENTAL", "yellow", plan.needs_incremental)
+    # Skip bucket is usually the longest and least interesting — cap at 5
+    _print_bucket("SKIP", "dim", plan.can_skip, limit=5)
+
+    # Ready-to-paste dbt commands. Print via plain ``print`` (not
+    # ``console.print``) so Rich does not soft-wrap the command — pasted
+    # multi-line text would otherwise be split into separate shell commands.
+    full_models = [d.model for d in plan.needs_full_refresh]
+    inc_models = [d.model for d in plan.needs_incremental]
+    if full_models or inc_models:
+        console.print()
+        console.print("[bold cyan]Suggested commands:[/bold cyan]")
+    if full_models:
+        print(f"  dbt run -fs {' '.join(full_models)}")
+    if inc_models:
+        print(f"  dbt run -s {' '.join(inc_models)}")
+
+    if plan.warnings:
+        console.print()
+        for w in plan.warnings:
+            console.print(f"[yellow]⚠ {w}[/yellow]")
 
 
 if __name__ == "__main__":

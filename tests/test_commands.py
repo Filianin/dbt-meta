@@ -2061,18 +2061,6 @@ class TestLsCommand:
         # Both lists should have same length
         assert len(result['models']) == len(result['tables'])
 
-    def test_ls_refresh(self, prod_manifest):
-        """Test --refresh flag to list models needing --full-refresh (compact JSON format)"""
-        result = ls(str(prod_manifest), refresh=True, json_output=True)
-        assert isinstance(result, dict)
-        assert 'models' in result
-        assert 'tables' in result
-        assert isinstance(result['models'], list)
-        assert isinstance(result['tables'], list)
-        # Result depends on git status - could be empty or have models
-        # Both lists should have same length
-        assert len(result['models']) == len(result['tables'])
-
     def test_ls_group_text(self, prod_manifest):
         """Test --group flag with text output"""
         result = ls(str(prod_manifest), selectors=['tag:verified', 'tag:active'], group=True, json_output=False)
@@ -2188,25 +2176,6 @@ class TestLsCommand:
             assert not result.endswith(' '), "Text output should not have trailing space"
             assert not result.startswith(' '), "Text output should not have leading space"
 
-    def test_ls_refresh_text_with_plus_suffix(self, prod_manifest):
-        """Test that --refresh mode adds + suffix to model names"""
-        result = ls(str(prod_manifest), refresh=True, json_output=False)
-        if result:  # Only check if models found
-            models = result.split()
-            for model in models:
-                assert model.endswith('+'), f"Model '{model}' should end with '+' in refresh mode"
-
-    def test_ls_refresh_json_compact_format(self, prod_manifest):
-        """Test that --refresh mode returns compact JSON format"""
-        result = ls(str(prod_manifest), refresh=True, json_output=True)
-        assert isinstance(result, dict)
-        assert 'models' in result
-        assert 'tables' in result
-        # Models should not have + suffix in JSON
-        if result['models']:
-            for model in result['models']:
-                assert not model.endswith('+'), "Models in JSON should not have + suffix"
-
     def test_ls_modified_json_compact_format(self, prod_manifest):
         """Test that --modified mode returns compact JSON format"""
         result = ls(str(prod_manifest), modified=True, json_output=True)
@@ -2241,43 +2210,6 @@ class TestLsCommand:
         assert 'models' in result
         assert 'tables' in result
         # Can be empty or have modified models depending on git status
-
-    def test_ls_refresh_empty_when_clean(self, prod_manifest):
-        """Test --refresh returns empty compact format when no modified files"""
-        result = ls(str(prod_manifest), refresh=True, json_output=True)
-        assert isinstance(result, dict)
-        assert 'models' in result
-        assert 'tables' in result
-        # Can be empty or have models depending on git status
-
-    def test_ls_refresh_includes_descendants(self, prod_manifest, mocker):
-        """Test --refresh includes descendants of modified models"""
-        # Mock subprocess to simulate git operations
-        # The function calls git multiple times, so create a repeatable mock
-        mock_run = mocker.patch('subprocess.run')
-
-        def git_mock(*args, **kwargs):
-            cmd = args[0] if args else kwargs.get('args', [])
-            if 'diff' in cmd:
-                # git diff returns one modified file
-                return mocker.Mock(stdout='models/staging/freshmarketer/stg_freshmarketer__contacts.sql\n', returncode=0)
-            elif 'status' in cmd:
-                # git status returns nothing
-                return mocker.Mock(stdout='', returncode=0)
-            else:
-                # Other git commands
-                return mocker.Mock(stdout='', returncode=0)
-
-        mock_run.side_effect = git_mock
-
-        result = ls(str(prod_manifest), refresh=True, json_output=True)
-        assert isinstance(result, dict)
-        assert 'models' in result
-        assert 'tables' in result
-
-        # Should include the modified model
-        if result['models']:
-            assert any('freshmarketer' in name or 'contacts' in name for name in result['models'])
 
     def test_ls_config_selector_with_dots(self, prod_manifest):
         """Test config selector with nested keys"""
@@ -2329,35 +2261,6 @@ class TestLsCommand:
         result = ls(str(prod_manifest), selectors=['tag:daily', 'tag:core'], group=True, json_output=True)
         assert isinstance(result, dict)
         # Should have groups with tag combinations
-
-    def test_ls_refresh_with_multiple_modified_models(self, prod_manifest, mocker):
-        """Test --refresh with 2+ modified models (tests intermediate model finding)"""
-        # Mock subprocess to return 2 modified models with real paths
-        mock_run = mocker.patch('subprocess.run')
-
-        def git_mock(*args, **kwargs):
-            cmd = args[0] if args else kwargs.get('args', [])
-            if 'diff' in cmd:
-                # git diff returns 2 modified files
-                return mocker.Mock(
-                    stdout='models/staging/freshmarketer/stg_freshmarketer__contacts.sql\nmodels/staging/freshmarketer/stg_freshmarketer__accounts.sql\n',
-                    returncode=0
-                )
-            elif 'status' in cmd:
-                return mocker.Mock(stdout='', returncode=0)
-            else:
-                return mocker.Mock(stdout='', returncode=0)
-
-        mock_run.side_effect = git_mock
-
-        result = ls(str(prod_manifest), refresh=True, json_output=True)
-        assert isinstance(result, dict)
-        assert 'models' in result
-        assert 'tables' in result
-        # With 2+ modified models, should also find intermediate models if they exist
-        # At minimum should include the 2 modified models
-        if result['models']:
-            assert len(result['models']) >= 2
 
     def test_ls_path_selector_subdirectory(self, prod_manifest):
         """Test path selector with subdirectory"""
