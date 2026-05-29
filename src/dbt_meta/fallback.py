@@ -230,6 +230,10 @@ class FallbackStrategy:
         # Infer dataset and table from model name
         dataset, table = infer_table_parts(model_name)
 
+        # Bail out if model name has no double-underscore separator (dataset undetermined)
+        if not dataset:
+            return None
+
         # Fetch metadata from BigQuery
         metadata = fetch_table_metadata_from_bigquery(dataset, table)
 

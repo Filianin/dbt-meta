@@ -97,6 +97,7 @@ class Config:
             bigquery_timeout: Query timeout in seconds
             bigquery_retries: Number of retry attempts
             bigquery_location: BigQuery location/region
+            monitoring_dataset: Dataset for dbt_bigquery_monitoring tables
 
         Database settings (future):
             database_type: Database type (postgresql, redshift, snowflake)
@@ -143,6 +144,7 @@ class Config:
     bigquery_timeout: int = 10
     bigquery_retries: int = 3
     bigquery_location: str = "US"
+    monitoring_dataset: str = "prod"  # Dataset for dbt_bigquery_monitoring tables
 
     # ===== Database settings (future) =====
     database_type: Optional[str] = None
@@ -163,6 +165,13 @@ class Config:
     defer_sync_threshold: int = 3600  # 1 hour
     defer_sync_command: Optional[str] = None
     defer_target: str = "dev"
+
+    # ===== Power BI integration =====
+    powerbi_enabled: bool = False
+    powerbi_tenant_id: Optional[str] = None
+    powerbi_client_id: Optional[str] = None
+    powerbi_client_secret: Optional[str] = None
+    powerbi_workspaces: list[str] = field(default_factory=list)  # List of workspace IDs
 
     @staticmethod
     def find_config_file() -> Optional[Path]:
@@ -323,6 +332,36 @@ class Config:
             if 'target' in df:
                 config.defer_target = df['target']
 
+        # [powerbi] section
+        if 'powerbi' in data:
+            pbi = data['powerbi']
+            if 'enabled' in pbi:
+                config.powerbi_enabled = pbi['enabled']
+            if 'tenant_id' in pbi:
+                config.powerbi_tenant_id = pbi['tenant_id']
+            if 'client_id' in pbi:
+                config.powerbi_client_id = pbi['client_id']
+            if 'client_secret' in pbi:
+                config.powerbi_client_secret = pbi['client_secret']
+            if 'workspaces' in pbi:
+                # Support both single string and list
+                ws = pbi['workspaces']
+                config.powerbi_workspaces = ws if isinstance(ws, list) else [ws]
+
+        # Override Power BI settings from environment variables (higher priority)
+        if os.getenv('POWERBI_ENABLED'):
+            config.powerbi_enabled = _parse_bool(os.getenv('POWERBI_ENABLED', 'false'))
+        if os.getenv('POWERBI_TENANT_ID'):
+            config.powerbi_tenant_id = os.getenv('POWERBI_TENANT_ID')
+        if os.getenv('POWERBI_CLIENT_ID'):
+            config.powerbi_client_id = os.getenv('POWERBI_CLIENT_ID')
+        if os.getenv('POWERBI_CLIENT_SECRET'):
+            config.powerbi_client_secret = os.getenv('POWERBI_CLIENT_SECRET')
+        if os.getenv('POWERBI_WORKSPACES'):
+            # Comma-separated list of workspace IDs
+            ws = os.getenv('POWERBI_WORKSPACES', '')
+            config.powerbi_workspaces = [w.strip() for w in ws.split(',') if w.strip()]
+
         return config
 
     @classmethod
@@ -362,6 +401,12 @@ class Config:
         prod_catalog = os.getenv('DBT_PROD_CATALOG_PATH', '~/dbt-state/catalog.json')
         dev_catalog = os.getenv('DBT_DEV_CATALOG_PATH', './target/catalog.json')
 
+        # Power BI config from env vars
+        pbi_workspaces = []
+        if os.getenv('POWERBI_WORKSPACES'):
+            ws = os.getenv('POWERBI_WORKSPACES', '')
+            pbi_workspaces = [w.strip() for w in ws.split(',') if w.strip()]
+
         return cls(
             prod_manifest_path=str(Path(prod_path).expanduser()),
             dev_manifest_path=str(Path(dev_path).expanduser()),
@@ -373,6 +418,12 @@ class Config:
             dev_dataset=_calculate_dev_schema(),
             prod_table_name_strategy=os.getenv('DBT_PROD_TABLE_NAME', 'alias_or_name'),
             prod_schema_source=os.getenv('DBT_PROD_SCHEMA_SOURCE', 'config_or_model'),
+            # Power BI
+            powerbi_enabled=_parse_bool(os.getenv('POWERBI_ENABLED', 'false')),
+            powerbi_tenant_id=os.getenv('POWERBI_TENANT_ID'),
+            powerbi_client_id=os.getenv('POWERBI_CLIENT_ID'),
+            powerbi_client_secret=os.getenv('POWERBI_CLIENT_SECRET'),
+            powerbi_workspaces=pbi_workspaces,
         )
 
     @classmethod

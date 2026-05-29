@@ -5,18 +5,24 @@ Provides high-level commands for extracting metadata from dbt manifest.
 Each command returns formatted data matching bash version output.
 """
 
+from __future__ import annotations
+
 import subprocess
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
+from dbt_meta.command_impl.analyze import AnalyzeCommand
+from dbt_meta.command_impl.branch import BranchCommand
 from dbt_meta.command_impl.children import ChildrenCommand
 from dbt_meta.command_impl.columns import ColumnsCommand
 from dbt_meta.command_impl.config import ConfigCommand
-from dbt_meta.command_impl.cost import CostCommand
 from dbt_meta.command_impl.deps import DepsCommand
+from dbt_meta.command_impl.hotspots import HotspotsCommand
 from dbt_meta.command_impl.info import InfoCommand
 from dbt_meta.command_impl.parents import ParentsCommand
 from dbt_meta.command_impl.path import PathCommand
+from dbt_meta.command_impl.powerbi import PowerBiCommand
+from dbt_meta.command_impl.scan import ScanCommand
 from dbt_meta.command_impl.schema import SchemaCommand
 from dbt_meta.command_impl.sql import SqlCommand
 from dbt_meta.command_impl.validate import ValidateCommand
@@ -34,7 +40,7 @@ from dbt_meta.utils.git import check_manifest_git_mismatch as _check_manifest_gi
 # Dev and BigQuery utility functions are now imported from utils.dev and utils.bigquery
 
 
-def info(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[dict[str, Any]]:
+def info(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> dict[str, Any] | None:
     """
     Extract basic model information
 
@@ -68,7 +74,7 @@ def info(manifest_path: str, model_name: str, use_dev: bool = False, json_output
     return command.execute()
 
 
-def schema(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[dict[str, str]]:
+def schema(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> dict[str, str] | None:
     """
     Extract schema/table location information
 
@@ -119,7 +125,7 @@ def schema(manifest_path: str, model_name: str, use_dev: bool = False, json_outp
     return command.execute()
 
 
-def columns(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[list[dict[str, str]]]:
+def columns(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> list[dict[str, str]] | None:
     """
     Extract column list with types
 
@@ -143,7 +149,7 @@ def columns(manifest_path: str, model_name: str, use_dev: bool = False, json_out
     return command.execute()
 
 
-def config(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[dict[str, Any]]:
+def config(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> dict[str, Any] | None:
     """
     Extract full dbt config
 
@@ -169,7 +175,7 @@ def config(manifest_path: str, model_name: str, use_dev: bool = False, json_outp
     return command.execute()
 
 
-def deps(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[dict[str, list[str]]]:
+def deps(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> dict[str, list[str]] | None:
     """
     Extract dependencies by type
 
@@ -196,7 +202,7 @@ def deps(manifest_path: str, model_name: str, use_dev: bool = False, json_output
     return command.execute()
 
 
-def sql(manifest_path: str, model_name: str, use_dev: bool = False, raw: bool = False, json_output: bool = False) -> Optional[str]:
+def sql(manifest_path: str, model_name: str, use_dev: bool = False, raw: bool = False, json_output: bool = False) -> str | None:
     """
     Extract SQL code
 
@@ -220,7 +226,7 @@ def sql(manifest_path: str, model_name: str, use_dev: bool = False, raw: bool = 
     return command.execute()
 
 
-def validate(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[dict[str, Any]]:
+def validate(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> dict[str, Any] | None:
     """
     Validate model SQL syntax using BigQuery dry run.
 
@@ -242,7 +248,7 @@ def validate(manifest_path: str, model_name: str, use_dev: bool = False, json_ou
     return command.execute()
 
 
-def cost(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[dict[str, Any]]:
+def scan(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> dict[str, Any] | None:
     """
     Estimate query scan size using BigQuery dry run.
 
@@ -261,11 +267,11 @@ def cost(manifest_path: str, model_name: str, use_dev: bool = False, json_output
         Returns None if model not found.
     """
     cfg = Config.from_config_or_env()
-    command = CostCommand(cfg, manifest_path, model_name, use_dev, json_output)
+    command = ScanCommand(cfg, manifest_path, model_name, use_dev, json_output)
     return command.execute()
 
 
-def path(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[str]:
+def path(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> str | None:
     """
     Get relative file path
 
@@ -287,7 +293,7 @@ def path(manifest_path: str, model_name: str, use_dev: bool = False, json_output
     command = PathCommand(cfg, manifest_path, model_name, use_dev, json_output)
     return command.execute()
 
-def list_models(manifest_path: str, pattern: Optional[str] = None) -> list[str]:
+def list_models(manifest_path: str, pattern: str | None = None) -> list[str]:
     """
     List all models, optionally filtered by pattern
 
@@ -346,7 +352,7 @@ def search(manifest_path: str, query: str) -> list[dict[str, str]]:
 def _get_all_relations_recursive(
     relation_map: dict[str, list[str]],
     node_id: str,
-    visited: Optional[set] = None
+    visited: set | None = None
 ) -> list[str]:
     """
     Recursively get all dependencies (parents or children)
@@ -378,7 +384,7 @@ def _get_all_relations_recursive(
     return list(dict.fromkeys(all_relations))
 
 
-def parents(manifest_path: str, model_name: str, use_dev: bool = False, recursive: bool = False, json_output: bool = False) -> Optional[list[dict[str, str]]]:
+def parents(manifest_path: str, model_name: str, use_dev: bool = False, recursive: bool = False, json_output: bool = False) -> list[dict[str, str]] | None:
     """Get upstream dependencies (parent models).
 
     Args:
@@ -396,7 +402,7 @@ def parents(manifest_path: str, model_name: str, use_dev: bool = False, recursiv
     return command.execute()
 
 
-def children(manifest_path: str, model_name: str, use_dev: bool = False, recursive: bool = False, json_output: bool = False) -> Optional[list[dict[str, str]]]:
+def children(manifest_path: str, model_name: str, use_dev: bool = False, recursive: bool = False, json_output: bool = False) -> list[dict[str, str]] | None:
     """Get downstream dependencies (child models).
 
     Args:
@@ -445,7 +451,7 @@ def refresh(use_dev: bool = False) -> None:
         print("✅ Production artifacts synced (~/dbt-state/)")
 
 
-def docs(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> Optional[list[dict[str, str]]]:
+def docs(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> list[dict[str, str]] | None:
     """
     Get columns with descriptions
 
@@ -523,12 +529,10 @@ def docs(manifest_path: str, model_name: str, use_dev: bool = False, json_output
 
 def ls(
     manifest_path: str,
-    selectors: Optional[list[str]] = None,
+    selectors: list[str] | None = None,
     modified: bool = False,
-    refresh: bool = False,
     and_logic: bool = False,
     group: bool = False,
-    tree_view: bool = False,
     use_dev: bool = False,
     json_output: bool = False
 ) -> str | list[dict[str, Any]] | dict[str, list[dict[str, Any]]]:
@@ -539,7 +543,6 @@ def ls(
         manifest_path: Path to manifest.json
         selectors: List of selectors (tag:name, config.key:value, path:pattern, package:name)
         modified: Show only modified/new models (git-aware)
-        refresh: Show models requiring --full-refresh (modified + intermediate + downstream)
         and_logic: Require ALL tags (default: OR - at least one)
         group: Group by tag combinations
         use_dev: Use dev manifest
@@ -563,7 +566,8 @@ def ls(
         meta ls tag:verified tag:active --group   # Grouped output
         meta ls config.materialized:incremental
         meta ls --modified                        # Git-modified only
-        meta ls --refresh                         # Models needing --full-refresh
+
+    For chain-aware refresh planning, use `meta optimize refresh` instead.
     """
     parser = _get_cached_parser(manifest_path)
     models = parser.get_all_models()
@@ -571,16 +575,8 @@ def ls(
     # Extract tag selectors for grouping
     tag_selectors = [s.split(':', 1)[1] for s in (selectors or []) if s.startswith('tag:')]
 
-    # Save modified models for tree view (before refresh expansion)
-    modified_models_for_tree = []
-
-    # Filter by refresh requirement (modified + intermediate + downstream)
-    if refresh:
-        # Get modified models first (for tree view)
-        modified_models_for_tree = _filter_modified_models(models, parser)
-        filtered_models = _filter_refresh_models(models, parser, manifest_path)
     # Filter by git status only (modified models)
-    elif modified:
+    if modified:
         filtered_models = _filter_modified_models(models, parser)
     # Filter by selectors
     elif selectors:
@@ -604,48 +600,29 @@ def ls(
             json_output
         )
 
-    # Print git warnings for modified/refresh modes
-    if modified or refresh:
+    # Print git warnings for modified mode
+    if modified:
         if filtered_models:
             warnings = _generate_git_warnings(filtered_models, use_dev)
             _print_warnings(warnings, json_output=json_output)
         else:
-            # Empty result - provide helpful warning
-            if modified:
-                empty_warnings = [{
+            _print_warnings(
+                [{
                     "type": "no_modified_models",
                     "severity": "info",
                     "message": "No modified models found",
                     "detail": "No models changed compared to main/master branch",
-                    "suggestion": "All models are in sync with production"
-                }]
-            else:  # refresh
-                empty_warnings = [{
-                    "type": "no_refresh_needed",
-                    "severity": "info",
-                    "message": "No models need refresh",
-                    "detail": "No modified models found, so no downstream models to refresh",
-                    "suggestion": "All models are in sync with production"
-                }]
-            _print_warnings(empty_warnings, json_output=json_output)
-
-    # Tree view for --refresh --all (text mode only)
-    if tree_view and refresh and not json_output:
-        return _format_refresh_tree(filtered_models, modified_models_for_tree, parser, models)
+                    "suggestion": "All models are in sync with production",
+                }],
+                json_output=json_output,
+            )
 
     # Standard format output
     if json_output:
-        # Compact format for refresh mode, detailed format otherwise
-        if refresh or modified:
+        if modified:
             return _format_models_json_compact(filtered_models, parser, use_dev)
-        else:
-            return _format_models_json(filtered_models, parser, use_dev)
-    else:
-        # Text mode: add + suffix for refresh mode (for dbt select syntax)
-        if refresh:
-            return _format_models_text_with_suffix(filtered_models, suffix="+")
-        else:
-            return _format_models_text(filtered_models)
+        return _format_models_json(filtered_models, parser, use_dev)
+    return _format_models_text(filtered_models)
 
 
 def _filter_by_selectors_or(models: dict[str, Any], selectors: list[str], parser: Any) -> list[dict[str, Any]]:
@@ -749,95 +726,9 @@ def _generate_git_warnings(models: list[dict[str, Any]], use_dev: bool) -> list[
     return warnings
 
 
-def _format_refresh_tree(
-    all_models: list[dict[str, Any]],
-    modified_models: list[dict[str, Any]],
-    parser: Any,
-    models_dict: dict[str, Any]
-) -> str:
-    """Format refresh models as tree view showing lineage from modified to downstream
-
-    Args:
-        all_models: All models in refresh set (modified + downstream)
-        modified_models: Only modified models (roots of trees)
-        parser: Manifest parser
-        models_dict: Full models dictionary from manifest
-
-    Returns:
-        Tree-formatted string showing modified models and their descendants
-    """
-    if not modified_models:
-        return "No modified models found"
-
-    output_lines = []
-    all_model_uids = {m['unique_id'] for m in all_models}
-
-    def print_tree(node_uid: str, prefix: str = "", is_last: bool = True, visited: set[str] | None = None) -> None:
-        """Recursively print tree structure"""
-        if visited is None:
-            visited = set()
-
-        if node_uid in visited:  # Avoid infinite loops
-            return
-        visited.add(node_uid)
-
-        node_name = node_uid.split('.')[-1]
-
-        # Find direct children in the refresh set
-        children_uids = []
-        for uid in all_model_uids:
-            if uid == node_uid or uid in visited:
-                continue
-            model = models_dict.get(uid)
-            if model:
-                depends_on = model.get('depends_on', {}).get('nodes', [])
-                if node_uid in depends_on:
-                    children_uids.append(uid)
-
-        # Print children recursively
-        children_sorted = sorted(children_uids, key=lambda u: u.split('.')[-1])
-        for i, child_uid in enumerate(children_sorted):
-            is_last_child = (i == len(children_sorted) - 1)
-            child_prefix = "└── " if is_last_child else "├── "
-            child_name = child_uid.split('.')[-1]
-            output_lines.append(f"{prefix}{child_prefix}{child_name}")
-
-            # Recursive call with updated prefix
-            new_prefix = prefix + ("    " if is_last_child else "│   ")
-            print_tree(child_uid, new_prefix, is_last_child, visited)
-
-    for modified in modified_models:
-        mod_uid = modified['unique_id']
-        mod_name = mod_uid.split('.')[-1]
-
-        # Get git status indicator
-        git_status = modified.get('_git_status', '')
-        if git_status == 'uncommitted':
-            status_icon = "🔴"  # Uncommitted changes (red circle)
-        elif git_status == 'committed':
-            status_icon = "✅"  # Committed changes (green checkmark)
-        else:
-            status_icon = "•"
-
-        output_lines.append(f"{status_icon} {mod_name}")
-
-        # Print full tree starting from this modified model
-        print_tree(mod_uid, "  ")
-
-        output_lines.append("")  # Empty line between trees
-
-    return '\n'.join(output_lines)
-
-
 def _format_models_text(models: list[dict[str, Any]]) -> str:
     """Format as space-separated model names"""
     model_names = [m['unique_id'].split('.')[-1] for m in models]
-    return ' '.join(sorted(model_names))
-
-
-def _format_models_text_with_suffix(models: list[dict[str, Any]], suffix: str = "+") -> str:
-    """Format as space-separated model names with suffix (for dbt select syntax)"""
-    model_names = [m['unique_id'].split('.')[-1] + suffix for m in models]
     return ' '.join(sorted(model_names))
 
 
@@ -960,7 +851,7 @@ def _filter_modified_models(models: dict[str, Any], parser: Any) -> list[dict[st
 
     # Filter models and add git status
     modified = []
-    for uid, model in models.items():
+    for _, model in models.items():
         file_path = model.get('original_file_path', '')
 
         # Check if model is in branch changes (committed) OR has uncommitted changes
@@ -1043,157 +934,149 @@ def _format_models_grouped(
         return '\n'.join(output_lines).rstrip()
 
 
-def _get_all_descendants_recursive(node_uid: str, all_models: dict[str, Any]) -> set[str]:
-    """Find all descendant models recursively using BFS
+# =============================================================================
+# Optimization Commands
+# =============================================================================
+
+
+def analyze(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> dict[str, Any] | None:
+    """
+    Analyze model partitioning/clustering effectiveness.
+
+    Combines manifest metadata with BigQuery monitoring data to provide
+    deep analysis of optimization opportunities.
 
     Args:
-        node_uid: Starting node unique_id
-        all_models: Dict of all models {unique_id: model_dict}
+        manifest_path: Path to manifest.json
+        model_name: Model name
+        use_dev: Not used (always analyzes production)
+        json_output: If True, suppress warnings
 
     Returns:
-        Set of unique_ids of all descendants
+        Dictionary with:
+        - model: Model name
+        - table: Full table name (schema.table)
+        - config: Partition/cluster configuration from manifest
+        - storage: Storage metrics from dbt_bigquery_monitoring
+        - partitions: Partition statistics
+        - usage: Query frequency data
+        - recommendations: List of optimization recommendations
+
+        Returns None if model not found.
     """
-    from collections import deque
-
-    descendants = set()
-    queue = deque([node_uid])
-    visited = {node_uid}
-
-    while queue:
-        current_uid = queue.popleft()
-
-        # Find all models that depend on current model
-        for uid, model in all_models.items():
-            if uid in visited:
-                continue
-
-            # Check if this model depends on current
-            depends_on = model.get('depends_on', {}).get('nodes', [])
-            if current_uid in depends_on:
-                descendants.add(uid)
-                visited.add(uid)
-                queue.append(uid)
-
-    return descendants
+    config = Config.from_config_or_env()
+    command = AnalyzeCommand(config, manifest_path, model_name, use_dev, json_output)
+    return command.execute()
 
 
-def _filter_refresh_models(models: dict[str, Any], parser: Any, manifest_path: str) -> list[dict[str, Any]]:
+def hotspots(manifest_path: str, limit: int = 20, min_gb: float = 1.0, json_output: bool = False) -> dict[str, Any]:
     """
-    Filter models requiring --full-refresh
+    Find models with highest optimization potential.
 
-    Includes:
-    1. All modified/new models (via git)
-    2. All downstream dependencies of modified models
-    3. Intermediate models between multiple modified models
+    Analyzes all tables and scores them based on partitioning,
+    clustering, and query patterns to identify optimization candidates.
 
-    Algorithm:
-    - Find all modified models M = {m1, m2, ...}
-    - For each mi in M: find all descendants D(mi)
-    - Find intermediate models I = models on paths between any two modified models
-    - Return M ∪ D(m1) ∪ D(m2) ∪ ... ∪ I
+    Args:
+        manifest_path: Path to manifest.json
+        limit: Maximum number of hotspots to return (default: 20)
+        min_gb: Minimum table size in GB to consider (default: 1.0)
+        json_output: If True, suppress warnings
+
+    Returns:
+        Dictionary with:
+        - hotspots: List of top optimization candidates, each with:
+            - model: dbt model name (if found)
+            - table: BigQuery table name
+            - score: Optimization score (higher = more potential)
+            - reasons: List of reasons for the score
+            - potential_savings_gb: Estimated storage savings
+        - summary: Overall statistics
     """
-    # Step 1: Find all modified models
-    modified_models = _filter_modified_models(models, parser)
-    if not modified_models:
-        return []
-
-    result_set = set(m['unique_id'] for m in modified_models)
-
-    # Step 2: Find all downstream for each modified model
-    # Use direct manifest traversal to avoid duplicate warnings from children()
-    for modified_model in modified_models:
-        uid = modified_model['unique_id']
-        # Find all descendants recursively using BFS
-        descendants = _get_all_descendants_recursive(uid, models)
-        result_set.update(descendants)
-
-    # Step 3: Find intermediate models (if 2+ modified models)
-    if len(modified_models) >= 2:
-        intermediate = _find_intermediate_models(modified_models, models, parser)
-        result_set.update(uid for uid in intermediate)
-
-    # Create dict of modified models with git status
-    modified_uid_to_status = {m['unique_id']: m.get('_git_status') for m in modified_models}
-
-    # Convert unique_ids back to model dicts, preserving git status
-    result_models = []
-    for uid in result_set:
-        if uid in models:
-            model_copy = models[uid].copy()
-            # Add git status if this was a modified model
-            if uid in modified_uid_to_status:
-                model_copy['_git_status'] = modified_uid_to_status[uid]
-            result_models.append(model_copy)
-
-    return result_models
+    config = Config.from_config_or_env()
+    command = HotspotsCommand(config, manifest_path, limit, min_gb, json_output)
+    return command.execute()
 
 
-def _find_intermediate_models(
-    modified_models: list[dict[str, Any]],
-    all_models: dict[str, Any],
-    parser: Any
-) -> set[str]:
+def branch(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> dict[str, Any] | None:
     """
-    Find models on paths between modified models
+    Analyze optimization across model branch.
 
-    For each pair of modified models (m1, m2):
-    - If m2 is downstream of m1: include all models on path m1 -> m2
-    - Build dependency graph and use BFS to find paths
+    Examines upstream and downstream models to identify alignment issues
+    between partitioning/clustering configurations.
+
+    Args:
+        manifest_path: Path to manifest.json
+        model_name: Model name
+        use_dev: Not used (always analyzes production)
+        json_output: If True, suppress warnings
+
+    Returns:
+        Dictionary with:
+        - root: Root model name
+        - root_config: Root model partition/cluster config
+        - upstream: List of upstream models with impact analysis
+        - downstream: List of downstream models with alignment analysis
+        - recommendations: Branch-level optimization recommendations
+
+        Returns None if model not found.
     """
-    intermediate = set()
-
-    # Build parent-child relationship map for all models
-    parent_map: dict[str, list[str]] = {}  # model_uid -> list of parent unique_ids
-    for uid, model in all_models.items():
-        parents = model.get('depends_on', {}).get('nodes', [])
-        parent_map[uid] = parents
-
-    # For each pair of modified models
-    for i, m1 in enumerate(modified_models):
-        for m2 in modified_models[i+1:]:
-            uid1 = m1['unique_id']
-            uid2 = m2['unique_id']
-
-            # Find if there's a path from m1 to m2 (or vice versa)
-            path_1_to_2 = _find_path_between(uid1, uid2, parent_map)
-            if path_1_to_2:
-                intermediate.update(path_1_to_2)
-
-            path_2_to_1 = _find_path_between(uid2, uid1, parent_map)
-            if path_2_to_1:
-                intermediate.update(path_2_to_1)
-
-    return intermediate
+    config = Config.from_config_or_env()
+    command = BranchCommand(config, manifest_path, model_name, use_dev, json_output)
+    return command.execute()
 
 
-def _find_path_between(
-    source: str,
-    target: str,
-    parent_map: dict[str, list[str]]
-) -> list[str]:
+def powerbi(
+    manifest_path: str,
+    workspace_id: str | None = None,
+    json_output: bool = False,
+    show_measures: bool = False,
+    show_columns: bool = False,
+    show_full: bool = False,
+    by_table: bool = False,
+) -> dict[str, Any]:
     """
-    Find models on path from source to target using BFS
-    Returns list of unique_ids on the path (excluding source and target)
+    Extract Power BI dashboard to BigQuery table mappings.
+
+    Scans Power BI workspace to extract datasets, reports, and their
+    BigQuery table dependencies. Maps tables to dbt model names.
+    Optionally includes measures (DAX) and column schemas.
+
+    Args:
+        manifest_path: Path to manifest.json
+        workspace_id: Power BI workspace ID (or use first from config)
+        json_output: If True, suppress warnings
+        show_measures: Include measures with DAX expressions
+        show_columns: Include column schemas
+        show_full: Include all metadata (measures + columns)
+        by_table: Group by tables instead of datasets
+
+    Returns:
+        Dictionary with:
+        - workspace: Workspace name
+        - workspace_id: Workspace ID
+        - datasets: List of datasets, each with:
+            - name: Dataset name
+            - id: Dataset ID
+            - reports: List of report names using this dataset
+            - tables: List of BigQuery tables with dbt mapping and optionally:
+                - measures: List of measures with DAX (if show_measures/show_full/json_output)
+                - columns: List of columns with types (if show_columns/show_full/json_output)
+            - refresh_count_30d: Number of refreshes in last 30 days
+            - last_refresh: Timestamp of last refresh
+        - summary: Totals for datasets, reports, tables
+
+    Raises:
+        ConfigurationError: If Power BI integration not configured
     """
-    from collections import deque
-
-    # BFS to find path
-    queue: deque = deque([(source, [source])])
-    visited = {source}
-
-    while queue:
-        current, path = queue.popleft()
-
-        # Check children of current node
-        for node_uid, parents in parent_map.items():
-            if current in parents and node_uid not in visited:
-                new_path = path + [node_uid]
-
-                if node_uid == target:
-                    # Found path! Return intermediate nodes (exclude source and target)
-                    return new_path[1:-1]
-
-                visited.add(node_uid)
-                queue.append((node_uid, new_path))
-
-    return []  # No path found
+    config = Config.from_config_or_env()
+    command = PowerBiCommand(
+        config,
+        manifest_path,
+        workspace_id,
+        json_output,
+        show_measures,
+        show_columns,
+        show_full,
+        by_table,
+    )
+    return command.execute()

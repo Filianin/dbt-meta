@@ -183,5 +183,61 @@ class TestGitCoverage:
             assert result == path  # Should return unchanged
 
 
+class TestDevCoverage:
+    """Tests for dev.py uncovered lines - legacy environment variables."""
+
+    def test_calculate_dev_schema_with_dbt_dev_dataset(self, monkeypatch):
+        """Test calculate_dev_schema with deprecated DBT_DEV_DATASET."""
+        from dbt_meta.utils.dev import calculate_dev_schema
+
+        monkeypatch.setenv('DBT_DEV_DATASET', 'my_custom_dataset')
+        monkeypatch.delenv('DBT_DEV_SCHEMA', raising=False)
+
+        result = calculate_dev_schema()
+
+        assert result == 'my_custom_dataset'
+
+    def test_calculate_dev_schema_with_template(self, monkeypatch):
+        """Test calculate_dev_schema with deprecated DBT_DEV_SCHEMA_TEMPLATE."""
+        from dbt_meta.utils.dev import calculate_dev_schema
+
+        monkeypatch.setenv('DBT_DEV_SCHEMA_TEMPLATE', 'dev_{username}')
+        monkeypatch.delenv('DBT_DEV_SCHEMA', raising=False)
+        monkeypatch.delenv('DBT_DEV_DATASET', raising=False)
+        monkeypatch.setenv('USER', 'testuser')
+
+        result = calculate_dev_schema()
+
+        assert result == 'dev_testuser'
+
+    def test_calculate_dev_schema_with_prefix(self, monkeypatch):
+        """Test calculate_dev_schema with deprecated DBT_DEV_SCHEMA_PREFIX."""
+        from dbt_meta.utils.dev import calculate_dev_schema
+
+        monkeypatch.setenv('DBT_DEV_SCHEMA_PREFIX', 'dev')
+        monkeypatch.delenv('DBT_DEV_SCHEMA', raising=False)
+        monkeypatch.delenv('DBT_DEV_DATASET', raising=False)
+        monkeypatch.delenv('DBT_DEV_SCHEMA_TEMPLATE', raising=False)
+        monkeypatch.setenv('USER', 'testuser')
+
+        result = calculate_dev_schema()
+
+        assert result == 'dev_testuser'
+
+    def test_calculate_dev_schema_empty_template_fallback(self, monkeypatch):
+        """Test calculate_dev_schema with empty template falls back to prefix."""
+        from dbt_meta.utils.dev import calculate_dev_schema
+
+        monkeypatch.setenv('DBT_DEV_SCHEMA_TEMPLATE', '')
+        monkeypatch.setenv('DBT_DEV_SCHEMA_PREFIX', 'custom')
+        monkeypatch.delenv('DBT_DEV_SCHEMA', raising=False)
+        monkeypatch.delenv('DBT_DEV_DATASET', raising=False)
+        monkeypatch.setenv('USER', 'testuser')
+
+        result = calculate_dev_schema()
+
+        assert result == 'custom_testuser'
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

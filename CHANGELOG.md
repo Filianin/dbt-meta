@@ -5,7 +5,224 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-05-24
+
+Major release: column-level lineage, on-demand optimization advisors, and a
+mandatory compiled-SQL pre-flight that auto-runs `dbt compile` when the
+loaded manifest is from `dbt parse` (no Jinja-rendered SQL) and would
+otherwise produce empty / misleading recommendations.
+
+### Added
+
+#### Column-level lineage (`meta lineage`)
+- New subcommand group backed by SQLGlot 30.7+ (`sqlglot.lineage` all-columns mode) and rustworkx for native-code graph traversal.
+- `meta lineage build [-d/--dev] [-v/--verbose] [--timeout N] [-o PATH] [--no-compile]` — parse compiled SQL of every model and write a `lineage.json` artifact (~8.7 MB for 27k columns / 23k edges on a 934-model project).
+  - Per-model SIGALRM-based timeout (default 30s) prevents one pathological model from hanging the whole build; offending models are skipped with a `models_skipped_timeout` warning.
+  - `--verbose` prints per-model progress with elapsed time and `slow` flag.
+  - Slow-models report (top 5) is shown at the end of every build.
+- `meta lineage column <model>.<col>` — direct + transitive upstream lineage for one column.
+- `meta lineage downstream <model>.<col>` — direct + transitive downstream impact.
+- `meta lineage stats` — artifact summary (nodes, edges, generated_at, warnings).
+- All commands support `-j/--json` for machine consumption.
+- Embedded design: single JSON artifact distributed via the same `~/dbt-state/` path as `manifest.json`/`catalog.json` — no server, no infra. Sub-10ms reads via LRU-cached rustworkx graph.
+- New env vars: `DBT_PROD_LINEAGE_PATH`, `DBT_DEV_LINEAGE_PATH`.
+- Optional install: `pip install dbt-meta[lineage]` (pulls `sqlglot>=30.0`, `rustworkx>=0.15`). `sqlglot[c]` is supported and recommended for 2-4× speedup on large projects.
+- Location: `src/dbt_meta/lineage/{builder,graph,artifact,finder}.py`, `src/dbt_meta/command_impl/lineage.py`.
+
+#### Optimization advisors (`meta optimize`)
+On-demand, column-usage-aware advisors. They read each downstream model's compiled SQL via SQLGlot, build a column-usage report (WHERE / JOIN / GROUP BY / ORDER / QUALIFY / window PARTITION BY) and apply explainable heuristics. No `INFORMATION_SCHEMA.JOBS_BY_PROJECT`, no LLM, no extra build step — pure AST analysis on existing artifacts.
+
+- `meta optimize cluster <model> [--top N] [--no-compile]` — BigQuery clustering keys (capped at 4). Per-column score: `WHERE eq×3.0`, `WHERE in×2.5`, `WHERE between/range×2.0`, `JOIN×2.0`, `GROUP BY×1.0`, `WHERE fn-wrapped×0.5`, multiplied by `log2(downstream_count_using_column + 1)`. Excludes the model's own partition column and disallowed types (STRUCT/ARRAY/GEOGRAPHY/JSON).
+- `meta optimize partition <model> [--no-compile]` — single partition column. Type-aware (TIMESTAMP/DATE × 1.5, DATETIME × 1.3, INT64 × 1.0); range/equality filter weights; granularity heuristic (DAY for DATE/TIMESTAMP, RANGE_BUCKET for INT64). Returns one primary recommendation + up to 4 alternatives + `pruning_impact_pct`.
+- `meta optimize refresh [<models>...]` — column-aware `--full-refresh` planner with **chain-aware propagation** (see Changed below).
+- All three support `-d/--dev`, `-j/--json`. New flag for `refresh`: `--cols MODEL:c1,c2` for column-precision (whole-model semantics by default).
+- Output enrichments for `cluster`/`partition` (see Changed): direct-vs-transitive downstream count, materialization breakdown, "matches current" detection, human-readable reasoning, manifest-path footer.
+- New module: `src/dbt_meta/usage/{extractor,advisor_cluster,advisor_partition,advisor_refresh,_common}.py`.
+
+#### `meta optimize refresh` — git integration & ergonomics
+- `-m/--modified` auto-detects changed models from git: `git diff <base>...HEAD --name-only` (committed) + `git diff HEAD` (unstaged) + `git diff --cached` (staged) + untracked from `git status --porcelain --untracked-files=all`.
+- `--base BRANCH` lets you override the auto-detected base (auto: `origin/main` → `origin/master` → `main` → `master`).
+- Output shows the resolved git base and per-model source tag (`committed` / `uncommitted` / `untracked` / `explicit`).
+- Suggested ready-to-paste shell command appears in both text and JSON output: `dbt run -fs <full_refresh models>` and `dbt run -s <incremental models>`. Printed via plain `print()` (not Rich) so terminal copy-paste returns a single uninterrupited line.
+- `SKIP` bucket is capped at 5 models in text output (`(+N more — use -j for full list)`); `FULL REFRESH` and `INCREMENTAL` keep the 30-row limit.
+
+#### Mandatory compiled-SQL pre-flight (`_ensure_manifest_compiled`)
+- Applies to commands that read compiled SQL: `lineage build`, `optimize cluster`, `optimize partition`, `sql`, `validate`, `scan`, `branch`. (`optimize refresh` keeps its own bulk-compile path.)
+- When a loaded manifest has compiled SQL for fewer than half its models — the unmistakable shape of a `dbt parse`-only manifest — the pre-flight either:
+  1. Auto-runs `dbt compile` for the **whole project** (no `--select`, since selective compiles leave gaps that re-trigger compile on the next run), then reloads the manifest, OR
+  2. Hard-fails with a path-tagged error explaining why (covers prod manifest, explicit `--manifest`, `--no-compile`, or no dbt project found).
+- New `--no-compile` flag on every affected command opts out of step 1.
+- Error/info messages include the offending manifest path so users immediately see *which* manifest was loaded.
+
+#### Auto-compile fallback for `meta optimize refresh`
+- When the chosen manifest lacks `compiled_code` (e.g. local manifest from `dbt parse`), the advisor walks a 3-level fallback per downstream: (1) `model['compiled_code']`; (2) `<project>/target/compiled/<package>/<path>.sql` on disk; (3) one bulk `dbt compile --select <downstream models>` invocation per run.
+- Trigger guarded: only fires when project root resolved (`dbt_project.yml` walked up from manifest path), `dbt` is in PATH, and >50% of a sampled downstream slice is missing SQL.
+- `--no-compile` disables level (3).
+- Friendly error path: when `dbt compile` fails (deprecation errors, project misconfig), the advisor surfaces the first error line + a workaround hint (`--manifest ~/dbt-state/manifest.json`).
+
+### Changed
+
+#### `meta optimize cluster` / `partition` — output overhaul
+- **Direct downstream, not transitive.** Cluster/partition pruning only applies to models that read the target table *directly*. Grandchildren read the intermediate model's storage. The advisor now BFS-walks one level only (`direct_downstream` in `usage/_common.py`); the "X of Y models reference this table" line shifts from transitive descendants to direct readers — a smaller, more honest number.
+- **Materialization breakdown.** The summary now shows `Direct downstream: N models (X incremental, Y table/view); Z with analyzable references`. Per-recommendation buckets:
+  - ✅ `incremental_with_pruning` — incremental downstream that filter on the recommended column (good).
+  - ❗ `incremental_without_pruning` — incremental downstream that read the table without a pruning filter. Each one triggers a full upstream scan on every incremental run — the advisor calls these out **in red** with a per-model list and a fix hint.
+  - `non_incremental_with_pruning` / `non_incremental_full_scan` — table/view downstream where a full scan is expected.
+- **"Matches current" detection.** When the top recommendation equals the model's existing `partition_by` / `cluster_by`, the advisor prints `✓ Current partitioning by '<col>' is already optimal — no changes needed.` instead of an apparent diff.
+- **Human-readable reasoning.** Replaced cryptic `WHERE range ×1 · WHERE fn ×4 · in 4 models` with sentences: *"1 model uses BETWEEN range filter"*, *"4 models wrap the column in a function (e.g. DATE(col)) — those queries CANNOT prune partitions"*, etc.
+- **Manifest path footer.** Both commands now print `Manifest: <resolved-path>` so users see *which* manifest was actually loaded (matters when the discovery fallback picks `./target/manifest.json` over `~/dbt-state/...`).
+- **JSON schema change:** old fields `downstream_count` / `parsed_downstream_count` renamed to `direct_downstream_count` / `analysed_downstream_count`; new fields `incremental_count`, `non_incremental_count`, `current_cluster_by`, `matches_current`. Per-recommendation: `incremental_with_pruning`, `incremental_without_pruning`, `non_incremental_with_pruning`, `non_incremental_full_scan`. Legacy `models_using_pruning` / `models_without_pruning` aggregates retained for back-compat.
+
+#### `ColumnUsageExtractor` — `wrapping_fn` field
+- `UsageEvent` gains a `wrapping_fn: str` field — lowercased name of the closest function ancestor between the column and the comparison operator (`"date"`, `"timestamp_trunc"`, `"upper"`, …). The legacy `operator == "fn"` sentinel still fires when the column is wrapped *and* no comparison was found, for back-compat; modern consumers check `wrapping_fn` directly so they can preserve the real comparison (`eq`/`ge`/…) alongside the wrapper.
+- **Partition advisor uses this** with a whitelist of BigQuery-prune-friendly wrappers (`date`, `timestamp`, `datetime`, `timestamptrunc`, `datetimetrunc`, `datetrunc`, `timetrunc`). Filters like `WHERE DATE(event_time) >= '2026-01-01'` against a TIMESTAMP partition now correctly count as pruning — they had been misclassified as "no pruning" before, because every function wrap was treated as opaque.
+
+#### `meta optimize refresh` — chain-aware propagation
+The original V1 of the refresh planner only checked **direct** references between each downstream and the changed model. That missed transitive consumers — e.g. if A → B → C and C never mentions A directly (only B), C was incorrectly classified as `skip`.
+
+The new algorithm walks transitive downstream in **topological order** (Kahn's, on `depends_on.nodes`) and propagates affectedness through the chain:
+1. Start: `affected_cols[changed_model] = <user-provided cols>` (or `None` for whole-model).
+2. For each downstream `M` in topo order, look at its already-affected upstreams. Three cases:
+   - `M` does `SELECT * FROM <affected_upstream>` → `M.affected = None` (whole-row), propagated downward.
+   - `M` references specific upstream cols that intersect `affected_cols[upstream]` → those upstream-col names become `M.affected`.
+   - Whole-parent (`affected = None`) + any reference → `M.affected = None`.
+3. Per-model classification: `affected = None` → full; `affected ∩ unique_key` non-empty → full; `affected ∩ partition_by` non-empty → full; otherwise incremental (if model is incremental) else full.
+
+`SELECT *` detection is now AST-level (`exp.Select` with `exp.Star` projection AND a matching `from_` clause), not regex — no false positives from comments/CTE/window expressions.
+
+Added `--cols MODEL:c1,c2` for column-precision input. Without it, the planner is conservative (whole-model); with it, only models that actually use those specific columns end up in `full_refresh` / `incremental`.
+
+#### `ColumnUsageExtractor` — `qualify_columns` pre-pass
+SQLGlot's scope-walk previously missed bare-name column references (`WHERE event_type = 1` without alias prefix) because `col.table` was empty and our alias filter rejected them. The extractor now runs `sqlglot.optimizer.qualify_tables` + `qualify_columns` (with `infer_schema=True`) before walking clauses, so every `Column` node has `.table` populated. Real-world impact: dbt-compiled SQL routinely uses bare references — without this fix the extractor silently returned 0 events on most production models.
+
+### Fixed
+- **`meta optimize refresh -m` missed untracked models in new directories.** `git status --porcelain` collapses untracked directories to a single entry (`?? models/new_dir/`), which never matched any node's `original_file_path`. Now uses `--untracked-files=all` so each individual `.sql` file is listed.
+- **Silent score inflation in cluster/partition advisors.** Unknown WHERE operators (`neq`, `is_null`, `like`, `none`) used to fall through `dict.get(..., 0.5)` and silently add 0.5 to the score without any matching counter in the visible reasoning — the displayed score didn't equal the sum of explained bullets. Unknown operators are now explicitly skipped; only listed ones contribute, and the `downstream_set` driving the log2 multiplier and "in N models" line counts only scoring events.
+- **Misleading "not found" error for invalid lineage column input.** `meta lineage column foo` (no `.` or `:` separator) and `meta lineage column foo.` (empty column) used to surface as "Column 'foo' not found in lineage graph". Now returns a format-specific error: `Invalid column reference 'foo': expected 'model.column' or 'model:column'`.
+- **`meta optimize refresh ghost_model` exited 0** when all specified models were absent from the manifest — it ran the planner anyway, printed an empty summary with a buried warning, and returned success. Now exits 1 with `None of the specified models exist in the active manifest: …` and a hint to run `dbt parse` / `dbt compile`.
+- **`0/N models reference this table` was misleading** for cluster/partition when downstream `compiled_code` was empty. The total (`N`) came from manifest structure, the analysed count (`0`) from SQL parsing — different sources, same line. Added `diagnose_no_extraction()` warning that surfaces "all N downstream models have empty compiled_code — manifest probably produced by `dbt parse`" before showing the empty summary.
+- **`select_star_from()` reads SQLGlot's modern `Select.args["from_"]` key** (was hard-coded to `"from"` and never matched).
+- **Replaced the lone `except Exception:` in `lineage/builder.py`** with the project-mandated specific exception list (`SqlglotError`, `RecursionError`, `AttributeError`) — silent-failures lint now passes.
+- **README test output capture:** `optimize refresh -m` previously printed via Rich's `console.print`, which soft-wrapped long `dbt run -fs ...` lines; pasting the visual output into a shell ran only the first line. Suggested commands are now emitted via plain `print()` so the entire command lands in the clipboard as one line.
+
+## [0.2.3] - 2026-05-01
+
+### Added
+- **3-level compiled SQL fallback for `validate` and `scan`** — both commands now degrade gracefully when `compiled_code` is missing from the manifest (e.g. dev manifest produced by `dbt parse`).
+  - **Level 1:** `model['compiled_code']` from manifest (default fast path)
+  - **Level 2:** read `{project_root}/target/compiled/{package}/{original_file_path}` from disk (works when user ran `dbt compile` separately from `meta refresh --dev`)
+  - **Level 3 (`--dev` only):** auto-runs `dbt compile --select <model> --target dev` (180s timeout) and re-reads from disk
+  - Project root is found by walking up from manifest path to a `dbt_project.yml`. Package name extracted from `model['package_name']` or `unique_id`.
+  - Failure modes return clear actionable errors: `dbt` not on PATH, compile timeout, compile error, no `dbt_project.yml`. Without `--dev`, suggests adding `--dev` for local changes.
+  - Location: `utils/compiled_sql.py`, integrated in `command_impl/validate.py` and `command_impl/scan.py`
+
+### Fixed
+- **JSON error output for all commands** — errors now always return valid JSON when `-j` is used
+  - Before: errors wrote Rich-formatted text to stderr; `2>&1 | jq` received mixed input → exit code 5
+  - After: all errors emit `{"error": "..."}` to stdout when `-j` is passed
+  - Affects: `handle_error()`, `_not_found_error()` helpers + all 20 command error paths
+  - `ColumnsCommand._print_not_found_message()` suppressed in JSON mode (CLI layer handles it)
+  - Location: `cli.py:53-88`, `command_impl/columns.py:410`
+
+- **`bq` CLI not found when meta is run as installed package**
+  - `shutil.which('bq')` was returning `None` because shell `PATH` (from `.zshrc`) is not
+    inherited when running as a non-interactive subprocess
+  - Added `_find_bq_cmd()` with 3-level discovery: current `PATH` → extended PATH with common
+    SDK locations → direct file existence check
+  - Common paths searched: `/opt/homebrew/bin`, `/usr/local/bin`, `~/google-cloud-sdk/bin`
+  - subprocess `PATH` also extended so `bq` can find its own dependencies
+  - Location: `utils/bigquery.py:15-44`
+
+### Documentation
+- **Comprehensive doc audit** — README, CLAUDE.md, and `meta --help` now reflect every command and flag (including previously undocumented `hotspots -n/--limit/--min-gb`, `powerbi --measures/--columns/--full/--by-table`, `settings init -f/--force`).
+- New **Command Inventory** section in CLAUDE.md (24 commands + subcommands, all flags, defaults).
+- README **Commands Reference** rewritten as grouped tables with a "Key flags" column per command.
+- README + CLAUDE.md document the new 3-level compiled SQL fallback strategy.
+
+### Tests
+- **Coverage raised from 91.30% → 95.86%** (756 → 784 tests).
+- New test files closing gaps: `test_powerbi_command_gaps.py`, `test_hotspots_gaps.py`, `test_monitoring_gaps.py`, `test_catalog_gaps.py`, `test_columns_command_gaps.py`, `test_path_command_gaps.py`, `test_compiled_sql.py`.
+- 10 modules now at 100% coverage: `command_impl/columns.py`, `command_impl/hotspots.py`, `command_impl/powerbi.py`, `command_impl/scan.py`, `command_impl/sql.py`, `command_impl/validate.py`, `utils/compiled_sql.py`, `utils/monitoring.py`, `utils/powerbi.py`, `errors.py`.
+
+## [0.2.2] - 2026-03-12
+
+### Added
+- **`meta hotspots` command** - Find models with highest optimization potential
+  - Analyzes all tables using `dbt_bigquery_monitoring` data in parallel (ThreadPoolExecutor)
+  - Two output blocks: **Top by Score** (optimization priority) + **Top Storage Savings**
+  - Scoring algorithm v4 — calibrated in "cents equivalent" (€0.01 = 1pt):
+    - `query_cost`: direct spend, €0.01/week = 1pt (primary signal)
+    - `high_scan`: bytes/query × log2(frequency), up to 100pts
+    - `high_slot`: slot_sec/query × log2(frequency), up to 75pts
+    - `no_partition`: table_size × log2(frequency), up to 75pts
+    - `no_clustering`: table_size × log2(frequency), up to 50pts
+    - `low_cache`: wasted cost × 100 if cache_hit < 30%, up to 200pts
+    - `unused`: monthly storage cost × 100 if unused >30 days, up to 200pts
+  - Returns `scoring_details` with per-criterion recommendations
+  - Options: `--limit N` (default: 10), `--min-gb X` (default: 0.1), `-j` for JSON
+  - Location: `command_impl/hotspots.py`, `utils/monitoring.py`
+
+- **`meta analyze <model>` command** - Deep analysis of single model
+  - Combines manifest config with BigQuery monitoring data
+  - Storage metrics, partition stats, query frequency, clustering effectiveness
+  - Recommendations based on actual usage patterns
+  - Location: `command_impl/analyze.py`
+
+- **`meta branch <model>` command** - Optimization analysis across model lineage
+  - Examines upstream/downstream models for partition/cluster alignment
+  - Identifies filter patterns in downstream that should inform upstream config
+  - Location: `command_impl/branch.py`
+
+- **BigQuery monitoring queries** (`utils/monitoring.py`):
+  - `fetch_all_tables_storage()` — storage metrics from `storage_with_cost`
+  - `fetch_model_query_costs()` — costs from `most_expensive_models`
+  - `fetch_partition_info_all()` — partition config from `partitions_monitoring`
+  - `fetch_read_heavy_tables()` — read frequency from `read_heavy_tables`
+  - `fetch_unused_tables()` — unused tables from `unused_tables`
+  - `fetch_model_metrics()` — execution metrics from `models_costs_incremental`
+  - `fetch_table_query_frequency()` — query frequency per table
+  - `fetch_dataset_billing_recommendations()` — physical vs logical billing
+  - `fetch_total_bigquery_costs()` — total BQ spend for context
+
+- **`meta powerbi [workspace_id]` command** - Power BI integration
+  - Extracts BigQuery tables used by Power BI dashboards and maps to dbt models
+  - Default view: Workspace → Dataset → Reports → Tables hierarchy
+  - `--by-table` flag: aggregated view grouped by BigQuery table with usage counts
+  - `--measures` flag: DAX expressions with `parse_dax_references()` analysis
+  - `--columns` flag: column schemas with data types, formats, visibility
+  - `--full` flag: all metadata combined
+  - OAuth via Service Principal (client_credentials flow using `curl`)
+  - TOML config or `POWERBI_*` env vars
+  - Location: `command_impl/powerbi.py`, `utils/powerbi.py`
+
+### Changed
+- **Renamed `cost` command to `scan`** — better reflects the command's purpose
+  - `meta cost` → `meta scan`
+  - File: `command_impl/scan.py` (renamed from `cost.py`)
+
+- **Minimalist text output for `schema`, `path`, `sql`** — shell-friendly
+  - Removed decorative headers and blank lines
+  - Returns only the value: table name, file path, or SQL
+  - Enables: `TABLE=$(meta schema model_name)`
+  - JSON mode unchanged
+  - Location: `cli.py:665-674`, `cli.py:849-850`, `cli.py:958-960`
+
+- **Help message** — new command categories in `meta --help`
+  - **Optimization** section: `hotspots`, `analyze`, `branch`
+  - **Integration** section: `powerbi`
+  - Location: `cli.py:136-149`
+
+- **Configurable monitoring dataset** — no more hardcoded `"prod"` schema
+  - Added `monitoring_dataset` to Config (default: `"prod"`)
+  - TOML: `[bigquery] monitoring_dataset = "prod"`
+  - Env: `DBT_MONITORING_DATASET`
+  - Location: `config.py`, `utils/monitoring.py`
+
+### Fixed
+- **`meta hotspots` BigQuery CLI integration** — fixed on macOS
+  - Removed PYTHONPATH clearing that broke `bq` CLI
+  - Removed hardcoded `LIKE 'admirals%'` project filter
+  - Location: `utils/monitoring.py:14-53`
 
 ## [0.2.1] - 2026-01-02
 
@@ -401,6 +618,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLAUDE.md for AI agent integration
 - Apache 2.0 license
 
+[0.2.2]: https://github.com/Filianin/dbt-meta/releases/tag/v0.2.2
 [0.2.1]: https://github.com/Filianin/dbt-meta/releases/tag/v0.2.1
 [0.2.0]: https://github.com/Filianin/dbt-meta/releases/tag/v0.2.0
 [0.1.6]: https://github.com/Filianin/dbt-meta/releases/tag/v0.1.6

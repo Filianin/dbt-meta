@@ -6,20 +6,25 @@
 
 ## ✨ Features
 
-- **🎯 Works out-of-box** - Simple Mode: just run `dbt compile` and start using
-- **⚙️ TOML configuration** - Modern config files with XDG compliance (optional)
-- **⚡ Lightning fast** - Optimized Python with LRU caching and orjson parser
-- **🔄 Production Mode** - Full `defer` workflow support for multi-project setups and development environment
-- **📊 AI-friendly JSON** - Machine-readable structured output (`-j` flag)
-- **🔍 Rich metadata** - Schema, columns, dependencies, config, compiled SQL
-- **🌳 Dependency navigation** - Trace upstream/downstream models
-- **🔎 Advanced filtering** - Filter models by tags, config, path with OR/AND logic
-- **🔀 Git-aware** - Find modified models and dependencies needing `--full-refresh`
-- **📋 Smart search** - Find models by name or description
-- **✅ SQL validation** - Validate SQL syntax using BigQuery dry run
-- **💰 Cost estimation** - Estimate query scan size before running
-- **🎨 Beautiful UI** - Rich terminal formatting with helpful examples
-- **⚡ Combined flags** - Use `-dj`, `-ajd`, `-mf` for faster typing
+- **🎯 Works out-of-box** — Simple Mode: just run `dbt compile` and start using
+- **⚙️ TOML configuration** — Modern config files with XDG compliance (optional)
+- **⚡ Lightning fast** — Optimized Python with LRU caching and orjson parser
+- **🔄 Production Mode** — Full `defer` workflow support for multi-project setups and development environment
+- **📊 AI-friendly JSON** — Machine-readable structured output (`-j` flag) on every command
+- **🔍 Rich metadata** — Schema, columns, dependencies, config, compiled SQL, column docs
+- **🌳 Dependency navigation** — Trace upstream/downstream models (flat or tree view)
+- **🔎 Advanced filtering** — Filter models by tags, config, path, package with OR/AND logic
+- **🔀 Git-aware** — Find modified models and dependencies needing `--full-refresh`
+- **📋 Smart search** — Find models by name or description
+- **✅ SQL validation** — Validate SQL syntax using BigQuery dry run
+- **📏 Scan estimation** — Estimate query scan size before running (MB / GB)
+- **📊 Optimization analysis** — Find hotspots, analyze single models, branch-level alignment
+- **🧬 Column-level lineage** — `meta lineage build/column/downstream/stats` with rustworkx graph (sub-10ms queries)
+- **🎯 Column-usage-aware advisors** — `meta optimize cluster/partition/refresh` recommends BigQuery clustering/partition keys and minimal `--full-refresh` plan based on real downstream WHERE/JOIN usage
+- **🔗 Power BI integration** — Extract BigQuery tables (+ DAX measures & column schemas) from dashboards
+- **🔁 Artifact sync** — `meta refresh` pulls prod artifacts or parses local project
+- **🎨 Beautiful UI** — Rich terminal formatting with categorized help panels
+- **⚡ Combined flags** — Use `-dj`, `-adj`, `-mf` for faster typing (order-independent)
 
 
 ## 🤖 Built for AI Workflows
@@ -178,54 +183,162 @@ meta columns -j --manifest ~/path.json m     # → JSON + Custom manifest
 
 ## 📚 Commands Reference
 
-### Core Commands
+All commands accept `-h/--help` for detailed per-command help.
 
-| Command | Description | Example |
-|---------|-------------|---------|
-| `info <model>` | Model summary (name, schema, table, materialization, tags) | `meta info -j customers` |
-| `schema <model>` | Full table name (`database.schema.table`) | `meta schema customers` |
-| `path <model>` | Relative file path to .sql file | `meta path customers` |
-| `columns <model>` | Column names and types (`--dev` supported) | `meta columns -dj customers` |
-| `sql <model>` | Compiled SQL (or raw with `--jinja`) | `meta sql --jinja customers` |
-| `docs <model>` | Column names, types, and descriptions | `meta docs customers` |
-| `deps <model>` | Dependencies by type (refs, sources, macros) | `meta deps -j customers` |
-| `parents <model>` | Upstream dependencies (`-a` for all ancestors) | `meta parents -aj customers` |
-| `children <model>` | Downstream dependencies (`-a` for all descendants) | `meta children -a customers` |
-| `config <model>` | Full dbt config (29 fields: partition_by, cluster_by, etc.) | `meta config -j customers` |
-| `validate <model>` | Validate SQL syntax using BigQuery dry run | `meta validate customers` |
-| `cost <model>` | Estimate query scan size using BigQuery dry run | `meta cost -j customers` |
+### Core Metadata
 
-### Settings & Utilities
+| Command | Description | Key flags | Example |
+|---------|-------------|-----------|---------|
+| `info <model>` | Model summary (name, schema, table, materialization, tags) | `-j`, `-d` | `meta info -j customers` |
+| `schema <model>` | Full table name (`database.schema.table`) | `-j`, `-d` | `meta schema customers` |
+| `path <model>` | Relative file path to .sql file | `-j`, `-d` | `meta path customers` |
+| `columns <model>` | Column names and types | `-j`, `-d` | `meta columns -dj customers` |
+| `config <model>` | Full dbt config (partition_by, cluster_by, incremental, etc.) | `-j`, `-d` | `meta config -j customers` |
+| `sql <model>` | Compiled SQL (default) or raw with `--jinja` | `-j`, `-d`, `--jinja` | `meta sql --jinja customers` |
+| `docs <model>` | Column names, types, and descriptions | `-j`, `-d` | `meta docs customers` |
+| `deps <model>` | Dependencies by type (refs, sources, macros) | `-j`, `-d` | `meta deps -j customers` |
 
-| Command | Description | Example |
-|---------|-------------|---------|
-| `settings init` | Create config file from template | `meta settings init` |
-| `settings show` | Display current configuration | `meta settings show -j` |
-| `settings validate` | Validate config file | `meta settings validate` |
-| `settings path` | Show path to active config file | `meta settings path` |
-| `list [selectors]` | Advanced model filtering with selectors (`tag:`, `config.`, `path:`) | `meta list tag:daily --modified` |
-| `models [pattern]` | Simple substring search in model names | `meta models staging` |
-| `search <query>` | Search models by name or description | `meta search "customer" -j` |
-| `refresh` | Refresh manifest (runs `dbt parse`) | `meta refresh` |
+### Lineage (model-level)
 
-**List command flags:**
-- `--and` - AND logic for multiple selectors (default: OR)
-- `--group` - Group results by tag combinations
-- `-m, --modified` - Show only git-modified models
-- `-f, --full-refresh` - Show models needing `--full-refresh` (modified + descendants)
+| Command | Description | Key flags | Example |
+|---------|-------------|-----------|---------|
+| `parents <model>` | Upstream dependencies (direct or all ancestors) | `-j`, `-d`, `-a` | `meta parents -aj customers` |
+| `children <model>` | Downstream dependencies (direct or all descendants) | `-j`, `-d`, `-a` | `meta children -a customers` |
+
+- Without `-a`: direct parents/children only (classic format).
+- With `-a -j` and ≤20 nodes: nested JSON with `children` key; otherwise flat array.
+
+### Column-level lineage (`meta lineage`)
+
+Backed by SQLGlot 30.7+ (`sqlglot.lineage`, all-columns mode) and rustworkx for native graph traversal. The graph is built once into a JSON artifact (`~/dbt-state/lineage.json`), then queried in sub-10 ms.
+
+| Command | Description | Key flags | Example |
+|---------|-------------|-----------|---------|
+| `lineage build` | Build the lineage artifact from manifest + catalog | `-d`, `-j`, `-v`, `--timeout N`, `-o PATH`, `--manifest`, `--catalog` | `meta lineage build -v` |
+| `lineage column <model>.<col>` | Direct + transitive upstream lineage for a column | `-d`, `-j`, `--artifact` | `meta lineage column core_clients.client_id` |
+| `lineage downstream <model>.<col>` | Direct + transitive downstream impact for a column | `-d`, `-j`, `--artifact` | `meta lineage downstream raw.events.user_id` |
+| `lineage stats` | Print artifact summary (nodes, edges, generated_at, warnings) | `-d`, `-j`, `--artifact` | `meta lineage stats -j` |
+
+**`build` flags:**
+- `-v, --verbose` — print per-model progress (`[123/934] model_name (0.42s) ok`)
+- `--timeout N` — per-model SIGALRM budget in seconds (default 30, 0 disables)
+- `-o PATH` — explicit output path (default: `~/dbt-state/lineage.json` for prod, `./target/lineage.json` for `--dev`)
+
+For best performance install the mypyc-compiled SQLGlot: `pip install 'dbt-meta[lineage]' 'sqlglot[c]'` — gives 2-4× speedup on large projects (~470 s → ~150 s for 934 models).
+
+### Optimization advisors (`meta optimize`)
+
+Column-usage-aware advisors. They read each downstream model's compiled SQL via SQLGlot and apply explainable heuristics. No `INFORMATION_SCHEMA.JOBS_BY_PROJECT`, no LLM, no extra build step — pure AST analysis on existing artifacts. On-demand only (no extra CI artifact).
+
+| Command | Description | Key flags | Example |
+|---------|-------------|-----------|---------|
+| `optimize cluster <model>` | Recommend BigQuery clustering keys (≤4) from downstream WHERE/JOIN/GROUP BY usage | `-d`, `-j`, `--top N` | `meta optimize cluster core_sessions` |
+| `optimize partition <model>` | Recommend a single partition column (DATE/DATETIME/TIMESTAMP/INT64) + granularity | `-d`, `-j` | `meta optimize partition core_clients` |
+| `optimize refresh [<models>...]` | Column-aware `--full-refresh` planner with chain-aware propagation | `-m`, `--base BRANCH`, `--cols MODEL:c1,c2`, `-d`, `-j`, `--no-compile` | `meta optimize refresh -m` |
+
+**`optimize cluster` heuristic:** per-column score = `WHERE eq×3.0 + WHERE in×2.5 + WHERE between/range×2.0 + JOIN×2.0 + GROUP BY×1.0 + WHERE fn-wrapped×0.5`, multiplied by `log2(downstream_count_using_column + 1)`. Excludes the model's own `partition_by` column and types unfit for clustering (`STRUCT`, `ARRAY`, `GEOGRAPHY`, `JSON`).
+
+**`optimize partition` heuristic:** range/equality filter weights × type bonus (TIMESTAMP/DATE × 1.5, DATETIME × 1.3, INT64 × 1.0). Granularity heuristic: TIMESTAMP/DATE → `DAY`, INT64 → `RANGE_BUCKET`. Returns one primary recommendation + up to 4 alternatives + `pruning_impact_pct` (% of downstream queries that would benefit).
+
+**`optimize refresh` algorithm:** topological BFS over transitive downstream. Affectedness propagates through the chain — a 3-level descendant `C` that never directly mentions changed `A` is still classified correctly when `A → B → C` and `B` consumes `A`'s changed columns. `SELECT *` propagates whole-row affectedness through the chain via SQLGlot AST detection (not regex). Per-model bucket: `full_refresh` (incremental key collision, SELECT *, or non-incremental materialization) / `incremental` (incremental + only safe columns affected) / `skip`.
+
+**`optimize refresh` flags:**
+- `-m, --modified` — auto-detect changed models from git (committed-vs-base + uncommitted + untracked)
+- `--base BRANCH` — explicit base for git diff (auto: `origin/main` → `origin/master` → `main` → `master`)
+- `--cols MODEL:c1,c2` — column-level diff for precise propagation; without it the planner conservatively treats the entire changed model as affected
+- `--no-compile` — skip the on-demand `dbt compile` fallback (level 3 of compiled-SQL chain)
+
+**Compiled-SQL fallback chain** (used by `optimize refresh`): manifest `compiled_code` → `<project>/target/compiled/<pkg>/<path>.sql` on disk → one bulk `dbt compile --select <downstream models>` per run. Only triggers when project root is found (`dbt_project.yml`), `dbt` is in PATH, and >50 % of a sampled downstream slice lacks SQL.
+
+**Output (text mode)** ends with a ready-to-paste shell command:
+
+```
+Suggested commands:
+  dbt run -fs core_sessions stg_clients core_orders ...
+  dbt run -s some_incremental_model
+```
+
+The line is emitted via plain `print()` (not Rich) so terminal copy-paste returns one uninterrupted command.
+
+### Discovery & Filtering
+
+| Command | Description | Key flags | Example |
+|---------|-------------|-----------|---------|
+| `list [selectors…]` | Filter with selectors (`tag:`, `config.`, `path:`, `package:`) | `-j`, `-d`, `-m`, `-f`, `-a`, `--and`, `--group` | `meta list tag:daily --and tag:core` |
+| `models [pattern]` | Simple substring search over model names | `-j` | `meta models staging` |
+| `search <query>` | Search models by name or description | `-j` | `meta search "customer" -j` |
+
+**`list` selectors:**
+- `tag:name` — filter by tag (OR logic by default)
+- `config.key:value` — filter by config value (e.g. `config.materialized:incremental`)
+- `path:dir/` — filter by file path prefix
+- `package:name` — filter by package
+
+**`list` flags:**
+- `--and` — require ALL selectors to match (default: OR)
+- `--group` — group output by tag combinations (headers)
+- `-m, --modified` — git-aware: only changed/new models
+
+For refresh planning of changed models, use `meta optimize refresh` (column-aware chain analysis).
+
+### SQL Validation & Cost
+
+Uses BigQuery dry run (no rows processed, no charge for dry run itself). Both commands fall back through manifest → `target/compiled/` → auto `dbt compile` (with `--dev`) — see [details below](#validating-sql-and-estimating-scan-size).
+
+| Command | Description | Key flags | Example |
+|---------|-------------|-----------|---------|
+| `validate <model>` | Validate compiled SQL syntax | `-j`, `-d` | `meta validate customers` |
+| `scan <model>` | Estimate query scan size (🟢 <1 GB, 🟡 1–10 GB, 🔴 ≥10 GB) | `-j`, `-d` | `meta scan --dev -j customers` |
+
+### Optimization (requires `dbt_bigquery_monitoring`)
+
+| Command | Description | Key flags | Example |
+|---------|-------------|-----------|---------|
+| `hotspots` | Rank all tables by optimization score (cost, partitioning, clustering, cache) | `-j`, `-n/--limit`, `--min-gb` | `meta hotspots -n 20 --min-gb 10` |
+| `analyze <model>` | Deep analysis of a single model — storage, usage, recommendations | `-j` | `meta analyze -j customers` |
+| `branch <model>` | Branch-level analysis — upstream/downstream partitioning alignment | `-j` | `meta branch customers` |
+
+**`hotspots` flags:**
+- `-n, --limit N` — number of hotspots to display (default: 10)
+- `--min-gb GB` — minimum table size in GB (default: 1.0)
+
+### Integration — Power BI
+
+Requires Azure AD Service Principal with Power BI Admin API access.
+
+| Command | Description | Key flags | Example |
+|---------|-------------|-----------|---------|
+| `powerbi [workspace_id]` | Power BI → BigQuery → dbt model mapping | `-j`, `--by-table`, `--measures`, `--columns`, `--full` | `meta powerbi --by-table -j` |
+
+**`powerbi` flags:**
+- `--measures` — include DAX measure expressions
+- `--columns` — include column schemas with data types
+- `--full` — include all metadata (measures + columns)
+- `--by-table` — aggregated view grouped by BigQuery table
+
+### Artifacts & Settings
+
+| Command | Description | Key flags | Example |
+|---------|-------------|-----------|---------|
+| `refresh` | Sync production artifacts from remote storage | `-d/--dev` (parse local via `dbt parse`) | `meta refresh` |
+| `settings init` | Create config file from template | `-f/--force` (overwrite existing) | `meta settings init` |
+| `settings show` | Display merged configuration (TOML + env) | `-j` | `meta settings show -j` |
+| `settings validate` | Validate active config file | — | `meta settings validate` |
+| `settings path` | Show active config file path | — | `meta settings path` |
 
 ### Global Flags
 
-| Flag | Description |
-|------|-------------|
-| `-j, --json` | Output as JSON (AI-friendly structured data) |
-| `-d, --dev` | Use dev manifest and schema |
-| `--manifest PATH` | Explicit path to manifest.json |
-| `-a, --all` | Recursive mode (parents/children only) |
-| `-h, --help` | Show help with examples |
-| `-v, --version` | Show version |
+| Flag | Description | Applies to |
+|------|-------------|-----------|
+| `-h, --help` | Show help | All commands |
+| `-v, --version` | Show version and exit | Main app |
+| `--manifest PATH` | Explicit path to manifest.json (takes precedence over `--dev`) | All metadata commands |
+| `-d, --dev` | Use dev manifest/schema (`./target/manifest.json`, `personal_USERNAME`) | Most metadata commands |
+| `-j, --json` | Output as JSON (AI-friendly structured data) | Most commands |
 
-**Combined flags**: `-dj`, `-ajd`, `-mf` (order-independent)
+**Combined short flags** work in any order: `-dj`, `-adj`, `-mf`, `-fa`, etc.
+
+**Note:** `--manifest` has no short form. If `--manifest` and `--dev` are both provided, `--dev` is ignored with a warning.
 
 ## 💡 Common Use Cases
 
@@ -278,7 +391,7 @@ bq query "SELECT * FROM $TABLE LIMIT 10"
 # → SELECT * FROM personal_USERNAME.customers LIMIT 10
 ```
 
-### Validating SQL and Estimating Cost
+### Validating SQL and Estimating Scan Size
 
 ```bash
 # Validate SQL syntax before running (uses BigQuery dry run)
@@ -289,20 +402,163 @@ meta validate customers
 meta validate broken_model
 # → ❌ Error: Unrecognized name: unknown_column at [3:5]
 
-# Estimate query scan size (cost estimation)
-meta cost customers
+# Estimate query scan size
+meta scan customers
 # → Scan size: 3.2 GB
 
 # JSON output for scripting
-meta cost -j customers | jq -r '.formatted'
+meta scan -j customers | jq -r '.formatted'
 # → 3.2 GB
 
 # Use in CI/CD to prevent expensive queries
-BYTES=$(meta cost -j customers | jq -r '.bytes')
+BYTES=$(meta scan -j customers | jq -r '.bytes')
 if [ "$BYTES" -gt 10000000000 ]; then  # 10 GB limit
   echo "Query too expensive: $BYTES bytes"
   exit 1
 fi
+
+# With local changes: --dev auto-compiles if needed
+meta validate --dev my_model
+# → ℹ️  No compiled SQL for 'my_model'. Running `dbt compile --select my_model --target dev`...
+# → ✅ Valid
+```
+
+**Compiled SQL lookup (validate / scan):** 3-level fallback strategy:
+1. `model['compiled_code']` from manifest (always works after `dbt compile`/`dbt run`)
+2. `target/compiled/{package}/{original_file_path}` on disk (works if you ran `dbt compile` separately)
+3. With `--dev`: auto-runs `dbt compile --select <model> --target dev` and re-reads from disk
+
+The third level only fires when `--dev` is set, since auto-compilation is only safe in your local project. If `dbt` isn't on PATH, compilation fails, or the project root can't be found, you get a clear error with a suggested manual command.
+
+### Refreshing Artifacts
+
+```bash
+# Sync production manifest.json + catalog.json from remote storage
+meta refresh
+# → Downloads to ~/dbt-state/ (always --force)
+
+# Parse local project to ./target/manifest.json (use after editing models)
+meta refresh --dev
+# → Runs: dbt parse --target dev
+```
+
+### Optimization Analysis
+
+```bash
+# Find top optimization opportunities
+meta hotspots --limit 10
+# → Shows tables with highest optimization potential (scoring_details included)
+
+# Deep analysis of specific model
+meta analyze customers
+# → Storage metrics, query costs, partition info, recommendations
+
+# Analyze branch impact before merging
+meta branch
+# → Shows optimization impact of current branch changes
+
+# JSON output for AI agents (includes recommendations)
+meta hotspots -j | jq '.hotspots[0].scoring_details'
+# → [{"criterion": "no_partition", "points": 60, "recommendation": "Add partition_by config"}]
+```
+
+### Column-Level Lineage
+
+```bash
+# Build the lineage artifact (one-time, runs SQLGlot on every model's compiled SQL)
+meta lineage build --verbose
+# → Wrote ~/dbt-state/lineage.json (8.7 MB, 27,059 nodes, 23,815 edges in 470 s)
+
+# Where does a column come from?
+meta lineage column core_internal_tracking__sessions.session_channel
+# → Direct: stg_traffic_channel__mapping.assigned_channel
+# → Ancestors: source.raw_traffic_channel.traffic_channel_mapping.assigned_channel, …
+
+# What breaks if I change this column?
+meta lineage downstream stg_traffic_channel__mapping.assigned_channel
+# → 30 direct downstream columns across core_client__*, core_plausible__*, …
+
+# Artifact stats (size, age, warnings)
+meta lineage stats
+# → schema 1.0, 27,059 nodes, 23,815 edges, generated 2026-05-08T10:20:03+00:00
+```
+
+### Refresh Planner — Minimum `--full-refresh` Set
+
+```bash
+# Detect changed models from git, classify their downstream
+cd ~/Projects/reports
+meta optimize refresh -m
+# → 12 full_refresh, 0 incremental, 99 skip (out of 110 transitive downstream)
+# → Suggested: dbt run -fs core_internal_tracking__events core_plausible__pageviews …
+
+# Column-precision (drastically narrows the set when you know the diff)
+meta optimize refresh --cols core_internal_tracking__events:event_type
+# → 1 full_refresh, 1 incremental (sessions uses event_type in WHERE), 103 skip
+
+# Override base branch (auto-detects origin/main → origin/master → main → master)
+meta optimize refresh -m --base origin/develop
+
+# Programmatic use
+meta optimize refresh -m -j | jq -r '.dbt_commands.full_refresh'
+# → "dbt run -fs core_internal_tracking__events …"
+```
+
+### Clustering & Partitioning Recommendations
+
+```bash
+# What columns should I cluster `core_sessions` on?
+meta optimize cluster core_internal_tracking__sessions
+# → match_utm_source (JOIN ×30 in 6 models, score 168.44)
+# → match_utm_medium (JOIN ×30, score 168.44)
+# → … (excluded: existing partition column, STRUCT/ARRAY/JSON columns)
+
+# What's the right partition column for this model?
+meta optimize partition amas_client_profiles
+# → status (INT64) RANGE_BUCKET, pruning ~4.5%
+# → Alternatives: client_id (INT64) score=1.5
+
+# JSON for tooling
+meta optimize cluster core_sessions -j | jq '.recommendations[].column'
+```
+
+### Power BI Integration
+
+```bash
+# Extract table mappings from default workspace (from config)
+meta powerbi
+# → Shows datasets, reports, BigQuery tables, and dbt model mappings
+
+# Table usage view: aggregated by BigQuery table with report/dataset counts
+meta powerbi --by-table
+# → Table | Reports | Datasets | dbt Model
+
+# Include DAX measure expressions
+meta powerbi --measures
+
+# Include column schemas (name, data type, visibility)
+meta powerbi --columns
+
+# All metadata: tables + measures + columns
+meta powerbi --full
+
+# Specific workspace
+meta powerbi 677db568-5923-4c5b-9b45-f14ec16a2b62
+
+# JSON output for automation (always returns full metadata when -j is set)
+meta powerbi -j | jq '.datasets[] | {name: .name, tables: .tables | length}'
+
+# Table usage as JSON (includes report/dataset lists per table)
+meta powerbi --by-table -j | jq '.tables[] | select(.in_manifest == false) | .bigquery_table'
+# → BigQuery tables used in Power BI but not tracked in dbt
+
+# Configuration (in ~/.config/dbt-meta/config.toml)
+[powerbi]
+enabled = true
+tenant_id = "your-tenant-id"
+client_id = "your-client-id"
+client_secret = "your-secret"
+workspaces = ["workspace-id-1", "workspace-id-2"]
 ```
 
 ### Search and Discovery
@@ -326,7 +582,7 @@ meta list tag:daily tag:core --and
 
 # Git-aware filtering
 meta list -m                                  # Show modified models
-meta list -f                                  # Models needing --full-refresh
+# For chain-aware refresh planning: `meta optimize refresh -m`
 
 # Group by tag combinations
 meta list tag:daily tag:core --group
@@ -398,15 +654,42 @@ meta settings path      # Show active config file path
 
 ### Environment Variables (Alternative)
 
-All TOML settings can be set via environment variables with `DBT_` prefix:
+All TOML settings can be set via environment variables. **CLI flags > TOML > env vars > defaults.**
+
+**Manifest & catalog:**
+
+| TOML key | Environment variable | Default |
+|----------|---------------------|---------|
+| `prod_manifest_path` | `DBT_PROD_MANIFEST_PATH` | `~/dbt-state/manifest.json` |
+| `dev_manifest_path` | `DBT_DEV_MANIFEST_PATH` | `./target/manifest.json` |
+| `prod_catalog_path` | `DBT_PROD_CATALOG_PATH` | `~/dbt-state/catalog.json` |
+| `dev_catalog_path` | `DBT_DEV_CATALOG_PATH` | `./target/catalog.json` |
+| `dev_schema` | `DBT_DEV_SCHEMA` | `personal_{USER}` |
+
+**Fallback behavior:**
+
+| TOML key | Environment variable | Default |
+|----------|---------------------|---------|
+| `fallback_dev_enabled` | `DBT_FALLBACK_TARGET` | `true` |
+| `fallback_bigquery_enabled` | `DBT_FALLBACK_BIGQUERY` | `true` |
+| `fallback_catalog_enabled` | `DBT_FALLBACK_CATALOG` | `true` |
+
+**Production naming strategy:**
+
+| TOML key | Environment variable | Options |
+|----------|---------------------|---------|
+| `prod_table_name_strategy` | `DBT_PROD_TABLE_NAME` | `alias_or_name` (default), `name`, `alias` |
+| `prod_schema_source` | `DBT_PROD_SCHEMA_SOURCE` | `config_or_model` (default), `model`, `config` |
+
+**Power BI integration (optional):**
 
 | TOML key | Environment variable |
 |----------|---------------------|
-| `prod_manifest_path` | `DBT_PROD_MANIFEST_PATH` |
-| `dev_manifest_path` | `DBT_DEV_MANIFEST_PATH` |
-| `dev_schema` | `DBT_DEV_SCHEMA` |
-| `fallback_dev_enabled` | `DBT_FALLBACK_TARGET` |
-| `fallback_bigquery_enabled` | `DBT_FALLBACK_BIGQUERY` |
+| `powerbi.enabled` | `POWERBI_ENABLED` |
+| `powerbi.tenant_id` | `POWERBI_TENANT_ID` |
+| `powerbi.client_id` | `POWERBI_CLIENT_ID` |
+| `powerbi.client_secret` | `POWERBI_CLIENT_SECRET` |
+| `powerbi.workspaces` | `POWERBI_WORKSPACES` (comma-separated) |
 
 ## 🧪 Development
 

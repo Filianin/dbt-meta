@@ -96,6 +96,11 @@ class ParentsCommand(BaseCommand):
         """
         unique_id = model['unique_id']
 
+        # Guard against missing manifest data (defensive defaults)
+        parent_map = parent_map or {}
+        nodes = nodes or {}
+        sources = sources or {}
+
         if self.recursive:
             # Build hierarchical tree
             tree = build_relation_tree(parent_map, unique_id, nodes, sources, json_mode=self.json_output)

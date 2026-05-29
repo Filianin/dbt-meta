@@ -280,6 +280,18 @@ retries = 3
 #
 # location = "US"
 
+# Dataset containing dbt_bigquery_monitoring tables
+# Default: "prod"
+#
+# Override when dbt_bigquery_monitoring package builds to different schema.
+# Used by commands: meta hotspots, meta analyze, meta branch
+#
+# The dbt_bigquery_monitoring package (https://github.com/bv/dbt_bigquery_monitoring)
+# builds monitoring tables for BigQuery query costs, storage, partitioning, etc.
+# Default target schema is 'prod' but can be customized in dbt_project.yml
+#
+# monitoring_dataset = "prod"
+
 
 # ==============================================================================
 # DATABASE (Future Enhancement)
@@ -428,3 +440,87 @@ show_source = true
 # - Multiple dev environments (dev, qa, staging)
 #
 # target = "dev"
+
+
+# ==============================================================================
+# POWER BI INTEGRATION
+# ==============================================================================
+# Configuration for Power BI Admin API integration
+#
+# Enables extraction of BigQuery table usage from Power BI dashboards
+# via Scanner API (M-query expressions contain table references).
+#
+# 🚨 CRITICAL SETUP (Admin API requires specific configuration):
+#
+# 1. Azure AD - App Registration:
+#    - Create App Registration
+#    - Generate Client Secret (Certificates & secrets)
+#    - ⚠️ DO NOT add any Power BI API permissions! (blocks Admin API)
+#
+# 2. Azure AD - Security Group:
+#    - Create Security Group (e.g., "PowerBI-Admin-API")
+#    - Add Service Principal using Enterprise Application Object ID
+#      (Azure AD → Enterprise applications → find app → Object ID)
+#    - ❌ NOT the App Registration Object ID (different!)
+#
+# 3. Power BI Admin Portal (admin.powerbi.com):
+#    - Tenant settings → Developer settings:
+#      ✅ "Service principals can call Fabric public APIs"
+#         → Apply to: Security Group created in step 2
+#    - Tenant settings → Admin API settings:
+#      ✅ "Service principals can access read-only admin APIs"
+#         → Apply to: Security Group
+#      ✅ "Enhance admin APIs responses with detailed metadata"
+#         → Apply to: Security Group
+#      ✅ "Enhance admin APIs responses with DAX and mashup expressions"
+#         → Apply to: Security Group
+#    - Wait 15-30 minutes for changes to propagate
+#
+# Troubleshooting 401 PowerBINotAuthorizedException:
+# - Check Azure AD → Enterprise applications → Permissions
+#   → Revoke any Power BI "Application" type permissions
+# - Verify Security Group has correct Object ID (Enterprise App, not App Reg)
+# - Verify all Power BI tenant settings use the same Security Group
+# ==============================================================================
+
+[powerbi]
+
+# Enable Power BI Admin API integration
+# Default: false
+#
+# When true: meta powerbi command becomes available
+# When false: Command will raise "integration disabled" error
+#
+# enabled = false
+
+# Azure AD tenant ID
+# Required when enabled = true
+#
+# Find in Azure Portal > Azure Active Directory > Overview
+#
+# tenant_id = ""
+
+# App Registration client ID
+# Required when enabled = true
+#
+# Find in Azure Portal > App Registrations > your app > Application (client) ID
+#
+# client_id = ""
+
+# App Registration client secret
+# Required when enabled = true
+#
+# SECURITY: Consider using environment variable POWERBI_CLIENT_SECRET instead
+# of storing secret in config file.
+#
+# client_secret = ""
+
+# Default workspaces to scan
+# Optional list of Power BI workspace IDs
+#
+# When provided, `meta powerbi` uses first workspace by default.
+# Can be overridden with `meta powerbi <workspace_id>`.
+#
+# Find workspace ID in Power BI URL: app.powerbi.com/groups/<workspace_id>/...
+#
+# workspaces = ["677db568-5923-4c5b-9b45-f14ec16a2b62"]

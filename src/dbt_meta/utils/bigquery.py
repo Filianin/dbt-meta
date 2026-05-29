@@ -6,10 +6,42 @@ Handles BigQuery name sanitization, table metadata fetching, and column extracti
 import json as json_lib
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
 from typing import Optional
+
+# Common installation paths for bq CLI (Google Cloud SDK)
+_BQ_SEARCH_PATHS = [
+    '/opt/homebrew/bin',          # macOS Homebrew
+    '/usr/local/bin',             # macOS/Linux common
+    '/usr/bin',                   # Linux system
+    os.path.expanduser('~/google-cloud-sdk/bin'),   # Manual SDK install
+    os.path.expanduser('~/bin'),  # User bin
+]
+
+
+def _find_bq_cmd() -> Optional[str]:
+    """Find bq CLI executable, checking PATH and common install locations."""
+    # First try current PATH
+    cmd = shutil.which('bq')
+    if cmd:
+        return cmd
+
+    # Extend PATH search with common SDK locations not in shell-stripped PATH
+    extended_path = os.environ.get('PATH', '') + os.pathsep + os.pathsep.join(_BQ_SEARCH_PATHS)
+    cmd = shutil.which('bq', path=extended_path)
+    if cmd:
+        return cmd
+
+    # Last resort: check hardcoded paths directly
+    for directory in _BQ_SEARCH_PATHS:
+        candidate = os.path.join(directory, 'bq')
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+
+    return None
 
 
 def _should_retry(attempt: int, max_retries: int, error_msg: str) -> bool:
@@ -187,35 +219,24 @@ def run_bq_command(args: list[str], timeout: int = 10) -> subprocess.CompletedPr
     Raises:
         subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired
     """
-    import shutil
-
     # Find bq command
-    bq_cmd = shutil.which('bq')
+    bq_cmd = _find_bq_cmd()
     if not bq_cmd:
-        # Try hardcoded path (common on macOS with Homebrew)
-        bq_cmd = '/opt/homebrew/bin/bq'
-        if not os.path.exists(bq_cmd):
-            bq_cmd = 'bq'  # Let subprocess raise FileNotFoundError
+        bq_cmd = 'bq'  # Let subprocess raise FileNotFoundError
 
-    # Save current PYTHONPATH and clear it (avoid conflicts with local modules)
-    old_pythonpath = os.environ.get('PYTHONPATH')
+    # Clear PYTHONPATH to avoid conflicts; extend PATH with SDK locations
     env = os.environ.copy()
     env['PYTHONPATH'] = ''
+    env['PATH'] = os.environ.get('PATH', '') + os.pathsep + os.pathsep.join(_BQ_SEARCH_PATHS)
 
-    try:
-        result = subprocess.run(
-            [bq_cmd, *args],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=timeout,
-            env=env
-        )
-        return result
-    finally:
-        # Restore PYTHONPATH (optional, process env is isolated anyway)
-        if old_pythonpath is not None:
-            os.environ['PYTHONPATH'] = old_pythonpath
+    return subprocess.run(
+        [bq_cmd, *args],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=timeout,
+        env=env,
+    )
 
 
 def fetch_columns_from_bigquery_direct(
@@ -354,39 +375,39 @@ def run_dry_run_query(sql: str, timeout: int = 30) -> dict:
         ... else:
         ...     print(f"Error: {result['error']}")
     """
-    import shutil
-
     # Find bq command
-    bq_cmd = shutil.which('bq')
+    bq_cmd = _find_bq_cmd()
     if not bq_cmd:
-        bq_cmd = '/opt/homebrew/bin/bq'
-        if not os.path.exists(bq_cmd):
-            return {'valid': False, 'bytes_processed': None, 'error': 'bq command not found'}
+        return {'valid': False, 'bytes_processed': None, 'error': 'bq command not found'}
 
-    # Clear PYTHONPATH to avoid conflicts
+    # Clear PYTHONPATH to avoid conflicts; extend PATH with SDK locations
     env = os.environ.copy()
     env['PYTHONPATH'] = ''
+    env['PATH'] = os.environ.get('PATH', '') + os.pathsep + os.pathsep.join(_BQ_SEARCH_PATHS)
 
     try:
+        # Use stdin for SQL to avoid command line length limits
         result = subprocess.run(
-            [bq_cmd, 'query', '--dry_run', '--use_legacy_sql=false', sql],
+            [bq_cmd, 'query', '--dry_run', '--use_legacy_sql=false'],
+            input=sql,
             capture_output=True,
             text=True,
             timeout=timeout,
             env=env
         )
 
-        output = result.stdout.strip()
+        stdout = result.stdout.strip()
+        stderr = result.stderr.strip()
 
         # Success: "Query successfully validated. Assuming the tables are not modified,
         #          running this query will process upper bound of 2409808874 bytes of data."
-        if 'Query successfully validated' in output:
-            match = re.search(r'(\d+) bytes', output)
+        if 'Query successfully validated' in stdout:
+            match = re.search(r'(\d+) bytes', stdout)
             bytes_processed = int(match.group(1)) if match else None
             return {'valid': True, 'bytes_processed': bytes_processed, 'error': None}
 
-        # Error: "Error in query string: Unrecognized name: col at [1:8]"
-        error = output
+        # Error might be in stdout or stderr
+        error = stdout or stderr
         if error.startswith('Error in query string: '):
             error = error[len('Error in query string: '):]
         return {'valid': False, 'bytes_processed': None, 'error': error}
