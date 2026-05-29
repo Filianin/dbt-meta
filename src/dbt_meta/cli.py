@@ -2504,11 +2504,20 @@ def _ensure_manifest_compiled(
         "rest. This can take 5-15 min on large projects; pass "
         "`--no-compile` to skip.[/dim]"
     )
+    import os
     import subprocess as _subprocess
+
+    compile_argv: list[str] = [dbt_cmd, "compile"]  # type: ignore[list-item]
+    # Use the project-local profiles.yml when present; otherwise let dbt fall
+    # back to ~/.dbt/profiles.yml. Without this, projects that ship their own
+    # profiles.yml at root produce 0/N compiled because dbt can't find any
+    # profile and silently fails per model.
+    if os.path.isfile(os.path.join(project_root, "profiles.yml")):
+        compile_argv += ["--profiles-dir", project_root]
 
     try:
         result = _subprocess.run(
-            [dbt_cmd, "compile"],  # type: ignore[list-item]
+            compile_argv,
             cwd=project_root,
             capture_output=True,
             text=True,
