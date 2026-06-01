@@ -24,7 +24,6 @@ from dbt_meta.commands import (
     children,
     columns,
     config,
-    deps,
     docs,
     info,
     parents,
@@ -366,23 +365,6 @@ class TestManifestParser:
         for model in results:
             assert 'unique_id' in model
             assert 'client' in model['unique_id'].lower()
-
-    def test_get_model_dependencies(self, prod_manifest, test_model):
-        """
-        Should extract model dependencies (refs and sources)
-
-        Returns: {"refs": [...], "sources": [...]}
-        """
-        parser = ManifestParser(str(prod_manifest))
-
-        model_name = test_model
-        deps = parser.get_dependencies(model_name)
-
-        assert isinstance(deps, dict)
-        assert 'refs' in deps
-        assert 'sources' in deps
-        assert isinstance(deps['refs'], list)
-        assert isinstance(deps['sources'], list)
 
 # ============================================================================
 # SECTION 3: Warning System Tests
@@ -866,15 +848,6 @@ class TestCommandsWithJsonOutput:
 
         result = config(str(prod_manifest), test_model,
                        json_output=True)
-        assert result is not None
-
-    def test_deps_accepts_json_output_parameter(self, prod_manifest, test_model, mocker):
-        """deps() should accept json_output parameter"""
-        mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
-        mocker.patch('dbt_meta.commands._print_warnings')
-
-        result = deps(str(prod_manifest), test_model,
-                     json_output=True)
         assert result is not None
 
     def test_sql_accepts_json_output_parameter(self, prod_manifest, test_model, mocker):

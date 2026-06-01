@@ -16,7 +16,6 @@ from dbt_meta.command_impl.branch import BranchCommand
 from dbt_meta.command_impl.children import ChildrenCommand
 from dbt_meta.command_impl.columns import ColumnsCommand
 from dbt_meta.command_impl.config import ConfigCommand
-from dbt_meta.command_impl.deps import DepsCommand
 from dbt_meta.command_impl.hotspots import HotspotsCommand
 from dbt_meta.command_impl.info import InfoCommand
 from dbt_meta.command_impl.parents import ParentsCommand
@@ -149,6 +148,45 @@ def columns(manifest_path: str, model_name: str, use_dev: bool = False, json_out
     return command.execute()
 
 
+def columns_search(
+    manifest_path: str,
+    pattern: str,
+    case_sensitive: bool = False,
+) -> list[dict[str, Any]]:
+    """Repo-wide column search: which models declare a column matching pattern?
+
+    Searches the manifest's ``columns`` block on every model. Columns are
+    declared in dbt schema.yml, so this finds documented columns — not every
+    column physically present in the underlying table.
+
+    Args:
+        manifest_path: Path to manifest.json
+        pattern: Column-name substring to match
+        case_sensitive: If True, match case exactly (default: False)
+
+    Returns:
+        List of {model, unique_id, column, data_type, description} sorted by
+        (model, column). Empty list if nothing matched.
+    """
+    parser = _get_cached_parser(manifest_path)
+    needle = pattern if case_sensitive else pattern.lower()
+    out: list[dict[str, Any]] = []
+    for uid, model in parser.get_all_models().items():
+        model_name = uid.split('.')[-1]
+        for col_name, col_data in model.get('columns', {}).items():
+            haystack = col_name if case_sensitive else col_name.lower()
+            if needle not in haystack:
+                continue
+            out.append({
+                'model': model_name,
+                'unique_id': uid,
+                'column': col_name,
+                'data_type': col_data.get('data_type', '') or '',
+                'description': col_data.get('description', '') or '',
+            })
+    return sorted(out, key=lambda x: (x['model'], x['column']))
+
+
 def config(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> dict[str, Any] | None:
     """
     Extract full dbt config
@@ -172,33 +210,6 @@ def config(manifest_path: str, model_name: str, use_dev: bool = False, json_outp
     """
     cfg = Config.from_config_or_env()
     command = ConfigCommand(cfg, manifest_path, model_name, use_dev, json_output)
-    return command.execute()
-
-
-def deps(manifest_path: str, model_name: str, use_dev: bool = False, json_output: bool = False) -> dict[str, list[str]] | None:
-    """
-    Extract dependencies by type
-
-    Args:
-        manifest_path: Path to manifest.json
-        model_name: Model name
-        use_dev: If True, prioritize dev manifest over production
-
-    Returns:
-        Dictionary with:
-        - refs: List of model dependencies
-        - sources: List of source dependencies
-        - macros: List of macro dependencies
-
-        Returns None if model not found.
-
-    Behavior with use_dev=True:
-        - Searches dev manifest (target/) FIRST
-        - Returns dev-specific dependencies
-        - NO BigQuery fallback (lineage is manifest-only)
-    """
-    cfg = Config.from_config_or_env()
-    command = DepsCommand(cfg, manifest_path, model_name, use_dev, json_output)
     return command.execute()
 
 
@@ -349,6 +360,146 @@ def search(manifest_path: str, query: str) -> list[dict[str, str]]:
     return sorted(output, key=lambda x: x['name'])
 
 
+def resolve(manifest_path: str, query: str, limit: int = 5, cutoff: float = 0.6) -> list[dict[str, Any]]:
+    """Fuzzy resolve a typo'd model name to the closest manifest matches.
+
+    Uses ``difflib.get_close_matches`` over all model names. Useful when
+    a `meta info <name>` failed with "model not found" and the user wants
+    a quick "did you mean ...?" hint without running `meta list` and
+    grepping the output.
+
+    Args:
+        manifest_path: Path to manifest.json
+        query: Model name to match (case-insensitive)
+        limit: Max number of matches to return (default 5)
+        cutoff: difflib similarity cutoff in [0, 1] (default 0.6)
+
+    Returns:
+        List of {name, unique_id, score} sorted by score desc.
+    """
+    import difflib
+
+    parser = _get_cached_parser(manifest_path)
+    models = parser.get_all_models()
+
+    # Map lowercase name → (original name, unique_id)
+    name_index: dict[str, tuple[str, str]] = {}
+    for uid in models:
+        name = uid.split('.')[-1]
+        name_index.setdefault(name.lower(), (name, uid))
+
+    matches = difflib.get_close_matches(
+        query.lower(), list(name_index.keys()), n=limit, cutoff=cutoff
+    )
+
+    result = []
+    for m in matches:
+        name, uid = name_index[m]
+        score = difflib.SequenceMatcher(None, query.lower(), m).ratio()
+        result.append({'name': name, 'unique_id': uid, 'score': round(score, 3)})
+    return result
+
+
+def find(manifest_path: str, fqn: str) -> list[dict[str, Any]]:
+    """Reverse-lookup: physical FQN → dbt model(s).
+
+    Accepts ``table``, ``schema.table``, or ``database.schema.table``.
+    Matches against each model's resolved physical name (``config.alias``
+    or ``name``) and, when provided, schema/database.
+
+    Args:
+        manifest_path: Path to manifest.json
+        fqn: Physical reference. One of:
+            - ``table``                       (any schema/database)
+            - ``schema.table``                (any database)
+            - ``database.schema.table``       (exact match)
+
+    Returns:
+        List of {name, unique_id, database, schema, table, alias,
+                 materialized, file} sorted by unique_id. Empty list
+        if nothing matched.
+    """
+    parts = fqn.split('.')
+    if len(parts) == 1:
+        want_db, want_schema, want_table = None, None, parts[0]
+    elif len(parts) == 2:
+        want_db, want_schema, want_table = None, parts[0], parts[1]
+    elif len(parts) == 3:
+        want_db, want_schema, want_table = parts[0], parts[1], parts[2]
+    else:
+        raise DbtMetaError(
+            f"Invalid FQN: {fqn!r}",
+            suggestion="Use 'table', 'schema.table', or 'database.schema.table'",
+        )
+
+    parser = _get_cached_parser(manifest_path)
+    out: list[dict[str, Any]] = []
+    for uid, model in parser.get_all_models().items():
+        cfg = model.get('config', {})
+        alias = cfg.get('alias')
+        physical = alias or model.get('name', '')
+        if physical != want_table:
+            continue
+        m_schema = model.get('schema', '')
+        m_db = model.get('database', '')
+        if want_schema is not None and m_schema != want_schema:
+            continue
+        if want_db is not None and m_db != want_db:
+            continue
+        out.append({
+            'name': uid.split('.')[-1],
+            'unique_id': uid,
+            'database': m_db,
+            'schema': m_schema,
+            'table': physical,
+            'alias': alias,
+            'materialized': cfg.get('materialized', 'view'),
+            'file': model.get('original_file_path', ''),
+        })
+    return sorted(out, key=lambda x: x['unique_id'])
+
+
+def sources(
+    manifest_path: str,
+    name_filter: str | None = None,
+    freshness_only: bool = False,
+) -> list[dict[str, Any]]:
+    """List sources from manifest with optional freshness metadata.
+
+    Args:
+        manifest_path: Path to manifest.json
+        name_filter: Substring filter on source unique_id (case-insensitive)
+        freshness_only: Only return sources that declare freshness checks
+
+    Returns:
+        List of {name, source_name, unique_id, schema, identifier,
+                 database, freshness, loaded_at_field}.
+    """
+    parser = _get_cached_parser(manifest_path)
+    sources_map = parser.manifest.get('sources', {})
+
+    out = []
+    for uid, src in sources_map.items():
+        if not uid.startswith('source.'):
+            continue
+        if name_filter and name_filter.lower() not in uid.lower():
+            continue
+        freshness = src.get('freshness')
+        if freshness_only and not freshness:
+            continue
+        out.append({
+            'name': src.get('name', ''),
+            'source_name': src.get('source_name', ''),
+            'unique_id': uid,
+            'database': src.get('database', ''),
+            'schema': src.get('schema', ''),
+            'identifier': src.get('identifier', ''),
+            'loaded_at_field': src.get('loaded_at_field'),
+            'freshness': freshness,
+        })
+    return sorted(out, key=lambda x: x['unique_id'])
+
+
 def _get_all_relations_recursive(
     relation_map: dict[str, list[str]],
     node_id: str,
@@ -402,21 +553,39 @@ def parents(manifest_path: str, model_name: str, use_dev: bool = False, recursiv
     return command.execute()
 
 
-def children(manifest_path: str, model_name: str, use_dev: bool = False, recursive: bool = False, json_output: bool = False) -> list[dict[str, str]] | None:
+def children(
+    manifest_path: str,
+    model_name: str,
+    use_dev: bool = False,
+    recursive: bool = False,
+    json_output: bool = False,
+    source_ref: str | None = None,
+) -> list[dict[str, str]] | None:
     """Get downstream dependencies (child models).
 
     Args:
         manifest_path: Path to manifest.json
-        model_name: Model name
+        model_name: Model name (or source identifier when source_ref is set)
         use_dev: If True, prioritize dev manifest over production
         recursive: If True, get all descendants. If False, only direct children.
         json_output: If True, return ultra-compact format for AI agents
+        source_ref: If set, treat input as a source reference
+            ('schema.table' or 'source_name.table' or 'table') and return
+            downstream models of that source.
 
     Returns:
-        Child dependencies list, or None if model not found
+        Child dependencies list, or None if model/source not found
     """
     config = Config.from_config_or_env()
-    command = ChildrenCommand(config, manifest_path, model_name, use_dev, json_output, recursive=recursive)
+    command = ChildrenCommand(
+        config,
+        manifest_path,
+        model_name,
+        use_dev,
+        json_output,
+        recursive=recursive,
+        source_ref=source_ref,
+    )
     return command.execute()
 
 
@@ -559,6 +728,7 @@ def ls(
         - config.materialized:table - models with specific config value
         - path:models/core/ - models in specific path
         - package:dbt_utils - models from specific package
+        - name:substr - models whose name contains substring (case-insensitive)
 
     Examples:
         meta ls tag:verified tag:active           # OR: at least one tag
@@ -685,6 +855,15 @@ def _apply_selector(models: list[dict[str, Any]], selector: str) -> list[dict[st
     elif selector_type == 'package':
         return [m for m in models if m.get('package_name') == selector_value]
 
+    elif selector_type == 'name':
+        # Substring match on model name (case-insensitive). Useful when you
+        # know fragments of a name but not the exact prefix used in --select.
+        needle = selector_value.lower()
+        return [
+            m for m in models
+            if needle in m['unique_id'].split('.')[-1].lower()
+        ]
+
     return models
 
 
@@ -764,7 +943,9 @@ def _format_models_json(models: list[dict[str, Any]], parser: Any, use_dev: bool
         table_name = model.get('alias') or model.get('name', model_name)
 
         model_dict = {
-            'model': model_name,
+            'name': model_name,
+            'unique_id': model['unique_id'],
+            'model': model_name,  # legacy alias for backwards compat
             'table': f"{schema_name}.{table_name}" if schema_name else table_name,
             'tags': model.get('tags', []),
             'materialized': model.get('config', {}).get('materialized', 'view'),
@@ -777,7 +958,7 @@ def _format_models_json(models: list[dict[str, Any]], parser: Any, use_dev: bool
 
         result.append(model_dict)
 
-    return sorted(result, key=lambda x: x['model'])
+    return sorted(result, key=lambda x: x['name'])
 
 
 def _filter_modified_models(models: dict[str, Any], parser: Any) -> list[dict[str, Any]]:

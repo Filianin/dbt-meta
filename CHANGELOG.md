@@ -5,6 +5,154 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-05-31
+
+This release closes the rough edges surfaced by an audit of real Claude Code
+sessions using `meta` against the `reports` project. It bundles a `dbt compile`
+unification, structured BQ errors, JSON-contract normalisation, multi-arg
+ergonomics, and four new commands.
+
+### Added
+- `meta resolve <fuzzy>` — fuzzy resolve a typo'd model name via Python's
+  `difflib`. Returns top-N `{name, unique_id, score}` matches; intended as
+  a quick follow-up to `meta info <typo>` that returns "not found".
+  Flags: `-n/--limit`, `--cutoff`, `-j/--json`.
+- `meta sources [name_filter] [--freshness]` — list dbt sources from the
+  manifest with optional freshness-only filter. Surfaces
+  `schema.identifier`, `loaded_at_field`, and warn/error thresholds.
+- `meta list name:<substr>` — new selector for substring matches on model
+  name (case-insensitive). Composes with `tag:`, `config.`, `path:`,
+  `package:` selectors and AND/OR logic. Plugs the gap where `meta list`
+  required a typed selector even for simple substring filtering (you had
+  to fall back to `meta models <pattern>`, which lacks tag/config metadata).
+- `meta validate m1 m2 m3 …` — batch validation. Exits 1 if **any** model
+  fails. JSON output is `{results: [...], all_valid: bool}` for the
+  multi-arg shape; single-arg keeps the original `{valid, error}` shape
+  for backward compatibility.
+- `meta path m1 m2 m3 …` — already multi-arg; `--ignore-missing` flag
+  added so script callers can probe N names without aborting on the
+  first miss.
+- `meta find <schema.table>` — reverse FQN lookup: which dbt model
+  materialises this physical BigQuery table? Accepts `table`,
+  `schema.table`, or `database.schema.table`. Returns
+  `{name, unique_id, database, schema, table, alias, materialized, file}`.
+  Plugs the gap where agents had to `meta list -j | jq` over the full
+  manifest to map a table reference back to a model.
+- `meta columns --all <pattern>` — repo-wide column search. With
+  `--all`, the positional argument is treated as a column-name
+  substring (case-insensitive by default; `--case-sensitive` available)
+  and every model with a matching column is returned as
+  `{model, unique_id, column, data_type, description}`.
+- `meta children --source <ref>` — list downstream dbt models for a
+  source table. `<ref>` accepts `schema.table`, `source_name.table`,
+  or bare `table`. Removes the YAML+grep dance for "which models
+  consume this source?".
+
+### Changed
+- **Top-level `-j/--json` accepted.** `meta -j info MODEL` now works the
+  same as `meta info MODEL -j`. Passing `-j` at both positions composes
+  idempotently (logical OR). Plugs the ergonomics gap where the flag
+  worked only in the per-subcommand position.
+- **`-j` stdout contract is strict.** Under `-j`, stdout contains
+  exactly one JSON document — every warning, status banner, "cached
+  Nh ago" marker, and `Dev manifest not found` error is routed to
+  stderr instead. `meta <cmd> -j MODEL | jq .` now parses cleanly
+  without `tail`/`sed` preprocessing. Specifically:
+  - `Dev manifest not found …` was previously emitted on stdout via
+    Rich's default console; it now goes to stderr in text mode and is
+    re-shaped as `{"error": "…"}` on stdout under `-j`.
+  - Regression: `tests/test_json_stdout_contract.py`.
+- **`meta info -j` now emits `alias`, `partition_by`, `cluster_by`,
+  `unique_key`.** Previously these were silently dropped from the
+  JSON branch even when set inline in `{{ config() }}`, forcing agents
+  to fall back to `meta config -j` or `meta sql --raw`. The text-mode
+  table also renders the new rows when populated.
+- **`meta validate` flags `_dbt_max_partition` outside an
+  `{% if is_incremental() %}` guard.** Static check runs on `raw_code`
+  before the BigQuery dry-run; offending models surface a `warnings`
+  entry of code `unguarded_dbt_max_partition` with offending line
+  numbers and a fix hint. Catches a class of bug where the model
+  appears valid on incremental runs but breaks on the next
+  `--full-refresh`.
+- **`meta validate <test>` no longer collapses to "model not in
+  manifest".** A name that resolves to a dbt test now returns a
+  structured `{model, valid: false, kind: "test", error}` envelope
+  (machine-readable under `-j`) and a hint to use
+  `dbt test --select <name>` instead.
+
+- `meta optimize refresh` now invokes a **whole-project** `dbt compile`
+  (no `--select`) up-front instead of running selective per-changed-model
+  compiles. Selective compiles routinely leave gaps in `target/compiled/`
+  that re-trigger compile on the very next `meta` invocation; whole-project
+  compile finishes in roughly the same wall-clock on the `reports` project
+  (~57s full vs ~42s single-model) and produces a stable artifact. The
+  `--no-compile` flag still opts out. (`_maybe_bulk_compile` /
+  `_run_bulk_dbt_compile` removed from `usage/advisor_refresh.py`; the
+  same code path that `lineage`/`optimize cluster`/`optimize partition`
+  already use now drives `refresh` too.)
+- `meta validate` (incremental + `insert_overwrite`) now prepends
+  `DECLARE _dbt_max_partition <TYPE> DEFAULT NULL;` to the compiled SQL
+  before submitting the dry-run. Without this, BigQuery returned
+  "Query parameter '_dbt_max_partition' not found" for every
+  insert-overwrite incremental, masking real syntax errors. Type is
+  inferred from `config.partition_by.data_type` (DATE / TIMESTAMP /
+  DATETIME / INT64).
+- BigQuery dry-run and metadata commands (`columns`, `validate`, `scan`)
+  now pass `--location=EU` to `bq` by default. Override via
+  `DBT_META_BQ_LOCATION` for non-EU projects (e.g. `US`, `asia-east1`).
+  Without this, `bq query --dry_run` fails on EU datasets with
+  "was not found in location US" when the caller's default project
+  region is US.
+- When the underlying BigQuery error indicates a missing table/dataset
+  (e.g. table not yet built), `meta columns / validate / scan` now emit a
+  structured `{error, hint}` envelope and exit non-zero in JSON mode.
+  The hint is `--dev`-aware: it suggests `dbt run` for prod targets and
+  the analogous `--dev` run + `personal_*` for dev targets.
+- JSON contract for dependency-shaped commands now consistently exposes
+  both `name` and `unique_id` on every node:
+  - `meta list -j`, `meta children -j`, `meta parents -j` — each model
+    entry now carries `name` + `unique_id` (in addition to the existing
+    `model` / `path` / `table` fields).
+  - `meta deps -j` (**BREAKING**, see below).
+- `meta path` now accepts multiple model names; per-arg failures are
+  aggregated, exit code is 1 if any are missing unless
+  `--ignore-missing`. JSON output for a single arg preserves the original
+  `{model_name, path}` shape; multi-arg switches to
+  `{results: [...], missing: [...]}`.
+
+### Breaking changes
+- **`meta deps` removed.** The command was a redundant split of what
+  `meta parents` and `meta children` already cover. Use:
+  - `meta parents <model>` for upstream refs/sources.
+  - `meta children <model>` for downstream consumers.
+  - `meta children --source <schema.table>` for source-rooted reverse
+    lookup (new in this release).
+  The underlying `ManifestParser.get_dependencies()` helper, the
+  `command_impl/deps.py` module, the `commands.deps()` wrapper, and
+  every related test were removed in the same change.
+
+### Removed
+- `RefreshAdvisor.auto_compile` argument and the `_maybe_bulk_compile` /
+  `_run_bulk_dbt_compile` helpers — superseded by the shared
+  `_ensure_manifest_compiled` pre-flight on the CLI side.
+
+### Fixed
+- `meta optimize refresh`: a changed model that was also a transitive downstream of another changed model was emitted twice in `needs_full_refresh` (once as "changed model itself", once via chain propagation), inflating `summary.full_refresh` past the unique model count. The `defer run` invocation built from that list still ran each model only once, but the count and list were misleading. Fix: skip changed UIDs in the post-propagation classification loop. Regression test added (`tests/test_advisor_refresh.py::TestRefreshNoDuplicates`).
+- `_ensure_manifest_compiled` auto-compile fallback: passes `--profiles-dir <project_root>` when the project ships its own `profiles.yml`, so `dbt compile` resolves the local profile instead of silently failing per model against `~/.dbt/profiles.yml`.
+
+### Environment
+- New: `DBT_META_BQ_LOCATION` (default `EU`) — BigQuery region for `bq`
+  invocations issued by `columns` / `validate` / `scan`.
+
+### Manifest path precedence (reference)
+The discovery order is unchanged but worth re-stating explicitly:
+1. `--manifest PATH` (explicit, highest priority)
+2. `DBT_DEV_MANIFEST_PATH` (only when `--dev` is set)
+3. `DBT_PROD_MANIFEST_PATH` (default; `~/dbt-state/manifest.json`)
+
+`--manifest` and `--dev` are mutually exclusive — passing both ignores
+`--dev` with a warning.
+
 ## [0.3.0] - 2026-05-24
 
 Major release: column-level lineage, on-demand optimization advisors, and a

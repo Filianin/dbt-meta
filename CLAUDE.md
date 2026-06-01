@@ -10,6 +10,16 @@
 - История изменений и breaking changes: `CHANGELOG.md`.
 - Decision-tree источника данных (5 сценариев): `.qa/decision_tree_visual.txt`, `.qa/data_source_logic.md`.
 
+## Release Workflow — Hard Rule
+
+**No commits, tags, builds, or PyPI uploads without an explicit user command** ("commit this", "release", "push to PyPI", "tag v0.x.0"). Approval for code changes does NOT imply approval to commit them. After implementing a fix:
+
+1. Run tests, show summary to the user.
+2. **STOP.** Leave changes uncommitted in the working tree.
+3. Wait for explicit "коммить" / "релиз" / "выкатывай" before any `git commit`, `git tag`, `git push`, `python -m build`, or `twine upload`.
+
+Applies even when a previous turn in the same session authorized a release — that authorization stays scoped to that specific release.
+
 ## Hard Invariants
 
 Эти правила load-bearing — нарушение ломает корректность или производительность.

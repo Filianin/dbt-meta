@@ -119,35 +119,3 @@ class ManifestParser:
             for unique_id, model in models.items()
             if pattern_lower in unique_id.lower()
         ]
-
-    def get_dependencies(self, model_name: str) -> dict[str, list[str]]:
-        """
-        Get model dependencies (refs and sources)
-
-        Args:
-            model_name: Model name
-
-        Returns:
-            Dictionary with 'refs' and 'sources' lists
-        """
-        model = self.get_model(model_name)
-
-        if not model:
-            return {'refs': [], 'sources': []}
-
-        # Extract refs from depends_on
-        depends_on = model.get('depends_on', {})
-        refs = [
-            node for node in depends_on.get('nodes', [])
-            if node.startswith('model.')
-        ]
-
-        sources = [
-            node for node in depends_on.get('nodes', [])
-            if node.startswith('source.')
-        ]
-
-        return {
-            'refs': refs,
-            'sources': sources
-        }

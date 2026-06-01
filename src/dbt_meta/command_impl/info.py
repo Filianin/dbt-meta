@@ -69,6 +69,11 @@ class InfoCommand(BaseCommand):
         """
         config = model.get('config', {})
 
+        partition_by = config.get('partition_by')
+        cluster_by = config.get('cluster_by')
+        unique_key = config.get('unique_key')
+        alias = config.get('alias')
+
         # Dev mode: use dev schema and dev table name
         if self.use_dev:
             dev_schema = _calculate_dev_schema()
@@ -79,8 +84,12 @@ class InfoCommand(BaseCommand):
                 'database': '',  # Dev doesn't use database
                 'schema': dev_schema,
                 'table': table_name,
+                'alias': alias,
                 'full_name': f"{dev_schema}.{table_name}",
                 'materialized': config.get('materialized', 'table'),
+                'partition_by': partition_by,
+                'cluster_by': cluster_by,
+                'unique_key': unique_key,
                 'file': model.get('original_file_path', ''),
                 'tags': model.get('tags', []),
                 'unique_id': model.get('unique_id', '')
@@ -89,15 +98,19 @@ class InfoCommand(BaseCommand):
         # Production mode: use model data directly
         database = model.get('database', '')
         schema_name = model.get('schema', '')
-        table_name = config.get('alias', model.get('name', ''))
+        table_name = alias or model.get('name', '')
 
         return {
             'name': self.model_name,
             'database': database,
             'schema': schema_name,
             'table': table_name,
+            'alias': alias,
             'full_name': f"{database}.{schema_name}.{table_name}",
             'materialized': config.get('materialized', 'table'),
+            'partition_by': partition_by,
+            'cluster_by': cluster_by,
+            'unique_key': unique_key,
             'file': model.get('original_file_path', ''),
             'tags': model.get('tags', []),
             'unique_id': model.get('unique_id', '')

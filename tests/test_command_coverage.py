@@ -4,7 +4,6 @@ Focus on uncovered code paths in:
 - info.py: use_dev mode and BigQuery fallback
 - config.py: BigQuery fallback
 - path.py: BigQuery format search
-- deps.py: edge cases
 """
 
 import json
@@ -12,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from dbt_meta.commands import config, deps, info, path
+from dbt_meta.commands import config, info, path
 
 
 class TestInfoCommandCoverage:
@@ -201,37 +200,6 @@ class TestPathCommandCoverage:
 
         assert result is not None
         assert 'my_model.sql' in result
-
-
-class TestDepsCommandCoverage:
-    """Tests for deps.py uncovered lines (50-54, 70)."""
-
-    def test_deps_returns_empty_for_model_without_deps(self, prod_manifest):
-        """Test deps command for model without dependencies."""
-        from dbt_meta.manifest.parser import ManifestParser
-
-        parser = ManifestParser(str(prod_manifest))
-        nodes = parser.manifest.get('nodes', {})
-
-        # Find any model
-        test_model = None
-        for node_id, node_data in nodes.items():
-            if node_data.get('resource_type') == 'model':
-                test_model = node_id.split('.')[-1]
-                break
-
-        if not test_model:
-            pytest.skip("No models found in manifest")
-
-        result = deps(str(prod_manifest), test_model, use_dev=False, json_output=False)
-
-        # Should have dependency structure (refs and sources only)
-        assert result is not None
-        assert 'refs' in result
-        assert 'sources' in result
-        # Lists might be empty but structure should exist
-        assert isinstance(result['refs'], list)
-        assert isinstance(result['sources'], list)
 
 
 if __name__ == '__main__':

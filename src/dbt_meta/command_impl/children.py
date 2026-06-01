@@ -40,14 +40,18 @@ class ChildrenCommand(BaseCommand):
     SUPPORTS_BIGQUERY = False  # Lineage is manifest-only
     SUPPORTS_DEV = True
 
-    def __init__(self, *args, recursive: bool = False, **kwargs):
+    def __init__(self, *args, recursive: bool = False, source_ref: Optional[str] = None, **kwargs):
         """Initialize children command.
 
         Args:
             recursive: If True, get all descendants. If False, only direct children.
+            source_ref: If set, treat the input as a source reference
+                ('schema.table' or 'table') and list downstream models of
+                that source instead of a dbt model.
         """
         super().__init__(*args, **kwargs)
         self.recursive = recursive
+        self.source_ref = source_ref
 
     def execute(self) -> Optional[list[dict[str, Any]]]:
         """Execute children command.
@@ -56,6 +60,29 @@ class ChildrenCommand(BaseCommand):
             Child dependencies list, or None if model not found
         """
         from dbt_meta.utils import get_cached_parser as _get_cached_parser
+
+        parser = _get_cached_parser(self.manifest_path)
+        child_map = parser.manifest.get('child_map', {})
+        nodes = parser.manifest.get('nodes', {})
+        sources = parser.manifest.get('sources', {})
+
+        # --source branch: resolve source by 'schema.table' or 'table'
+        if self.source_ref:
+            source_uid = self._resolve_source_uid(self.source_ref, sources)
+            if not source_uid:
+                print(
+                    f"❌ Source '{self.source_ref}' not found in manifest",
+                    file=sys.stderr,
+                )
+                print(
+                    "   Use 'meta sources' to list available sources.",
+                    file=sys.stderr,
+                )
+                return None
+            pseudo_model = {'unique_id': source_uid}
+            return self.process_model(
+                pseudo_model, child_map=child_map, nodes=nodes, sources=sources
+            )
 
         model = self.get_model_with_fallback()
         if not model:
@@ -66,13 +93,33 @@ class ChildrenCommand(BaseCommand):
                   file=sys.stderr)
             return None
 
-        # Get manifest data for lineage processing
-        parser = _get_cached_parser(self.manifest_path)
-        child_map = parser.manifest.get('child_map', {})
-        nodes = parser.manifest.get('nodes', {})
-        sources = parser.manifest.get('sources', {})
-
         return self.process_model(model, child_map=child_map, nodes=nodes, sources=sources)
+
+    @staticmethod
+    def _resolve_source_uid(ref: str, sources: dict) -> Optional[str]:
+        """Resolve 'schema.table', 'source_name.table', or 'table' to a source unique_id."""
+        parts = ref.split('.')
+        if len(parts) == 1:
+            want_qualifier, want_table = None, parts[0]
+        elif len(parts) == 2:
+            want_qualifier, want_table = parts[0], parts[1]
+        else:
+            return None
+
+        for uid, src in sources.items():
+            if not uid.startswith('source.'):
+                continue
+            identifier = src.get('identifier') or src.get('name', '')
+            if identifier != want_table:
+                continue
+            if want_qualifier is None:
+                return uid
+            # Accept match on either physical schema or logical source_name.
+            if src.get('schema') == want_qualifier:
+                return uid
+            if src.get('source_name') == want_qualifier:
+                return uid
+        return None
 
     def process_model(
         self,
@@ -133,6 +180,8 @@ class ChildrenCommand(BaseCommand):
                     path = path[7:]
 
                 children_details.append({
+                    'name': child_node.get('name', ''),
+                    'unique_id': child_id,
                     'path': path,
                     'table': table,
                     'type': child_node.get('resource_type', '')
@@ -140,6 +189,6 @@ class ChildrenCommand(BaseCommand):
 
             # If JSON mode and > 20 nodes, add level field
             if self.json_output and len(children_details) > 20:
-                return [{'path': item['path'], 'table': item['table'], 'type': item['type'], 'level': 0} for item in children_details]
+                return [{**item, 'level': 0} for item in children_details]
 
             return children_details

@@ -91,6 +91,51 @@ def _not_found_error(model_name: str, json_output: bool) -> NoReturn:
     raise typer.Exit(code=1)
 
 
+def _bq_missing_error(
+    model_name: str,
+    json_output: bool,
+    *,
+    use_dev: bool = False,
+    attempted: Optional[str] = None,
+    extra_hint: Optional[str] = None,
+) -> NoReturn:
+    """Emit structured error when a BigQuery table backing the model is missing.
+
+    Used by ``meta columns``, ``meta scan``, ``meta validate`` to avoid the
+    silent ``exit 0`` with empty payload that scripts read as success. The
+    hint guides the user to the most common cause: a dev-only model that
+    has not been materialised yet.
+    """
+    where = f" (tried: {attempted})" if attempted else ""
+    msg = f"BigQuery table for '{model_name}' not found{where}."
+    hint_lines = []
+    if use_dev:
+        hint_lines.append(
+            f"Dev-only model? Build it first: `defer run --select {model_name}` "
+            "(or `dbt run --select <model>`)."
+        )
+    else:
+        hint_lines.append(
+            "Check it's deployed to production, or pass `--dev` if it lives "
+            "only in your personal dataset."
+        )
+    hint_lines.append(
+        "If the model was renamed/deleted: `meta path <model>` and "
+        "`meta list | grep <substring>` to locate the canonical name."
+    )
+    if extra_hint:
+        hint_lines.append(extra_hint)
+    hint = " ".join(hint_lines)
+
+    if json_output:
+        print(json.dumps({"error": msg, "hint": hint}))
+    else:
+        err = Console(stderr=True)
+        err.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] {msg}")
+        err.print(f"[yellow]Hint:[/yellow] {hint}")
+    raise typer.Exit(code=1)
+
+
 def _build_tree_recursive(parent_tree: Tree, nodes: list[dict[str, Any]]) -> None:
     """
     Recursively build Rich Tree from hierarchical node structure
@@ -131,22 +176,24 @@ def _build_commands_panel() -> Panel:
     table.add_row("  [green]info[/green]", "Model summary (name, schema, table, materialization, tags)")
     table.add_row("  [green]schema[/green]", "BigQuery table name (--dev for dev schema)")
     table.add_row("  [green]path[/green]", "Relative file path to .sql file")
-    table.add_row("  [green]columns[/green]", "Column names and types (--dev for dev schema)")
+    table.add_row("  [green]columns[/green]", "Column names and types (--all for repo-wide search)")
     table.add_row("  [green]sql[/green]", "Compiled SQL (default) or raw SQL with --jinja")
     table.add_row("  [green]docs[/green]", "Column names, types, and descriptions")
-    table.add_row("  [green]deps[/green]", "Dependencies by type (refs, sources, macros)")
     table.add_row("  [green]parents[/green]", "Upstream dependencies (direct or -a/--all ancestors)")
-    table.add_row("  [green]children[/green]", "Downstream dependencies (direct or -a/--all descendants)")
+    table.add_row("  [green]children[/green]", "Downstream dependencies (--source <ref> for source-rooted)")
+    table.add_row("  [green]find[/green]", "Reverse FQN lookup — physical table → dbt model")
     table.add_row("  [green]config[/green]", "Full dbt config (29 fields: partition_by, cluster_by, etc.)")
     table.add_row("", "")
 
     # Utilities (cyan)
     table.add_row("[bold cyan]Utilities:[/bold cyan]", "")
-    table.add_row("  [cyan]list[/cyan]", "Filter models by selectors (tag:, config., path:)")
+    table.add_row("  [cyan]list[/cyan]", "Filter models by selectors (tag:, config., path:, name:)")
     table.add_row("  [cyan]models[/cyan]", "Simple substring search in model names")
     table.add_row("  [cyan]search[/cyan]", "Search by name or description")
+    table.add_row("  [cyan]resolve[/cyan]", "Fuzzy resolve a typo'd model name (did you mean ...?)")
+    table.add_row("  [cyan]sources[/cyan]", "List dbt sources (--freshness to filter)")
     table.add_row("  [cyan]refresh[/cyan]", "Sync prod artifacts (or parse local with --dev)")
-    table.add_row("  [cyan]validate[/cyan]", "Validate SQL syntax (BigQuery dry run)")
+    table.add_row("  [cyan]validate[/cyan]", "Validate SQL syntax (BigQuery dry run, accepts N models)")
     table.add_row("  [cyan]scan[/cyan]", "Estimate query scan size (MB/GB)")
     table.add_row("", "")
 
@@ -245,7 +292,6 @@ def _build_examples_panel() -> Panel:
     table.add_row("  meta parents customers", "Direct upstream dependencies")
     table.add_row("  meta parents -a customers", "All ancestors (tree view)")
     table.add_row("  meta children -a -j customers", "All descendants as nested JSON")
-    table.add_row("  meta deps -j customers", "Refs + sources + macros")
     table.add_row("", "")
     table.add_row("[bold]Dev workflow (with defer):[/bold]", "")
     table.add_row("  defer run --select customers", "Build dev table first")
@@ -405,6 +451,17 @@ def version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
+# Set by the root callback when `-j/--json` is passed at top level
+# (e.g. `meta -j info MODEL`). Read by per-subcommand helpers so a
+# top-level flag composes idempotently with a per-subcommand `-j`.
+_TOPLEVEL_JSON = False
+
+
+def _resolve_json(json_output: bool) -> bool:
+    """OR per-subcommand ``-j`` with the top-level ``-j`` flag."""
+    return bool(json_output) or _TOPLEVEL_JSON
+
+
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
@@ -423,12 +480,21 @@ def main(
         help="Show this message and exit",
         is_eager=True,
     ),
+    json_output: bool = typer.Option(
+        False,
+        "-j",
+        "--json",
+        help="Emit JSON on stdout for the invoked subcommand (works for any -j-capable command).",
+    ),
 ) -> None:
     """
     AI-first CLI for dbt metadata extraction
 
     Run 'meta --help' for usage examples and available commands.
     """
+    global _TOPLEVEL_JSON
+    _TOPLEVEL_JSON = bool(json_output)
+
     # Handle help flag manually for main command only
     if help_flag and ctx.invoked_subcommand is None:
         show_help_with_examples(ctx)
@@ -642,7 +708,12 @@ def settings_path() -> None:
 # Model Metadata Commands
 # ============================================================================
 
-def get_manifest_path(manifest_path: Optional[str] = None, use_dev: bool = False) -> tuple[str, bool]:
+def get_manifest_path(
+    manifest_path: Optional[str] = None,
+    use_dev: bool = False,
+    *,
+    json_output: bool = False,
+) -> tuple[str, bool]:
     """
     Get manifest path from explicit parameter or auto-discover
 
@@ -670,7 +741,10 @@ def get_manifest_path(manifest_path: Optional[str] = None, use_dev: bool = False
         path = ManifestFinder.find(explicit_path=manifest_path, use_dev=effective_use_dev)
         return path, effective_use_dev
     except FileNotFoundError as e:
-        console.print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] {e!s}")
+        if json_output:
+            print(json.dumps({"error": str(e)}))
+        else:
+            Console(stderr=True).print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] {e!s}")
         raise typer.Exit(code=1) from None
 
 
@@ -719,7 +793,8 @@ def info(
         meta info --dev -j customers         # Dev (personal_USERNAME)
     """
     try:
-        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+        json_output = _resolve_json(json_output)
+        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev, json_output=json_output)
         result = commands.info(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
 
         if not result:
@@ -737,8 +812,16 @@ def info(
             table.add_row("Database:", result['database'])
             table.add_row("Schema:", result['schema'])
             table.add_row("Table:", result['table'])
+            if result.get('alias'):
+                table.add_row("Alias:", result['alias'])
             table.add_row("Full Name:", result['full_name'])
             table.add_row("Materialized:", result['materialized'])
+            if result.get('partition_by'):
+                table.add_row("Partition By:", str(result['partition_by']))
+            if result.get('cluster_by'):
+                table.add_row("Cluster By:", str(result['cluster_by']))
+            if result.get('unique_key'):
+                table.add_row("Unique Key:", str(result['unique_key']))
             table.add_row("File:", result['file'])
             table.add_row("Tags:", ', '.join(result['tags']) if result['tags'] else '(none)')
 
@@ -763,7 +846,8 @@ def schema(
         meta schema --dev jaffle_shop__orders      # Dev (personal_USERNAME)
     """
     try:
-        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+        json_output = _resolve_json(json_output)
+        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev, json_output=json_output)
         result = commands.schema(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
 
         if not result or not result.get('full_name'):
@@ -784,24 +868,54 @@ def schema(
 
 @app.command()
 def columns(
-    model_name: str = typer.Argument(..., help="Model name"),
+    model_name: str = typer.Argument(..., help="Model name, or column-name pattern with --all"),
+    all_models: bool = typer.Option(False, "--all", help="Repo-wide column search: treat ARG as a column-name pattern and search every model"),
+    case_sensitive: bool = typer.Option(False, "--case-sensitive", help="(--all only) Case-sensitive match"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema"),
 ) -> None:
     """
-    Column names and types
+    Column names and types (single model), or repo-wide column search with --all.
 
     Examples:
-        meta columns -j customers                # Production
-        meta columns --dev -j customers          # Dev
+        meta columns -j customers                       # Single model
+        meta columns --dev -j customers                 # Dev manifest
+        meta columns --all user_id                      # Find every model with a column matching 'user_id'
+        meta columns --all --case-sensitive utm_source  # Exact case
     """
     try:
-        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+        json_output = _resolve_json(json_output)
+        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev, json_output=json_output)
+
+        if all_models:
+            hits = commands.columns_search(manifest_path, model_name, case_sensitive=case_sensitive)
+            if json_output:
+                print(json.dumps(hits, indent=2))
+                return
+            if not hits:
+                Console(stderr=True).print(
+                    f"[{STYLE_ERROR}]No columns match pattern '{model_name}'[/{STYLE_ERROR}]"
+                )
+                raise typer.Exit(code=1)
+            print()
+            table = Table(
+                title=f"[bold green not italic]Columns matching '{model_name}' ({len(hits)})[/bold green not italic]",
+                header_style="bold green",
+            )
+            table.add_column("Model", style=STYLE_COMMAND, no_wrap=True)
+            table.add_column("Column", style="white")
+            table.add_column("Type", style="white")
+            table.add_column("Description", style=STYLE_DIM)
+            for h in hits:
+                table.add_row(h['model'], h['column'], h['data_type'], h['description'])
+            console.print(table)
+            return
+
         result = commands.columns(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
 
         if not result:
-            _not_found_error(model_name, json_output)
+            _bq_missing_error(model_name, json_output, use_dev=effective_use_dev)
 
         if json_output:
             print(json.dumps(result, indent=2))
@@ -836,7 +950,8 @@ def config(
         meta config --dev -j model_name        # Dev (personal_USERNAME)
     """
     try:
-        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+        json_output = _resolve_json(json_output)
+        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev, json_output=json_output)
         result = commands.config(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
 
         if result is None:
@@ -861,63 +976,6 @@ def config(
 
 
 @app.command()
-def deps(
-    model_name: str = typer.Argument(..., help="Model name"),
-    json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
-    use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
-) -> None:
-    """
-    Dependencies by type (refs, sources, macros)
-
-    Examples:
-        meta deps -j model_name              # Production
-        meta deps --dev -j model_name        # Dev (personal_USERNAME)
-    """
-    try:
-        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-        result = commands.deps(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
-
-        if result is None:
-            _not_found_error(model_name, json_output)
-
-        if json_output:
-            print(json.dumps(result, indent=2))
-        else:
-            # Rich table output with blank line first
-            print()
-
-            # Refs table
-            if result['refs']:
-                table_refs = Table(title=f"[bold green not italic]Refs ({len(result['refs'])})[/bold green not italic]", header_style="bold green")
-                table_refs.add_column("Ref", style=STYLE_COMMAND)
-                for ref in result['refs']:
-                    table_refs.add_row(ref)
-                console.print(table_refs)
-                print()
-
-            # Sources table
-            if result['sources']:
-                table_sources = Table(title=f"[bold green not italic]Sources ({len(result['sources'])})[/bold green not italic]", header_style="bold green")
-                table_sources.add_column("Source", style=STYLE_COMMAND)
-                for source in result['sources']:
-                    table_sources.add_row(source)
-                console.print(table_sources)
-                print()
-
-            # Macros table
-            if result.get('macros'):
-                table_macros = Table(title=f"[bold green not italic]Macros ({len(result.get('macros', []))})[/bold green not italic]", header_style="bold green")
-                table_macros.add_column("Macro", style=STYLE_COMMAND)
-                for macro in result.get('macros', []):
-                    table_macros.add_row(macro)
-                console.print(table_macros)
-
-    except DbtMetaError as e:
-        handle_error(e, json_output)
-
-
-@app.command()
 def sql(
     model_name: str = typer.Argument(..., help="Model name"),
     jinja: bool = typer.Option(False, "--jinja", help="Show raw SQL with Jinja"),
@@ -935,7 +993,8 @@ def sql(
         meta sql --jinja model_name          # Raw SQL with Jinja
     """
     try:
-        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+        json_output = _resolve_json(json_output)
+        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev, json_output=json_output)
         # Compiled SQL is the whole point of this command — make sure the
         # manifest has it. ``jinja`` mode is exempt (it reads raw SQL).
         if not jinja:
@@ -963,7 +1022,7 @@ def sql(
 
 @app.command()
 def validate(
-    model_name: str = typer.Argument(..., help="Model name"),
+    model_names: list[str] = typer.Argument(..., help="One or more model names"),  # noqa: B008
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev manifest SQL"),
@@ -972,28 +1031,86 @@ def validate(
     """
     Validate SQL syntax using BigQuery dry run
 
+    Accepts multiple model names. Exits 1 if ANY model fails validation.
+
     Examples:
-        meta validate model_name          # Validate production SQL
-        meta validate --dev model_name    # Validate dev SQL
+        meta validate model_name                  # Validate one
+        meta validate model_a model_b model_c     # Batch validate
+        meta validate --dev model_name            # Validate dev SQL
     """
     try:
-        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+        json_output = _resolve_json(json_output)
+        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev, json_output=json_output)
         _preflight_compiled_sql_by_path(manifest_path, manifest, no_compile, json_output)
-        result = commands.validate(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
 
-        if result is None:
-            _not_found_error(model_name, json_output)
+        results: list[dict[str, Any]] = []
+        any_failed = False
+
+        for name in model_names:
+            entry: dict[str, Any] = {'model_name': name}
+            result = commands.validate(manifest_path, name, use_dev=effective_use_dev, json_output=json_output)
+
+            if result is None:
+                entry.update({'valid': False, 'error': f"Model '{name}' not found"})
+                any_failed = True
+                results.append(entry)
+                continue
+
+            if not result.get('valid') and _looks_like_missing_table(result.get('error')):
+                # Annotate but keep aggregation flowing rather than exiting mid-batch.
+                entry['hint'] = (
+                    "Underlying BigQuery table not yet built — run `dbt run` "
+                    "(or `--dev` if you want to validate against your personal_* schema)."
+                )
+            entry.update(result)
+            if not result.get('valid'):
+                any_failed = True
+            results.append(entry)
 
         if json_output:
-            print(json.dumps(result, indent=2))
-        elif result['valid']:
-            console.print("[green]✅ Valid[/green]")
+            if len(results) == 1:
+                # Backward-compatible single-model shape.
+                payload = {k: v for k, v in results[0].items() if k != 'model_name'}
+                print(json.dumps(payload, indent=2))
+            else:
+                print(json.dumps({'results': results, 'all_valid': not any_failed}, indent=2))
+            if any_failed:
+                raise typer.Exit(code=1)
         else:
-            console.print(f"[{STYLE_ERROR}]❌ Error:[/{STYLE_ERROR}] {result['error']}")
-            raise typer.Exit(code=1)
+            for entry in results:
+                tag = entry['model_name']
+                if entry.get('valid'):
+                    if len(results) == 1:
+                        console.print("[green]✅ Valid[/green]")
+                    else:
+                        console.print(f"[green]✅ {tag}[/green]")
+                else:
+                    err = entry.get('error') or 'unknown error'
+                    if len(results) == 1:
+                        console.print(f"[{STYLE_ERROR}]❌ Error:[/{STYLE_ERROR}] {err}")
+                    else:
+                        console.print(f"[{STYLE_ERROR}]❌ {tag}:[/{STYLE_ERROR}] {err}")
+            if any_failed:
+                raise typer.Exit(code=1)
 
     except DbtMetaError as e:
         handle_error(e, json_output)
+
+
+def _looks_like_missing_table(error: Optional[str]) -> bool:
+    """True when a BigQuery error indicates the referenced table is missing.
+
+    Patterns observed: ``Not found: Table ...``, ``Not found: Dataset ...``,
+    ``was not found in location ...``. The check is used by validate/scan
+    to upgrade the error to a structured ``{error, hint}`` envelope.
+    """
+    if not error:
+        return False
+    e = error.lower()
+    return (
+        ('not found' in e and ('table' in e or 'dataset' in e))
+        or 'was not found in location' in e
+    )
 
 
 @app.command()
@@ -1012,15 +1129,25 @@ def scan(
         meta scan --dev model_name        # Show scan size for dev SQL
     """
     try:
-        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+        json_output = _resolve_json(json_output)
+        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev, json_output=json_output)
         _preflight_compiled_sql_by_path(manifest_path, manifest, no_compile, json_output)
         result = commands.scan(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
 
         if result is None:
             _not_found_error(model_name, json_output)
 
+        if result.get('error') and _looks_like_missing_table(result.get('error')):
+            _bq_missing_error(
+                model_name, json_output,
+                use_dev=effective_use_dev,
+                extra_hint=f"Underlying BigQuery error: {result.get('error')}",
+            )
+
         if json_output:
             print(json.dumps(result, indent=2))
+            if result.get('error'):
+                raise typer.Exit(code=1)
         elif result.get('error'):
             console.print(f"[{STYLE_ERROR}]❌ Error:[/{STYLE_ERROR}] {result['error']}")
             raise typer.Exit(code=1)
@@ -1042,33 +1169,59 @@ def scan(
 
 @app.command()
 def path(
-    model_name: str = typer.Argument(..., help="Model name"),
+    model_names: list[str] = typer.Argument(..., help="One or more model names"),  # noqa: B008
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
+    ignore_missing: bool = typer.Option(False, "--ignore-missing", help="Don't exit non-zero when some models are missing (still report them)"),
 ) -> None:
     """
-    Relative file path to .sql file
+    Relative file path(s) to .sql file(s)
+
+    Accepts multiple model names; per-arg failures are aggregated and the
+    process exits non-zero if any are missing (unless --ignore-missing).
 
     Examples:
-        meta path model_name              # Production
-        meta path --dev model_name        # Dev (personal_USERNAME)
+        meta path model_name                          # single
+        meta path model_a model_b model_c             # batch
+        meta path -j model_a model_b                  # JSON {results: [...]}
+        meta path --ignore-missing model_a typo       # exit 0 even with misses
     """
     try:
-        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-        result = commands.path(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
+        json_output = _resolve_json(json_output)
+        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev, json_output=json_output)
 
-        if result is None:
-            _not_found_error(model_name, json_output)
+        results: list[dict] = []
+        missing: list[str] = []
+        for name in model_names:
+            p = commands.path(manifest_path, name, use_dev=effective_use_dev, json_output=json_output)
+            if p is None:
+                missing.append(name)
+                results.append({"model_name": name, "path": None, "found": False})
+            else:
+                results.append({"model_name": name, "path": p, "found": True})
 
         if json_output:
-            output = {
-                "model_name": model_name,
-                "path": result
-            }
-            print(json.dumps(output, indent=2))
+            if len(results) == 1:
+                # Keep the single-arg shape backward-compatible.
+                only = results[0]
+                print(json.dumps({"model_name": only["model_name"], "path": only["path"]}, indent=2))
+            else:
+                print(json.dumps({"results": results, "missing": missing}, indent=2))
         else:
-            print(result)
+            for entry in results:
+                if entry["found"]:
+                    if len(results) == 1:
+                        print(entry["path"])
+                    else:
+                        print(f"{entry['model_name']}\t{entry['path']}")
+                else:
+                    Console(stderr=True).print(
+                        f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Model '{entry['model_name']}' not found"
+                    )
+
+        if missing and not ignore_missing:
+            raise typer.Exit(code=1)
 
     except DbtMetaError as e:
         handle_error(e, json_output)
@@ -1086,7 +1239,8 @@ def models_cmd(
     Example: meta models jaffle_shop
     """
     try:
-        manifest_path, _ = get_manifest_path(manifest)
+        json_output = _resolve_json(json_output)
+        manifest_path, _ = get_manifest_path(manifest, json_output=json_output)
         result = commands.list_models(manifest_path, pattern)
 
         if json_output:
@@ -1122,7 +1276,8 @@ def search(
     Example: meta search "customers" --json
     """
     try:
-        manifest_path, _ = get_manifest_path(manifest)
+        json_output = _resolve_json(json_output)
+        manifest_path, _ = get_manifest_path(manifest, json_output=json_output)
         result = commands.search(manifest_path, query)
 
         if json_output:
@@ -1144,9 +1299,174 @@ def search(
         handle_error(e, json_output)
 
 
+@app.command()
+def resolve(
+    query: str = typer.Argument(..., help="Typo'd or partial model name"),
+    limit: int = typer.Option(5, "-n", "--limit", help="Max matches to return"),
+    cutoff: float = typer.Option(0.6, "--cutoff", help="Similarity cutoff [0,1]"),
+    json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+) -> None:
+    """Fuzzy-resolve a model name ("did you mean ...?").
+
+    Uses Python's difflib over all manifest model names — useful right after
+    `meta info <typo>` returns "not found".
+
+    Example: meta resolve client_profile_evnts
+    """
+    try:
+        json_output = _resolve_json(json_output)
+        manifest_path, _ = get_manifest_path(manifest, json_output=json_output)
+        matches = commands.resolve(manifest_path, query, limit=limit, cutoff=cutoff)
+
+        if json_output:
+            print(json.dumps(matches, indent=2))
+            return
+
+        if not matches:
+            Console(stderr=True).print(
+                f"[{STYLE_ERROR}]No matches for '{query}' "
+                f"(cutoff={cutoff}). Try lowering --cutoff.[/{STYLE_ERROR}]"
+            )
+            raise typer.Exit(code=1)
+
+        print()
+        table = Table(
+            title=f"[bold green not italic]Matches for '{query}' ({len(matches)})[/bold green not italic]",
+            header_style="bold green",
+        )
+        table.add_column("Score", style="yellow", no_wrap=True)
+        table.add_column("Model", style=STYLE_COMMAND, no_wrap=True)
+        table.add_column("Unique ID", style="white")
+        for m in matches:
+            table.add_row(f"{m['score']:.3f}", m['name'], m['unique_id'])
+        console.print(table)
+
+    except DbtMetaError as e:
+        handle_error(e, json_output)
+
+
+@app.command()
+def find(
+    fqn: str = typer.Argument(..., help="Physical name: 'table', 'schema.table', or 'database.schema.table'"),
+    json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev manifest"),
+) -> None:
+    """Reverse-lookup: which dbt model materialises this physical table?
+
+    Matches on resolved physical name (config.alias or model name), optionally
+    constrained by schema and database. Useful when you have a BigQuery table
+    reference but not the dbt model name.
+
+    Examples:
+        meta find customers
+        meta find analytics.customers
+        meta find my-project.analytics.customers
+    """
+    try:
+        json_output = _resolve_json(json_output)
+        manifest_path, _ = get_manifest_path(manifest, use_dev, json_output=json_output)
+        result = commands.find(manifest_path, fqn)
+
+        if json_output:
+            print(json.dumps(result, indent=2))
+            return
+
+        if not result:
+            Console(stderr=True).print(
+                f"[{STYLE_ERROR}]No model matches '{fqn}'[/{STYLE_ERROR}]"
+            )
+            raise typer.Exit(code=1)
+
+        print()
+        table = Table(
+            title=f"[bold green not italic]Models for '{fqn}' ({len(result)})[/bold green not italic]",
+            header_style="bold green",
+        )
+        table.add_column("Model", style=STYLE_COMMAND, no_wrap=True)
+        table.add_column("Schema", style="white")
+        table.add_column("Table", style="white")
+        table.add_column("Materialized", style="white")
+        table.add_column("File", style=STYLE_DIM)
+        for m in result:
+            table.add_row(m['name'], m['schema'], m['table'], m['materialized'], m['file'])
+        console.print(table)
+
+    except DbtMetaError as e:
+        handle_error(e, json_output)
+
+
+@app.command()
+def sources(
+    name_filter: Optional[str] = typer.Argument(None, help="Substring filter on source unique_id"),
+    freshness: bool = typer.Option(False, "--freshness", help="Only sources that declare freshness checks"),
+    json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+) -> None:
+    """List dbt sources with optional freshness metadata.
+
+    Examples:
+        meta sources                          # All sources
+        meta sources stripe                   # Substring filter
+        meta sources --freshness              # Only freshness-checked sources
+        meta sources --freshness -j           # JSON for tooling
+    """
+    try:
+        json_output = _resolve_json(json_output)
+        manifest_path, _ = get_manifest_path(manifest, json_output=json_output)
+        result = commands.sources(manifest_path, name_filter=name_filter, freshness_only=freshness)
+
+        if json_output:
+            print(json.dumps(result, indent=2))
+            return
+
+        if not result:
+            console.print("[yellow]No sources found.[/yellow]")
+            return
+
+        print()
+        title = "Sources"
+        if name_filter:
+            title += f" matching '{name_filter}'"
+        if freshness:
+            title += " (with freshness)"
+        title += f" ({len(result)})"
+        table = Table(
+            title=f"[bold green not italic]{title}[/bold green not italic]",
+            header_style="bold green",
+        )
+        table.add_column("Source", style=STYLE_COMMAND, no_wrap=True)
+        table.add_column("Schema.Table", style="white")
+        table.add_column("Loaded-at", style="cyan")
+        table.add_column("Freshness", style="yellow")
+        for s in result:
+            fr = s.get('freshness') or {}
+            warn = (fr.get('warn_after') or {}) if isinstance(fr, dict) else {}
+            err = (fr.get('error_after') or {}) if isinstance(fr, dict) else {}
+            freshness_str = ''
+            if warn or err:
+                parts = []
+                if warn.get('count') is not None:
+                    parts.append(f"warn:{warn['count']}{warn.get('period', '')}")
+                if err.get('count') is not None:
+                    parts.append(f"err:{err['count']}{err.get('period', '')}")
+                freshness_str = ' '.join(parts)
+            table.add_row(
+                f"{s['source_name']}.{s['name']}",
+                f"{s['schema']}.{s['identifier']}",
+                s.get('loaded_at_field') or '',
+                freshness_str,
+            )
+        console.print(table)
+
+    except DbtMetaError as e:
+        handle_error(e, json_output)
+
+
 @app.command("list")
 def list_cmd(
-    selectors: Optional[list[str]] = typer.Argument(None, help="Selectors: tag:name config.key:val path:dir package:name"),  # noqa: B008
+    selectors: Optional[list[str]] = typer.Argument(None, help="Selectors: tag:name config.key:val path:dir package:name name:substr"),  # noqa: B008
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     modified: bool = typer.Option(False, "-m", "--modified", help="Show only modified/new models (git-aware)"),
     and_logic: bool = typer.Option(False, "--and", help="Require ALL tags (default: OR - at least one)"),
@@ -1162,6 +1482,7 @@ def list_cmd(
       config.key:value       - Filter by config value
       path:dir/              - Filter by file path
       package:name           - Filter by package
+      name:substr            - Substring match on model name (case-insensitive)
 
     \b
     FLAGS:
@@ -1194,7 +1515,8 @@ def list_cmd(
     to do via the now-removed --full-refresh flag.
     """
     try:
-        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+        json_output = _resolve_json(json_output)
+        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev, json_output=json_output)
         selector_list = list(selectors) if selectors else None
 
         result = commands.ls(
@@ -1257,7 +1579,8 @@ def parents(
         meta parents -a -j model_name                 # Nested JSON (<=20) or flat array (>20)
     """
     try:
-        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+        json_output = _resolve_json(json_output)
+        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev, json_output=json_output)
         result = commands.parents(manifest_path, model_name, use_dev=effective_use_dev, recursive=all_ancestors, json_output=json_output)
 
         if result is None:
@@ -1291,8 +1614,9 @@ def parents(
 
 @app.command()
 def children(
-    model_name: str = typer.Argument(..., help="Model name"),
+    target: str = typer.Argument(..., help="Model name, or source ref ('schema.table') with --source", metavar="MODEL_OR_SOURCE"),
     all_descendants: bool = typer.Option(False, "-a", "--all", help="Get all descendants (recursive)"),
+    from_source: bool = typer.Option(False, "--source", help="Treat target as a source reference ('schema.table' or 'source_name.table' or 'table')"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
@@ -1304,10 +1628,20 @@ def children(
         meta children -j model_name                 # Direct children (old format)
         meta children -a model_name                 # Tree view
         meta children -a -j model_name              # Nested JSON (<=20) or flat array (>20)
+        meta children --source raw_events.orders    # Models that consume a source
     """
+    model_name = target
     try:
-        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-        result = commands.children(manifest_path, model_name, use_dev=effective_use_dev, recursive=all_descendants, json_output=json_output)
+        json_output = _resolve_json(json_output)
+        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev, json_output=json_output)
+        result = commands.children(
+            manifest_path,
+            model_name,
+            use_dev=effective_use_dev,
+            recursive=all_descendants,
+            json_output=json_output,
+            source_ref=model_name if from_source else None,
+        )
 
         if result is None:
             _not_found_error(model_name, json_output)
@@ -1385,7 +1719,8 @@ def docs(
         meta docs --dev customers        # Dev (personal_USERNAME)
     """
     try:
-        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+        json_output = _resolve_json(json_output)
+        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev, json_output=json_output)
         result = commands.docs(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
 
         if not result:
@@ -1433,7 +1768,8 @@ def analyze(
         meta analyze -j core_client__events       # JSON output
     """
     try:
-        manifest_path, _ = get_manifest_path(manifest, False)
+        json_output = _resolve_json(json_output)
+        manifest_path, _ = get_manifest_path(manifest, False, json_output=json_output)
         result = commands.analyze(manifest_path, model_name, use_dev=False, json_output=json_output)
 
         if result is None:
@@ -1533,7 +1869,8 @@ def hotspots(
         meta hotspots -j                  # JSON output
     """
     try:
-        manifest_path, _ = get_manifest_path(manifest, False)
+        json_output = _resolve_json(json_output)
+        manifest_path, _ = get_manifest_path(manifest, False, json_output=json_output)
         result = commands.hotspots(manifest_path, limit=limit, min_gb=min_gb, json_output=json_output)
 
         if json_output:
@@ -1679,7 +2016,8 @@ def branch(
         meta branch -j core_client__events       # JSON output
     """
     try:
-        manifest_path, _ = get_manifest_path(manifest, False)
+        json_output = _resolve_json(json_output)
+        manifest_path, _ = get_manifest_path(manifest, False, json_output=json_output)
         # Branch reads root's compiled_code to extract filter patterns
         # for upstream/downstream alignment — without it the output is
         # heavily degraded (no filter analysis), so apply the same
@@ -1818,7 +2156,8 @@ def powerbi(
         meta powerbi --by-table               # Group by tables
     """
     try:
-        manifest_path, _ = get_manifest_path(manifest, False)
+        json_output = _resolve_json(json_output)
+        manifest_path, _ = get_manifest_path(manifest, False, json_output=json_output)
         result = commands.powerbi(
             manifest_path,
             workspace_id=workspace_id,
@@ -2105,7 +2444,8 @@ def lineage_build(
     from dbt_meta.lineage import LineageBuilder, save_artifact
 
     # Resolve manifest path (reuse existing finder)
-    manifest_file, _ = get_manifest_path(manifest_path, use_dev=use_dev)
+    json_output = _resolve_json(json_output)
+    manifest_file, _ = get_manifest_path(manifest_path, use_dev=use_dev, json_output=json_output)
 
     # Resolve catalog path
     if catalog_path:
@@ -2329,6 +2669,8 @@ def _load_manifest_and_catalog(
     use_dev: bool,
     manifest_path: Optional[str],
     catalog_path: Optional[str],
+    *,
+    json_output: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any], str]:
     """Load manifest + catalog (best-effort) for advisor commands.
 
@@ -2340,7 +2682,8 @@ def _load_manifest_and_catalog(
 
     import orjson
 
-    manifest_file, _ = get_manifest_path(manifest_path, use_dev=use_dev)
+    json_output = _resolve_json(json_output)
+    manifest_file, _ = get_manifest_path(manifest_path, use_dev=use_dev, json_output=json_output)
     try:
         manifest = orjson.loads(open(manifest_file, "rb").read())
     except (OSError, ValueError) as e:
@@ -2501,8 +2844,8 @@ def _ensure_manifest_compiled(
     Console(stderr=True).print(
         f"[dim]ℹ️  Only {with_sql}/{total} models have compiled SQL — "
         f"running full `dbt compile` in {project_root} to populate the "
-        "rest. This can take 5-15 min on large projects; pass "
-        "`--no-compile` to skip.[/dim]"
+        "rest. ~1 min on an 800-model project (parse phase dominates; "
+        "SQL render parallelises). Pass `--no-compile` to skip.[/dim]"
     )
     import os
     import subprocess as _subprocess
@@ -2514,11 +2857,21 @@ def _ensure_manifest_compiled(
     # profile and silently fails per model.
     if os.path.isfile(os.path.join(project_root, "profiles.yml")):
         compile_argv += ["--profiles-dir", project_root]
+    compile_argv += ["--project-dir", project_root, "--target", "dev"]
+
+    # Force DBT_PROJECT_DIR/DBT_TARGET to match the resolved project_root.
+    # Non-interactive shells (e.g. Claude Code's Bash tool) skip the zsh hook
+    # that loads each project's .env.local, so the inherited values may be
+    # missing or stale from another repo.
+    compile_env = {**os.environ,
+                   "DBT_PROJECT_DIR": project_root,
+                   "DBT_TARGET": "dev"}
 
     try:
         result = _subprocess.run(
             compile_argv,
             cwd=project_root,
+            env=compile_env,
             capture_output=True,
             text=True,
             timeout=1800,  # 30 min — full-project compile budget
@@ -2809,13 +3162,14 @@ def optimize_refresh(
     manifest is irrelevant here and is intentionally not supported.
 
     When ``-m`` is used and ``--no-compile`` is not set, the command runs
-    ``dbt compile --select <changed>+`` in the project root once before
-    planning. A single compile regenerates the manifest (picking up new
-    branch-only models) AND populates ``compiled_code`` for every changed
-    model plus its downstream — exactly what SQLGlot needs to attribute
-    column usage. ``dbt parse`` alone would not be enough: it doesn't
-    render Jinja, so ``compiled_code`` would stay empty and SQLGlot would
-    have no SQL to parse.
+    a full-project ``dbt compile`` in the project root once before
+    planning. A whole-project compile regenerates the manifest (picking
+    up new branch-only models) AND populates ``compiled_code`` for every
+    model — exactly what SQLGlot needs to attribute column usage.
+    Per project convention, the CLI always compiles the WHOLE project,
+    never a single model — partial compiles leave gaps that re-trigger
+    on the next command. ``dbt parse`` alone is not enough: it doesn't
+    render Jinja, so ``compiled_code`` would stay empty.
 
     Examples:
         meta optimize refresh -m                          # auto from git
@@ -2895,37 +3249,42 @@ def optimize_refresh(
                 f"Base used: {used_base or '(none)'}. Try passing model names explicitly."
             )
 
-        # Run `dbt compile --select <changed>+` ONCE before classification:
-        # this single call regenerates the manifest (catching new branch-only
-        # models) AND populates compiled_code for every changed model plus
-        # its full downstream chain — exactly what SQLGlot needs. We derive
-        # the model short name from the file basename (dbt's convention).
-        cli_compile_attempted = False
+        # Run full-project `dbt compile` ONCE before classification. A
+        # whole-project compile regenerates the manifest (catching new
+        # branch-only models) AND populates compiled_code everywhere —
+        # exactly what SQLGlot needs. Per project convention we always
+        # compile the WHOLE project, never a single model: partial
+        # compiles leave gaps that re-trigger the same expensive step
+        # on the next command. The parse phase (~30s on 800 models)
+        # dominates anyway and is paid regardless of --select.
         if modified_files and not no_compile:
-            from pathlib import Path as _Path
+            import os as _os
             import subprocess as _subprocess
 
             project_root = _infer_project_root(manifest_file)
-            selectors = sorted({
-                f"{_Path(f).stem}+"
-                for f in modified_files
-                if f.endswith(".sql") and "models/" in f and _Path(f).stem
-            })
             dbt_cmd = _find_dbt_executable(project_root) if project_root else None
-            if project_root and dbt_cmd and selectors:
-                cli_compile_attempted = True
+            if project_root and dbt_cmd:
                 Console(stderr=True).print(
-                    f"[dim]ℹ️  Running `dbt compile --select {' '.join(selectors)}` "
-                    f"in {project_root} to refresh manifest + compiled SQL of the impacted chain "
-                    f"(may take 1-5 min on first run)…[/dim]"
+                    f"[dim]ℹ️  Running full `dbt compile` in {project_root} to "
+                    "refresh manifest + compiled SQL across the whole project "
+                    "(~1 min on an 800-model project). Pass --no-compile to "
+                    "skip.[/dim]"
                 )
+                compile_argv: list[str] = [dbt_cmd, "compile"]
+                if _os.path.isfile(_os.path.join(project_root, "profiles.yml")):
+                    compile_argv += ["--profiles-dir", project_root]
+                compile_argv += ["--project-dir", project_root, "--target", "dev"]
+                compile_env = {**_os.environ,
+                               "DBT_PROJECT_DIR": project_root,
+                               "DBT_TARGET": "dev"}
                 try:
                     compile_result = _subprocess.run(
-                        [dbt_cmd, "compile", "--select", *selectors],
+                        compile_argv,
                         cwd=project_root,
+                        env=compile_env,
                         capture_output=True,
                         text=True,
-                        timeout=600,
+                        timeout=1800,
                     )
                 except (_subprocess.TimeoutExpired, OSError) as exc:
                     Console(stderr=True).print(
@@ -2935,10 +3294,6 @@ def optimize_refresh(
                 if compile_result is not None and compile_result.returncode == 0:
                     manifest, catalog, manifest_file = _load_manifest_and_catalog(True, manifest_path, catalog_path)
                 elif compile_result is not None:
-                    # Show the LAST chunk of stderr/stdout — dbt-fusion prints
-                    # an "Execution Summary" footer and the actual error lines
-                    # right above it, so the meaningful content is near the
-                    # tail of the output.
                     err_text = (compile_result.stderr or compile_result.stdout or "").strip()
                     err_tail = "\n      ".join(err_text.splitlines()[-12:]) if err_text else "(no output captured)"
                     Console(stderr=True).print(
@@ -3011,7 +3366,6 @@ def optimize_refresh(
     advisor = RefreshAdvisor(
         manifest, catalog,
         manifest_path=manifest_file,
-        auto_compile=not no_compile,
     )
     plan = advisor.plan(changes)
 

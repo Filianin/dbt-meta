@@ -26,8 +26,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
@@ -40,8 +38,6 @@ from dbt_meta.usage._common import (
     upstream_table_aliases,
 )
 from dbt_meta.usage.extractor import ColumnUsageExtractor
-
-DBT_COMPILE_TIMEOUT = 300  # seconds — bulk compile for many downstream models
 
 # Operators that indicate a value-flowing dependency (not just structural)
 _VALUE_FLOW_CLAUSES = {"select", "where", "join", "group_by", "qualify", "partition_by"}
@@ -87,7 +83,6 @@ class RefreshAdvisor:
         catalog: Optional[dict[str, Any]] = None,
         extractor: Optional[ColumnUsageExtractor] = None,
         manifest_path: Optional[str] = None,
-        auto_compile: bool = True,
     ) -> None:
         """Initialize the refresh advisor.
 
@@ -96,22 +91,21 @@ class RefreshAdvisor:
             catalog: optional parsed catalog.json
             extractor: ColumnUsageExtractor (one is created if omitted)
             manifest_path: file path of the manifest.json — needed to find
-                the dbt project root for the disk-compiled fallback and the
-                bulk ``dbt compile`` invocation.
-            auto_compile: when True (default), the advisor will run
-                ``dbt compile --select <downstream models>`` once at the
-                start of ``plan()`` if many downstream models are missing
-                ``compiled_code`` AND lack disk-compiled SQL.
+                the dbt project root for the disk-compiled fallback.
+
+        Compile note: the advisor itself never invokes ``dbt compile``.
+        The CLI pre-flight in ``cli.py`` (``optimize_refresh`` and
+        ``_ensure_manifest_compiled``) runs a full-project compile
+        upstream so ``compiled_code`` is already populated by the time
+        ``plan()`` runs.
         """
         self.manifest = manifest
         self.catalog = catalog or {}
         self.extractor = extractor or ColumnUsageExtractor(dialect="bigquery")
         self.manifest_path = manifest_path
-        self.auto_compile = auto_compile
         self._project_root: Optional[str] = (
             _infer_project_root(manifest_path) if manifest_path else None
         )
-        self._bulk_compile_attempted = False
 
     def plan(
         self,
@@ -130,8 +124,7 @@ class RefreshAdvisor:
 
         Algorithm:
             1. Resolve changed models + transitive downstream universe.
-            2. Bulk-compile if many downstream models lack ``compiled_code``.
-            3. Walk downstream in topological order. For each model M, look
+            2. Walk downstream in topological order. For each model M, look
                at its already-affected upstreams (a model is affected if it
                either is in ``changes`` or was marked affected earlier in
                the walk). If M's compiled SQL references any of those
@@ -139,7 +132,7 @@ class RefreshAdvisor:
                — M itself becomes affected and propagates the impact to
                *its* downstream. This catches transitive consumers that
                never directly mention the changed model.
-            4. Classify every affected model into full/incremental;
+            3. Classify every affected model into full/incremental;
                un-affected downstream go to ``can_skip``.
         """
         plan = RefreshPlan()
@@ -159,11 +152,7 @@ class RefreshAdvisor:
             changed_uids.add(unique_id)
             all_downstream.update(transitive_downstream(self.manifest, unique_id))
 
-        # 2) Bulk-compile if needed
-        if self.auto_compile:
-            self._maybe_bulk_compile(all_downstream, plan)
-
-        # 3) Initialise affected-set with the changed models themselves.
+        # 2) Initialise affected-set with the changed models themselves.
         # Value is ``None`` (= "all output cols affected, including via
         # SELECT *") OR a set of specific column names.
         affected_cols: dict[str, Optional[set[str]]] = {}
@@ -172,10 +161,10 @@ class RefreshAdvisor:
             affected_cols[uid] = None if cols is None else set(cols)
             affected_via[uid] = ["changed model itself"]
 
-        # 3a) Topological order: process upstream before downstream.
+        # 2a) Topological order: process upstream before downstream.
         ordered = self._topological_order(all_downstream, nodes)
 
-        # 3b) Walk and propagate
+        # 2b) Walk and propagate
         for ds_uid in ordered:
             if ds_uid in changed_uids:
                 continue
@@ -188,7 +177,7 @@ class RefreshAdvisor:
                 affected_cols[ds_uid] = new_cols
                 affected_via[ds_uid] = why
 
-        # 4) Classify everything
+        # 3) Classify everything
         # Changed models go straight into full_refresh (SQL itself changed)
         for uid, _model, _cols in resolved:
             plan.needs_full_refresh.append(
@@ -199,6 +188,11 @@ class RefreshAdvisor:
                 )
             )
         for ds_uid in sorted(all_downstream):
+            if ds_uid in changed_uids:
+                # Changed models were already classified above; skip to avoid
+                # emitting them twice when they are also downstream of another
+                # changed model.
+                continue
             ds_node = nodes.get(ds_uid)
             if ds_node is None:
                 continue
@@ -438,9 +432,10 @@ class RefreshAdvisor:
     def _resolve_compiled_sql(self, node: dict[str, Any]) -> str:
         """Return compiled SQL for a node: manifest → disk → empty.
 
-        Auto-compile (level 3) is handled in bulk via ``_maybe_bulk_compile``
-        BEFORE per-model classification, so this method itself is cheap
-        (no subprocess calls).
+        The CLI pre-flight runs a full-project ``dbt compile`` before this
+        method ever fires, so the manifest-level lookup is the common case.
+        Disk fallback handles dev manifests produced by ``dbt parse`` that
+        sit next to a previous ``target/compiled/`` tree.
         """
         sql = (node.get("compiled_code") or "").strip()
         if sql:
@@ -450,65 +445,6 @@ class RefreshAdvisor:
             if disk_sql:
                 return disk_sql
         return ""
-
-    def _maybe_bulk_compile(self, downstream_ids: set[str], plan: "RefreshPlan") -> None:
-        """Run ``dbt compile`` once for downstream models that lack compiled SQL.
-
-        Scans the ENTIRE downstream set (not a sample) and triggers a single
-        ``dbt compile --select <missing models>`` invocation when:
-
-          * project root resolved (we are inside a dbt project, possibly via
-            cwd fallback in :func:`_infer_project_root`)
-          * ``dbt`` CLI is available on PATH
-          * at least one downstream model has neither ``compiled_code`` in the
-            manifest nor a ``target/compiled/.../<file>.sql`` on disk
-
-        Only the missing models are passed to ``dbt compile`` — this keeps
-        the compile fast even on large downstream chains.
-        """
-        if self._bulk_compile_attempted or not self._project_root:
-            return
-        nodes = self.manifest.get("nodes", {})
-
-        missing_ids: list[str] = []
-        for uid in downstream_ids:
-            node = nodes.get(uid)
-            if not node:
-                continue
-            if (node.get("compiled_code") or "").strip():
-                continue
-            if _read_disk_compiled(self._project_root, node):
-                continue
-            missing_ids.append(uid)
-
-        if not missing_ids:
-            return  # everything already has compiled SQL
-
-        self._bulk_compile_attempted = True
-        target_models = sorted({uid.split(".")[-1] for uid in missing_ids})
-
-        sys.stderr.write(
-            f"ℹ️  {len(missing_ids)}/{len(downstream_ids)} downstream models missing compiled SQL — "
-            f"running `dbt compile` for {len(target_models)} model(s) "
-            f"in {self._project_root} (one-time, may take 1-5 min)…\n"
-        )
-        ok, err = _run_bulk_dbt_compile(target_models, self._project_root)
-        if ok:
-            sys.stderr.write("✅ dbt compile succeeded; analysing column usage now.\n")
-        else:
-            err_short = (err or "").splitlines()[0][:160] if err else "unknown"
-            plan.warnings.append(
-                f"bulk dbt compile failed; analysis falls back to model-level only: {err_short}"
-            )
-            sys.stderr.write(
-                f"⚠️  dbt compile failed.\n"
-                f"   First error: {err_short}\n"
-                f"   Workaround: re-run with the production manifest, which already\n"
-                f"               has compiled_code:\n"
-                f"     meta optimize refresh -m --manifest ~/dbt-state/manifest.json\n"
-                f"   Or fix dbt project errors and retry, or use --no-compile to skip\n"
-                f"   the auto-compile attempt entirely.\n"
-            )
 
 
 def _infer_project_root(manifest_path: Optional[str]) -> Optional[str]:
@@ -602,39 +538,6 @@ def _find_dbt_executable(project_root: Optional[str]) -> Optional[str]:
         if candidate.is_file():
             return str(candidate)
     return shutil.which("dbt")
-
-
-def _run_bulk_dbt_compile(
-    model_names: list[str],
-    project_root: str,
-    timeout: int = DBT_COMPILE_TIMEOUT,
-) -> tuple[bool, Optional[str]]:
-    """Invoke ``dbt compile --select <models...>`` in the project root.
-
-    Returns (success, error_text). The dbt CLI honours the user's default
-    target from ``profiles.yml`` so callers don't need to pass --target.
-    """
-    dbt_cmd = _find_dbt_executable(project_root)
-    if not dbt_cmd:
-        return False, "dbt CLI not found in project venv or PATH"
-    cmd = [dbt_cmd, "compile", "--select", *model_names]
-    try:
-        result = subprocess.run(
-            cmd,
-            cwd=project_root,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
-        return False, f"dbt compile timed out after {timeout}s"
-    except OSError as exc:
-        return False, f"failed to launch dbt: {exc}"
-
-    if result.returncode != 0:
-        out = ((result.stdout or "") + (result.stderr or "")).strip()
-        return False, out or f"dbt compile exited with code {result.returncode}"
-    return True, None
 
 
 def changed_models_from_git(modified_files: Iterable[str], manifest: dict[str, Any]) -> dict[str, None]:

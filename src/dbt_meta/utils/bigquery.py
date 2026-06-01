@@ -22,6 +22,18 @@ _BQ_SEARCH_PATHS = [
 ]
 
 
+def _bq_location() -> str:
+    """Return the BigQuery location to pass to ``bq`` commands.
+
+    Defaults to ``EU`` because all production data sits there; users
+    pointing at US (or another region) override via
+    ``DBT_META_BQ_LOCATION``. The location is forwarded to ``bq`` via
+    ``--location=`` so dry-runs against cross-region datasets don't
+    fail with ``Not found: Dataset … was not found in location …``.
+    """
+    return os.environ.get('DBT_META_BQ_LOCATION', 'EU')
+
+
 def _find_bq_cmd() -> Optional[str]:
     """Find bq CLI executable, checking PATH and common install locations."""
     # First try current PATH
@@ -229,8 +241,10 @@ def run_bq_command(args: list[str], timeout: int = 10) -> subprocess.CompletedPr
     env['PYTHONPATH'] = ''
     env['PATH'] = os.environ.get('PATH', '') + os.pathsep + os.pathsep.join(_BQ_SEARCH_PATHS)
 
+    # `--location` lives BEFORE the sub-command. ``bq show`` rejects it
+    # mid-list so we slot it in immediately after the command path.
     return subprocess.run(
-        [bq_cmd, *args],
+        [bq_cmd, f'--location={_bq_location()}', *args],
         capture_output=True,
         text=True,
         check=True,
@@ -386,9 +400,11 @@ def run_dry_run_query(sql: str, timeout: int = 30) -> dict:
     env['PATH'] = os.environ.get('PATH', '') + os.pathsep + os.pathsep.join(_BQ_SEARCH_PATHS)
 
     try:
-        # Use stdin for SQL to avoid command line length limits
+        # Use stdin for SQL to avoid command line length limits.
+        # `--location` is mandatory for cross-region dry runs; default EU.
         result = subprocess.run(
-            [bq_cmd, 'query', '--dry_run', '--use_legacy_sql=false'],
+            [bq_cmd, f'--location={_bq_location()}',
+             'query', '--dry_run', '--use_legacy_sql=false'],
             input=sql,
             capture_output=True,
             text=True,

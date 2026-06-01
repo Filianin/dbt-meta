@@ -1,9 +1,12 @@
-"""Tests for utils/compiled_sql.py — 3-level compiled SQL fallback.
+"""Tests for utils/compiled_sql.py — 2-level compiled SQL lookup.
 
 Levels:
 1. model['compiled_code'] from manifest
 2. target/compiled/{package}/{original_file_path} on disk
-3. Auto-run `dbt compile --select <model> --target dev` (use_dev only)
+
+(Single-model auto-compile was removed in 0.3.2; the full-project
+``dbt compile`` pre-flight in ``cli.py`` runs upstream before this
+function executes.)
 """
 
 from __future__ import annotations
@@ -166,194 +169,6 @@ class TestDiskFallback:
 
 
 # =============================================================================
-# Level 3: auto-compile via dbt compile
-# =============================================================================
-
-
-class TestAutoCompile:
-    def test_auto_compile_runs_when_use_dev_true(self, dbt_project, monkeypatch):
-        compiled = dbt_project['compiled_dir'] / 'events.sql'
-
-        # Simulate successful dbt compile by writing the file when subprocess runs
-        def fake_subprocess_run(*args, **kwargs):
-            compiled.write_text('COMPILED FROM DBT')
-
-            class R:
-                returncode = 0
-                stdout = 'OK'
-                stderr = ''
-            return R()
-
-        monkeypatch.setattr('dbt_meta.utils.compiled_sql.shutil.which', lambda _: '/usr/bin/dbt')
-        monkeypatch.setattr('dbt_meta.utils.compiled_sql.subprocess.run', fake_subprocess_run)
-
-        model = make_model(compiled_code='')
-        sql, error = get_compiled_sql(
-            model=model,
-            model_name='events',
-            manifest_path=str(dbt_project['manifest']),
-            use_dev=True,
-        )
-        assert sql == 'COMPILED FROM DBT'
-        assert error is None
-
-    def test_auto_compile_not_triggered_when_use_dev_false(self, dbt_project, monkeypatch):
-        called = {'yes': False}
-
-        def should_not_run(*args, **kwargs):
-            called['yes'] = True
-            class R:
-                returncode = 0
-                stdout = ''
-                stderr = ''
-            return R()
-
-        monkeypatch.setattr('dbt_meta.utils.compiled_sql.shutil.which', lambda _: '/usr/bin/dbt')
-        monkeypatch.setattr('dbt_meta.utils.compiled_sql.subprocess.run', should_not_run)
-
-        model = make_model(compiled_code='')
-        sql, error = get_compiled_sql(
-            model=model,
-            model_name='events',
-            manifest_path=str(dbt_project['manifest']),
-            use_dev=False,
-        )
-        assert sql is None
-        assert called['yes'] is False
-
-    def test_auto_compile_disabled_by_flag(self, dbt_project, monkeypatch):
-        called = {'yes': False}
-
-        def should_not_run(*args, **kwargs):
-            called['yes'] = True
-            class R:
-                returncode = 0
-                stdout = ''
-                stderr = ''
-            return R()
-
-        monkeypatch.setattr('dbt_meta.utils.compiled_sql.shutil.which', lambda _: '/usr/bin/dbt')
-        monkeypatch.setattr('dbt_meta.utils.compiled_sql.subprocess.run', should_not_run)
-
-        model = make_model(compiled_code='')
-        sql, error = get_compiled_sql(
-            model=model,
-            model_name='events',
-            manifest_path=str(dbt_project['manifest']),
-            use_dev=True,
-            auto_compile=False,
-        )
-        assert sql is None
-        assert called['yes'] is False
-
-    def test_auto_compile_fails_when_dbt_not_in_path(self, dbt_project, monkeypatch):
-        monkeypatch.setattr('dbt_meta.utils.compiled_sql.shutil.which', lambda _: None)
-
-        model = make_model(compiled_code='')
-        sql, error = get_compiled_sql(
-            model=model,
-            model_name='events',
-            manifest_path=str(dbt_project['manifest']),
-            use_dev=True,
-        )
-        assert sql is None
-        assert 'dbt CLI not found' in error
-
-    def test_auto_compile_returns_error_when_exit_nonzero(self, dbt_project, monkeypatch):
-        def failing_run(*args, **kwargs):
-            class R:
-                returncode = 1
-                stdout = ''
-                stderr = 'syntax error on line 5'
-            return R()
-
-        monkeypatch.setattr('dbt_meta.utils.compiled_sql.shutil.which', lambda _: '/usr/bin/dbt')
-        monkeypatch.setattr('dbt_meta.utils.compiled_sql.subprocess.run', failing_run)
-
-        model = make_model(compiled_code='')
-        sql, error = get_compiled_sql(
-            model=model,
-            model_name='events',
-            manifest_path=str(dbt_project['manifest']),
-            use_dev=True,
-        )
-        assert sql is None
-        assert 'dbt compile failed' in error
-        assert 'syntax error on line 5' in error
-
-    def test_auto_compile_handles_timeout(self, dbt_project, monkeypatch):
-        import subprocess as sub
-
-        def timeout_run(*args, **kwargs):
-            raise sub.TimeoutExpired(cmd='dbt', timeout=1)
-
-        monkeypatch.setattr('dbt_meta.utils.compiled_sql.shutil.which', lambda _: '/usr/bin/dbt')
-        monkeypatch.setattr('dbt_meta.utils.compiled_sql.subprocess.run', timeout_run)
-
-        model = make_model(compiled_code='')
-        sql, error = get_compiled_sql(
-            model=model,
-            model_name='events',
-            manifest_path=str(dbt_project['manifest']),
-            use_dev=True,
-        )
-        assert sql is None
-        assert 'timed out' in error
-
-    def test_auto_compile_succeeds_but_file_still_missing(self, dbt_project, monkeypatch):
-        """dbt compile exits 0 but didn't produce the expected file."""
-        def fake_run(*args, **kwargs):
-            class R:
-                returncode = 0
-                stdout = ''
-                stderr = ''
-            return R()
-
-        monkeypatch.setattr('dbt_meta.utils.compiled_sql.shutil.which', lambda _: '/usr/bin/dbt')
-        monkeypatch.setattr('dbt_meta.utils.compiled_sql.subprocess.run', fake_run)
-
-        model = make_model(compiled_code='')
-        sql, error = get_compiled_sql(
-            model=model,
-            model_name='events',
-            manifest_path=str(dbt_project['manifest']),
-            use_dev=True,
-        )
-        assert sql is None
-        assert 'not found at expected path' in error
-
-    def test_auto_compile_fails_when_no_project_root(self, tmp_path, monkeypatch):
-        """When manifest is outside a dbt project, auto-compile aborts with clear error."""
-        # tmp_path has no dbt_project.yml anywhere up the tree
-        manifest = tmp_path / 'manifest.json'
-        manifest.write_text('{}')
-
-        called = {'yes': False}
-
-        def should_not_run(*args, **kwargs):
-            called['yes'] = True
-            class R:
-                returncode = 0
-                stdout = ''
-                stderr = ''
-            return R()
-
-        monkeypatch.setattr('dbt_meta.utils.compiled_sql.shutil.which', lambda _: '/usr/bin/dbt')
-        monkeypatch.setattr('dbt_meta.utils.compiled_sql.subprocess.run', should_not_run)
-
-        model = make_model(compiled_code='')
-        sql, error = get_compiled_sql(
-            model=model,
-            model_name='events',
-            manifest_path=str(manifest),
-            use_dev=True,
-        )
-        assert sql is None
-        assert called['yes'] is False
-        assert 'project root not found' in error
-
-
-# =============================================================================
 # Helper functions
 # =============================================================================
 
@@ -414,24 +229,6 @@ class TestRareErrorPaths:
             original_file_path='models/events.sql',
         )
         assert result is None
-
-    def test_auto_compile_handles_os_error_launching_dbt(self, dbt_project, monkeypatch):
-        def raise_oserror(*args, **kwargs):
-            raise OSError('cannot launch')
-
-        monkeypatch.setattr('dbt_meta.utils.compiled_sql.shutil.which', lambda _: '/usr/bin/dbt')
-        monkeypatch.setattr('dbt_meta.utils.compiled_sql.subprocess.run', raise_oserror)
-
-        model = make_model(compiled_code='')
-        sql, error = get_compiled_sql(
-            model=model,
-            model_name='events',
-            manifest_path=str(dbt_project['manifest']),
-            use_dev=True,
-        )
-        assert sql is None
-        assert 'Failed to launch dbt' in error
-
 
 class TestReadCompiledFile:
     def test_reads_existing_file(self, dbt_project):

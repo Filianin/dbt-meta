@@ -26,15 +26,17 @@ def flatten_tree_to_compact(tree: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Flatten nested tree to compact flat format.
 
     Args:
-        tree: Nested tree [{path, table, level, children}, ...]
+        tree: Nested tree [{name, unique_id, path, table, level, children}, ...]
 
     Returns:
-        Flat array [{"path": "...", "table": "...", "level": 0}, ...]
+        Flat array [{"name": ..., "unique_id": ..., "path": ..., "table": ..., "level": 0}, ...]
     """
     result = []
     for node in tree:  # pragma: no cover
         # Add current node without children
         result.append({
+            'name': node.get('name', ''),
+            'unique_id': node.get('unique_id', ''),
             'path': node['path'],
             'table': node['table'],
             'type': node.get('type', ''),
@@ -118,6 +120,8 @@ def build_relation_tree(
                 path = path[7:]  # Remove "models/" prefix
 
             node_info = {
+                'name': node.get('name', ''),
+                'unique_id': relation_id,
                 'path': path,
                 'table': table,
                 'type': node.get('resource_type', ''),

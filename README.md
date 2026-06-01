@@ -193,10 +193,15 @@ All commands accept `-h/--help` for detailed per-command help.
 | `schema <model>` | Full table name (`database.schema.table`) | `-j`, `-d` | `meta schema customers` |
 | `path <model>` | Relative file path to .sql file | `-j`, `-d` | `meta path customers` |
 | `columns <model>` | Column names and types | `-j`, `-d` | `meta columns -dj customers` |
+| `columns --all <pattern>` | Repo-wide column search — every model with a column matching `<pattern>` | `-j`, `--case-sensitive` | `meta columns --all user_id` |
 | `config <model>` | Full dbt config (partition_by, cluster_by, incremental, etc.) | `-j`, `-d` | `meta config -j customers` |
 | `sql <model>` | Compiled SQL (default) or raw with `--jinja` | `-j`, `-d`, `--jinja` | `meta sql --jinja customers` |
 | `docs <model>` | Column names, types, and descriptions | `-j`, `-d` | `meta docs customers` |
-| `deps <model>` | Dependencies by type (refs, sources, macros) | `-j`, `-d` | `meta deps -j customers` |
+| `find <fqn>` | Reverse FQN lookup — which dbt model materialises `<table>` / `<schema.table>` / `<database.schema.table>` | `-j`, `-d` | `meta find analytics.customers` |
+
+> **0.3.1 breaking:** `meta deps` was removed. Use `meta parents` for upstream
+> refs/sources and `meta children` for downstream consumers
+> (`meta children --source <schema.table>` for source-rooted lookup).
 
 ### Lineage (model-level)
 
@@ -204,6 +209,7 @@ All commands accept `-h/--help` for detailed per-command help.
 |---------|-------------|-----------|---------|
 | `parents <model>` | Upstream dependencies (direct or all ancestors) | `-j`, `-d`, `-a` | `meta parents -aj customers` |
 | `children <model>` | Downstream dependencies (direct or all descendants) | `-j`, `-d`, `-a` | `meta children -a customers` |
+| `children --source <ref>` | Downstream models for a dbt source (`schema.table`, `source_name.table`, or bare `table`) | `-j`, `-a` | `meta children --source raw_events.orders` |
 
 - Without `-a`: direct parents/children only (classic format).
 - With `-a -j` and ≤20 nodes: nested JSON with `children` key; otherwise flat array.
@@ -264,15 +270,18 @@ The line is emitted via plain `print()` (not Rich) so terminal copy-paste return
 
 | Command | Description | Key flags | Example |
 |---------|-------------|-----------|---------|
-| `list [selectors…]` | Filter with selectors (`tag:`, `config.`, `path:`, `package:`) | `-j`, `-d`, `-m`, `-f`, `-a`, `--and`, `--group` | `meta list tag:daily --and tag:core` |
+| `list [selectors…]` | Filter with selectors (`tag:`, `config.`, `path:`, `package:`, `name:`) | `-j`, `-d`, `-m`, `-f`, `-a`, `--and`, `--group` | `meta list tag:daily --and tag:core` |
 | `models [pattern]` | Simple substring search over model names | `-j` | `meta models staging` |
 | `search <query>` | Search models by name or description | `-j` | `meta search "customer" -j` |
+| `resolve <fuzzy>` | Fuzzy "did you mean?" lookup via difflib (after `not found`) | `-j`, `-n LIMIT`, `--cutoff` | `meta resolve client_profile_evnts` |
+| `sources [name]` | List dbt sources from manifest (with `--freshness`) | `-j`, `--freshness` | `meta sources stripe --freshness` |
 
 **`list` selectors:**
 - `tag:name` — filter by tag (OR logic by default)
 - `config.key:value` — filter by config value (e.g. `config.materialized:incremental`)
 - `path:dir/` — filter by file path prefix
 - `package:name` — filter by package
+- `name:substr` — substring match on model name (case-insensitive)
 
 **`list` flags:**
 - `--and` — require ALL selectors to match (default: OR)
@@ -287,7 +296,7 @@ Uses BigQuery dry run (no rows processed, no charge for dry run itself). Both co
 
 | Command | Description | Key flags | Example |
 |---------|-------------|-----------|---------|
-| `validate <model>` | Validate compiled SQL syntax | `-j`, `-d` | `meta validate customers` |
+| `validate <model> [<more>…]` | Validate compiled SQL syntax (batch-friendly; exits 1 if any fails) | `-j`, `-d`, `--no-compile` | `meta validate orders customers payments` |
 | `scan <model>` | Estimate query scan size (🟢 <1 GB, 🟡 1–10 GB, 🔴 ≥10 GB) | `-j`, `-d` | `meta scan --dev -j customers` |
 
 ### Optimization (requires `dbt_bigquery_monitoring`)
@@ -339,6 +348,13 @@ Requires Azure AD Service Principal with Power BI Admin API access.
 **Combined short flags** work in any order: `-dj`, `-adj`, `-mf`, `-fa`, etc.
 
 **Note:** `--manifest` has no short form. If `--manifest` and `--dev` are both provided, `--dev` is ignored with a warning.
+
+**Manifest discovery precedence (highest → lowest):**
+1. `--manifest PATH` — explicit
+2. `DBT_DEV_MANIFEST_PATH` — only with `--dev` (default `./target/manifest.json`)
+3. `DBT_PROD_MANIFEST_PATH` — default (`~/dbt-state/manifest.json`)
+
+**BigQuery location:** `bq` calls (`columns`, `validate`, `scan`) default to `EU`. Override via `DBT_META_BQ_LOCATION` (e.g. `US`, `asia-east1`).
 
 ## 💡 Common Use Cases
 

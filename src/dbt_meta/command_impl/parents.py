@@ -133,6 +133,8 @@ class ParentsCommand(BaseCommand):
                     path = path[7:]
 
                 parents_details.append({
+                    'name': parent_node.get('name', ''),
+                    'unique_id': parent_id,
                     'path': path,
                     'table': table,
                     'type': parent_node.get('resource_type', '')
@@ -140,6 +142,6 @@ class ParentsCommand(BaseCommand):
 
             # If JSON mode and > 20 nodes, add level field
             if self.json_output and len(parents_details) > 20:
-                return [{'path': item['path'], 'table': item['table'], 'type': item['type'], 'level': 0} for item in parents_details]
+                return [{**item, 'level': 0} for item in parents_details]
 
             return parents_details

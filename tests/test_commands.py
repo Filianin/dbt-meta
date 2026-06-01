@@ -3,7 +3,7 @@ Tests for Commands - All command functionality
 
 This module consolidates all command tests:
 - Core commands: info, schema, columns
-- Advanced commands: config, deps, sql, docs, path, parents, children
+- Advanced commands: config, sql, docs, path, parents, children
 - Utilities: list, search, node, refresh
 - Dev mode: --dev flag with dev manifest priority
 - Fallback systems: production → dev → BigQuery
@@ -23,7 +23,6 @@ from dbt_meta.commands import (
     children,
     columns,
     config,
-    deps,
     docs,
     info,
     list_models,
@@ -74,6 +73,17 @@ class TestInfoCommand:
 
         assert 'tags' in result
         assert isinstance(result['tags'], list)
+
+    def test_info_exposes_optimization_fields(self, prod_manifest, test_model):
+        """
+        Regression for audit #2: info -j must expose alias, partition_by,
+        cluster_by, unique_key (even if value is None) so consumers don't
+        fall back to YAML/grep.
+        """
+        result = info(str(prod_manifest), test_model)
+
+        for key in ('alias', 'partition_by', 'cluster_by', 'unique_key'):
+            assert key in result, f"info() must always emit '{key}' key"
 
 
 class TestSchemaCommand:
@@ -307,63 +317,6 @@ class TestConfigCommand:
         assert 'partition_by' in result
         # Partition config is a dict or None
         assert result['partition_by'] is None or isinstance(result['partition_by'], dict)
-
-
-class TestDepsCommand:
-    """Test deps command - model dependencies"""
-
-    def test_deps_returns_dict_with_refs_sources(self, prod_manifest, test_model):
-        """
-        Should return dictionary with refs and sources
-
-        Format: {"refs": [...], "sources": [...]}
-        """
-        model_name = test_model  # Use fixture
-        result = deps(str(prod_manifest), model_name)
-
-        assert isinstance(result, dict)
-        assert 'refs' in result
-        assert 'sources' in result
-        assert isinstance(result['refs'], list)
-        assert isinstance(result['sources'], list)
-
-
-    def test_deps_nonexistent_model_returns_empty(self, prod_manifest, test_model):
-        """Should return empty refs/sources for non-existent model"""
-        result = deps(str(prod_manifest), "nonexistent__model")
-        assert result == {'refs': [], 'sources': []}
-
-    def test_deps_includes_model_refs(self, prod_manifest, test_model):
-        """
-        Should include model dependencies (refs)
-
-        refs should be in format: model.project.model_name
-        """
-        model_name = test_model  # Use fixture
-        result = deps(str(prod_manifest), model_name)
-
-        # Model may or may not have refs, check structure
-        assert 'refs' in result and isinstance(result['refs'], list)
-        # All refs should start with 'model.'
-        for ref in result['refs']:
-            assert ref.startswith('model.')
-
-    def test_deps_model_not_found_error_message(self, prod_manifest, mocker, capsys):
-        """Test helpful error message when dependencies unavailable (parser returns None)"""
-        # Mock parser.get_dependencies() to return None (rare edge case)
-        mock_parser = mocker.patch('dbt_meta.utils.get_cached_parser')
-        mock_parser.return_value.get_dependencies.return_value = None
-
-        result = deps(str(prod_manifest), "nonexistent__model")
-
-        # Should return None when parser returns None
-        assert result is None
-
-        # Check error message
-        captured = capsys.readouterr()
-        assert "Dependencies not available" in captured.err
-        assert "defer run --select" in captured.err
-        assert "model not in manifest" in captured.err
 
 
 class TestSqlCommand:

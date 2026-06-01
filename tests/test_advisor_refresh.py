@@ -1,7 +1,6 @@
 """Tests for RefreshAdvisor (column-aware --full-refresh planner)."""
 
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -9,7 +8,6 @@ from dbt_meta.usage import RefreshAdvisor, changed_models_from_git
 from dbt_meta.usage.advisor_refresh import (
     _infer_project_root,
     _read_disk_compiled,
-    _run_bulk_dbt_compile,
 )
 
 
@@ -141,6 +139,40 @@ class TestRefreshFullRefresh:
         plan = advisor.plan({"upstream": None})  # whole-model change
         full = {d.model for d in plan.needs_full_refresh}
         assert "ds_inc" in full
+
+
+class TestRefreshNoDuplicates:
+    """A changed model that is also downstream of another changed model must
+    appear exactly once in the plan — not twice (once as 'changed model itself'
+    and once via chain propagation).
+    """
+
+    def test_changed_model_also_downstream_appears_once(self):
+        # A (changed) → B (changed, also downstream of A)
+        a = _model("model_a", sql="SELECT 1", alias="a")
+        b = _model(
+            "model_b",
+            sql="SELECT a.col FROM proj.ds.a a",
+            alias="b",
+            materialized="incremental",
+            depends_on=[a[0]],
+        )
+        manifest = {
+            "nodes": {a[0]: a[1], b[0]: b[1]},
+            "sources": {},
+            "child_map": {a[0]: [b[0]], b[0]: []},
+        }
+
+        advisor = RefreshAdvisor(manifest)
+        plan = advisor.plan({"model_a": None, "model_b": None})
+
+        full_models = [d.model for d in plan.needs_full_refresh]
+        assert full_models.count("model_b") == 1, (
+            f"model_b should appear once, got {full_models.count('model_b')} "
+            f"(full_refresh list: {full_models})"
+        )
+        # Summary count must match unique model count, no duplicates.
+        assert plan.to_dict()["summary"]["full_refresh"] == len(set(full_models))
 
 
 class TestRefreshIncremental:
@@ -380,137 +412,11 @@ class TestRefreshDiskFallback:
         advisor = RefreshAdvisor(
             manifest,
             manifest_path=str(manifest_path),
-            auto_compile=False,  # disable subprocess; rely on disk only
         )
         plan = advisor.plan({"upstream": {"changed_col"}})
         full_models = {d.model for d in plan.needs_full_refresh}
         # ds_inc references changed_col via disk-read SQL → must be full_refresh
         assert "ds" in full_models
-
-
-class TestBulkCompileTrigger:
-    def test_skipped_when_no_project_root(self):
-        manifest = {
-            "nodes": {
-                "model.pkg.up": {
-                    "name": "up", "alias": "up", "schema": "s", "database": "d",
-                    "compiled_code": "SELECT 1", "config": {},
-                    "depends_on": {"nodes": []}, "resource_type": "model",
-                },
-                "model.pkg.ds": {
-                    "name": "ds", "alias": "ds", "schema": "s", "database": "d",
-                    "compiled_code": "",  # missing
-                    "config": {"materialized": "table"},
-                    "depends_on": {"nodes": ["model.pkg.up"]},
-                    "resource_type": "model",
-                },
-            },
-            "sources": {},
-            "child_map": {"model.pkg.up": ["model.pkg.ds"], "model.pkg.ds": []},
-        }
-        # No manifest_path → no project root → bulk compile must NOT be attempted
-        advisor = RefreshAdvisor(manifest, auto_compile=True)
-        with patch("dbt_meta.usage.advisor_refresh._run_bulk_dbt_compile") as mock_run:
-            advisor.plan({"up": None})
-        mock_run.assert_not_called()
-
-    def test_triggered_when_majority_missing(self, tmp_path):
-        (tmp_path / "dbt_project.yml").write_text("name: test\n")
-        manifest_path = tmp_path / "target" / "manifest.json"
-        manifest_path.parent.mkdir()
-        manifest_path.write_text("{}")
-        # 5 downstream, all missing compiled_code, no disk fallback
-        nodes = {
-            "model.pkg.up": {
-                "name": "up", "alias": "up", "schema": "s", "database": "d",
-                "compiled_code": "SELECT 1", "config": {},
-                "depends_on": {"nodes": []}, "resource_type": "model",
-            }
-        }
-        child_map = {"model.pkg.up": []}
-        for i in range(5):
-            uid = f"model.pkg.ds{i}"
-            nodes[uid] = {
-                "name": f"ds{i}", "alias": f"ds{i}", "schema": "s", "database": "d",
-                "compiled_code": "",
-                "config": {"materialized": "table"},
-                "package_name": "pkg",
-                "original_file_path": f"models/ds{i}.sql",
-                "depends_on": {"nodes": ["model.pkg.up"]},
-                "resource_type": "model",
-            }
-            child_map["model.pkg.up"].append(uid)
-            child_map[uid] = []
-        manifest = {"nodes": nodes, "sources": {}, "child_map": child_map}
-
-        advisor = RefreshAdvisor(
-            manifest, manifest_path=str(manifest_path), auto_compile=True,
-        )
-        with patch(
-            "dbt_meta.usage.advisor_refresh._run_bulk_dbt_compile",
-            return_value=(False, "dbt not configured"),
-        ) as mock_run:
-            plan = advisor.plan({"up": None})
-
-        mock_run.assert_called_once()
-        # Failed compile → warning recorded
-        assert any("bulk dbt compile failed" in w for w in plan.warnings)
-
-    def test_triggered_when_any_downstream_missing_compiled_code(self, tmp_path):
-        # Regression: old sample-based heuristic skipped compile when the
-        # first 20 downstream models had SQL but later ones didn't. Verify
-        # the new logic scans the entire downstream set and triggers compile
-        # for as little as one missing model.
-        (tmp_path / "dbt_project.yml").write_text("name: test\n")
-        manifest_path = tmp_path / "target" / "manifest.json"
-        manifest_path.parent.mkdir()
-        manifest_path.write_text("{}")
-
-        nodes = {
-            "model.pkg.up": {
-                "name": "up", "alias": "up", "schema": "s", "database": "d",
-                "compiled_code": "SELECT 1", "config": {},
-                "depends_on": {"nodes": []}, "resource_type": "model",
-            }
-        }
-        child_map = {"model.pkg.up": []}
-        # 22 downstream: 21 already compiled, only the last one missing
-        for i in range(22):
-            uid = f"model.pkg.ds{i:02d}"
-            nodes[uid] = {
-                "name": f"ds{i:02d}", "alias": f"ds{i:02d}", "schema": "s", "database": "d",
-                "compiled_code": "" if i == 21 else "SELECT 1",
-                "config": {"materialized": "table"},
-                "package_name": "pkg",
-                "original_file_path": f"models/ds{i:02d}.sql",
-                "depends_on": {"nodes": ["model.pkg.up"]},
-                "resource_type": "model",
-            }
-            child_map["model.pkg.up"].append(uid)
-            child_map[uid] = []
-        manifest = {"nodes": nodes, "sources": {}, "child_map": child_map}
-
-        advisor = RefreshAdvisor(
-            manifest, manifest_path=str(manifest_path), auto_compile=True,
-        )
-        with patch(
-            "dbt_meta.usage.advisor_refresh._run_bulk_dbt_compile",
-            return_value=(True, None),
-        ) as mock_run:
-            advisor.plan({"up": None})
-
-        mock_run.assert_called_once()
-        called_models = mock_run.call_args[0][0]
-        # Only the missing model is in the --select list (not all 22)
-        assert called_models == ["ds21"]
-
-
-class TestBulkDbtCompileLauncher:
-    def test_returns_failure_when_dbt_missing_from_path(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PATH", "")  # ensure dbt cannot be found
-        ok, err = _run_bulk_dbt_compile(["m1"], str(tmp_path))
-        assert ok is False
-        assert "dbt CLI not found" in (err or "")
 
 
 class TestChangedModelsFromGit:
