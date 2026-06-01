@@ -8,7 +8,7 @@ Target lines:
 
 import pytest
 
-from dbt_meta.commands import columns, deps
+from tests.helpers_cmd import columns, deps
 
 
 class TestColumnsEdgeCases:

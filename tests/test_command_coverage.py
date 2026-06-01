@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from dbt_meta.commands import config, deps, info, path
+from tests.helpers_cmd import config, deps, info, path
 
 
 class TestInfoCommandCoverage:

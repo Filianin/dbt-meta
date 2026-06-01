@@ -21,7 +21,7 @@ class TestDepsEdgeCases:
 
     def test_deps_model_not_found_returns_empty_dict(self, tmp_path, monkeypatch):
         """Test deps command returns empty dict when model not found."""
-        from dbt_meta.commands import deps
+        from tests.helpers_cmd import deps
 
         # Empty manifests
         prod_manifest = tmp_path / "manifest.json"
@@ -116,7 +116,7 @@ class TestColumnsSchemaBaseEdgeCases:
 
     def test_columns_model_not_found_returns_none(self, tmp_path, monkeypatch):
         """Test columns command returns None for nonexistent model."""
-        from dbt_meta.commands import columns
+        from tests.helpers_cmd import columns
 
         prod_manifest = tmp_path / "manifest.json"
         prod_manifest.write_text('{"metadata": {}, "nodes": {}}')
@@ -130,7 +130,7 @@ class TestColumnsSchemaBaseEdgeCases:
 
     def test_schema_model_not_found_returns_none(self, tmp_path, monkeypatch):
         """Test schema command returns None for nonexistent model."""
-        from dbt_meta.commands import schema
+        from tests.helpers_cmd import schema
 
         prod_manifest = tmp_path / "manifest.json"
         prod_manifest.write_text('{"metadata": {}, "nodes": {}}')

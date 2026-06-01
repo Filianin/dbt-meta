@@ -3,7 +3,7 @@ import os
 
 import pytest
 
-from dbt_meta.commands import path, schema
+from tests.helpers_cmd import path, schema
 
 
 class TestPathBigQueryFormat:

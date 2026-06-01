@@ -79,7 +79,7 @@ class TestSchemaGaps:
 
     def test_schema_command_in_dev_mode(self, enable_fallbacks, prod_manifest):
         """Test schema command with use_dev=True."""
-        from dbt_meta.commands import schema
+        from tests.helpers_cmd import schema
         from dbt_meta.manifest.parser import ManifestParser
 
         parser = ManifestParser(str(prod_manifest))
@@ -103,7 +103,7 @@ class TestBaseGaps:
 
     def test_base_command_continues_on_non_critical_warning(self, enable_fallbacks, prod_manifest):
         """Test base command continues on non-critical warnings."""
-        from dbt_meta.commands import columns
+        from tests.helpers_cmd import columns
         from dbt_meta.manifest.parser import ManifestParser
 
         parser = ManifestParser(str(prod_manifest))

@@ -19,7 +19,7 @@ import json
 
 import pytest
 
-from dbt_meta.commands import (
+from tests.helpers_cmd import (
     children,
     columns,
     config,
@@ -243,25 +243,30 @@ class TestColumnsCommand:
         from unittest.mock import patch
 
         from dbt_meta.config import Config
+        from dbt_meta.utils.git import GitStatus
         with patch.object(Config, 'find_config_file', return_value=None):
-            # Mock git status (not testing git here - testing BigQuery fallback)
-            mock_git_check = mocker.patch('dbt_meta.command_impl.base._check_manifest_git_mismatch')
-            mock_git_check.return_value = []  # No warnings
+            # Mock git helpers (not testing git here - testing BigQuery fallback)
+            mocker.patch(
+                'dbt_meta.utils.state_detector.get_model_git_status',
+                return_value=GitStatus(exists=True, is_tracked=True, is_modified=False, is_committed=True, is_deleted=False, is_new=False),
+            )
+            mocker.patch(
+                'dbt_meta.utils.state_detector.check_manifest_git_mismatch',
+                return_value=[],
+            )
 
-            # Mock subprocess for both git and BigQuery calls
+            # Mock subprocess for BigQuery calls only
             mock_run = mocker.patch('subprocess.run')
 
             import subprocess as sp
 
-            # Create proper mock responses
-            git_mock = mocker.Mock(returncode=0, stdout='')  # git returns empty
-            bq_version_mock = mocker.Mock(returncode=0)  # bq version succeeds
+            bq_version_mock = mocker.Mock(returncode=0)
 
             mock_run.side_effect = [
-                git_mock,  # git diff call (from any git checks)
-                git_mock,  # git status call (from any git checks)
                 bq_version_mock,  # bq version check
-                sp.CalledProcessError(1, 'bq show')  # bq show fails - table not found
+                sp.CalledProcessError(1, 'bq show'),  # bq show attempt 1 - table not found
+                sp.CalledProcessError(1, 'bq show'),  # bq show attempt 2 - retry
+                sp.CalledProcessError(1, 'bq show'),  # bq show attempt 3 - retry
             ]
 
             model_name = "sugarcrm_px_customerstages"
@@ -1058,10 +1063,13 @@ class TestColumnsWithDevFlag:
         }
         dev_manifest.write_text(json.dumps(dev_data))
 
+        monkeypatch.setenv('DBT_PROD_MANIFEST_PATH', str(prod_manifest))
+        monkeypatch.setenv('DBT_DEV_MANIFEST_PATH', str(dev_manifest))
+        monkeypatch.setenv('DBT_FALLBACK_TARGET', 'true')
         monkeypatch.setenv('DBT_FALLBACK_BIGQUERY', 'false')
 
         # Mock BigQuery - ALWAYS called now (never uses manifest columns)
-        with patch('dbt_meta.command_impl.columns._fetch_columns_from_bigquery_direct') as mock_bq:
+        with patch('dbt_meta.command_impl.column_source._fetch_columns_from_bigquery_direct') as mock_bq:
             mock_bq.return_value = [
                 {'name': 'col1', 'data_type': 'STRING'},
                 {'name': 'col2', 'data_type': 'INTEGER'}
@@ -1102,7 +1110,7 @@ class TestColumnsWithDevFlag:
         monkeypatch.setenv('DBT_FALLBACK_BIGQUERY', 'true')
 
         # Mock git at the import level in columns.py
-        with patch('dbt_meta.command_impl.columns.get_model_git_status') as mock_git:
+        with patch('dbt_meta.utils.state_detector.get_model_git_status') as mock_git:
             from dbt_meta.utils.git import GitStatus
             mock_git.return_value = GitStatus(
                 exists=True,
@@ -1113,7 +1121,7 @@ class TestColumnsWithDevFlag:
                 is_new=True
             )
 
-            with patch('dbt_meta.command_impl.columns._fetch_columns_from_bigquery_direct') as mock_fetch:
+            with patch('dbt_meta.command_impl.column_source._fetch_columns_from_bigquery_direct') as mock_fetch:
                 mock_fetch.return_value = [
                     {'name': 'id', 'data_type': 'INTEGER'},
                     {'name': 'name', 'data_type': 'STRING'}
@@ -1154,7 +1162,7 @@ class TestColumnsWithDevFlag:
 
         # Mock config file finder to force env var usage, then mock BigQuery
         with patch('dbt_meta.config.Config.find_config_file', return_value=None):
-            with patch('dbt_meta.command_impl.columns._fetch_columns_from_bigquery_direct') as mock_bq:
+            with patch('dbt_meta.command_impl.column_source._fetch_columns_from_bigquery_direct') as mock_bq:
                 mock_bq.return_value = [
                     {'name': 'prod_col', 'data_type': 'STRING'}
                 ]
@@ -1655,7 +1663,7 @@ class TestColumnsTargetFallback:
 
         # Mock config file finder to force env var usage, then mock BigQuery
         with patch('dbt_meta.config.Config.find_config_file', return_value=None):
-            with patch('dbt_meta.command_impl.columns._fetch_columns_from_bigquery_direct') as mock_bq:
+            with patch('dbt_meta.command_impl.column_source._fetch_columns_from_bigquery_direct') as mock_bq:
                 mock_bq.return_value = [
                     {"name": "event_id", "data_type": "STRING"},
                     {"name": "created_at", "data_type": "TIMESTAMP"}

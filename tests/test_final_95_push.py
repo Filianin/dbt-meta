@@ -6,7 +6,7 @@ Target remaining lines across all modules.
 
 import pytest
 
-from dbt_meta.commands import children, config, info, parents, schema
+from tests.helpers_cmd import children, config, info, parents, schema
 
 
 class TestSchemaEdgeCases:

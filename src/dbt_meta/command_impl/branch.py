@@ -47,7 +47,8 @@ class BranchCommand(BaseCommand):
 
     def process_model(self, model: dict, level: Optional[FallbackLevel] = None) -> dict:
         """Process model and generate branch analysis."""
-        from dbt_meta import commands
+        from dbt_meta.command_impl.children import ChildrenCommand
+        from dbt_meta.command_impl.parents import ParentsCommand
 
         # Get root model config
         config = model.get('config', {})
@@ -61,13 +62,10 @@ class BranchCommand(BaseCommand):
         # Analyze upstream models
         upstream_analysis = []
         try:
-            parents = commands.parents(
-                self.manifest_path,
-                self.model_name,
-                use_dev=False,
-                recursive=False,
-                json_output=True
-            )
+            parents = ParentsCommand(
+                self.config, self.manifest_path, self.model_name,
+                use_dev=False, json_output=True, recursive=False,
+            ).execute()
             if parents:
                 upstream_analysis = self._analyze_upstream(parents, root_filters, root_partition)
         except DbtMetaError:
@@ -76,13 +74,10 @@ class BranchCommand(BaseCommand):
         # Analyze downstream models
         downstream_analysis = []
         try:
-            children = commands.children(
-                self.manifest_path,
-                self.model_name,
-                use_dev=False,
-                recursive=False,
-                json_output=True
-            )
+            children = ChildrenCommand(
+                self.config, self.manifest_path, self.model_name,
+                use_dev=False, json_output=True, recursive=False,
+            ).execute()
             if children:
                 downstream_analysis = self._analyze_downstream(children, root_partition, root_cluster)
         except DbtMetaError:
@@ -122,7 +117,7 @@ class BranchCommand(BaseCommand):
         root_partition: Optional[str]
     ) -> list[dict]:
         """Analyze upstream models for optimization alignment."""
-        from dbt_meta import commands
+        from dbt_meta.command_impl.config import ConfigCommand
 
         results = []
 
@@ -135,12 +130,10 @@ class BranchCommand(BaseCommand):
 
             # Get parent config
             try:
-                parent_config = commands.config(
-                    self.manifest_path,
-                    parent_model,
-                    use_dev=False,
-                    json_output=True
-                )
+                parent_config = ConfigCommand(
+                    self.config, self.manifest_path, parent_model,
+                    use_dev=False, json_output=True,
+                ).execute()
             except DbtMetaError:
                 parent_config = {}
 
@@ -190,7 +183,7 @@ class BranchCommand(BaseCommand):
         root_cluster: list[str]
     ) -> list[dict]:
         """Analyze downstream models for filter pattern alignment."""
-        from dbt_meta import commands
+        from dbt_meta.command_impl.sql import SqlCommand
 
         results = []
 
@@ -203,12 +196,10 @@ class BranchCommand(BaseCommand):
 
             # Get child SQL to analyze filters
             try:
-                sql_result = commands.sql(
-                    self.manifest_path,
-                    child_model,
-                    use_dev=False,
-                    raw=False
-                )
+                sql_result = SqlCommand(
+                    self.config, self.manifest_path, child_model,
+                    use_dev=False, json_output=False, raw=False,
+                ).execute()
                 child_sql = sql_result if isinstance(sql_result, str) else ''
             except DbtMetaError:
                 child_sql = ''

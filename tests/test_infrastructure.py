@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from dbt_meta.commands import (
+from tests.helpers_cmd import (
     _check_manifest_git_mismatch,
     _print_warnings,
     children,
@@ -834,7 +834,7 @@ class TestCommandsWithJsonOutput:
     def test_schema_accepts_json_output_parameter(self, prod_manifest, test_model, mocker):
         """schema() should accept json_output parameter"""
         mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
-        mocker.patch('dbt_meta.commands._print_warnings')
+        mocker.patch('dbt_meta.command_impl.base._print_warnings')
 
         # Should not raise TypeError
         result = schema(str(prod_manifest), test_model,
@@ -844,7 +844,7 @@ class TestCommandsWithJsonOutput:
     def test_columns_accepts_json_output_parameter(self, prod_manifest, test_model, mocker):
         """columns() should accept json_output parameter"""
         mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
-        mocker.patch('dbt_meta.commands._print_warnings')
+        mocker.patch('dbt_meta.command_impl.base._print_warnings')
 
         result = columns(str(prod_manifest), test_model,
                         json_output=True)
@@ -853,7 +853,7 @@ class TestCommandsWithJsonOutput:
     def test_info_accepts_json_output_parameter(self, prod_manifest, test_model, mocker):
         """info() should accept json_output parameter"""
         mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
-        mocker.patch('dbt_meta.commands._print_warnings')
+        mocker.patch('dbt_meta.command_impl.base._print_warnings')
 
         result = info(str(prod_manifest), test_model,
                      json_output=True)
@@ -862,7 +862,7 @@ class TestCommandsWithJsonOutput:
     def test_config_accepts_json_output_parameter(self, prod_manifest, test_model, mocker):
         """config() should accept json_output parameter"""
         mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
-        mocker.patch('dbt_meta.commands._print_warnings')
+        mocker.patch('dbt_meta.command_impl.base._print_warnings')
 
         result = config(str(prod_manifest), test_model,
                        json_output=True)
@@ -871,7 +871,7 @@ class TestCommandsWithJsonOutput:
     def test_deps_accepts_json_output_parameter(self, prod_manifest, test_model, mocker):
         """deps() should accept json_output parameter"""
         mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
-        mocker.patch('dbt_meta.commands._print_warnings')
+        mocker.patch('dbt_meta.command_impl.base._print_warnings')
 
         result = deps(str(prod_manifest), test_model,
                      json_output=True)
@@ -880,7 +880,7 @@ class TestCommandsWithJsonOutput:
     def test_sql_accepts_json_output_parameter(self, prod_manifest, test_model, mocker):
         """sql() should accept json_output parameter"""
         mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
-        mocker.patch('dbt_meta.commands._print_warnings')
+        mocker.patch('dbt_meta.command_impl.base._print_warnings')
 
         result = sql(str(prod_manifest), test_model,
                     json_output=True)
@@ -889,7 +889,7 @@ class TestCommandsWithJsonOutput:
     def test_path_accepts_json_output_parameter(self, prod_manifest, test_model, mocker):
         """path() should accept json_output parameter"""
         mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
-        mocker.patch('dbt_meta.commands._print_warnings')
+        mocker.patch('dbt_meta.command_impl.base._print_warnings')
 
         result = path(str(prod_manifest), test_model,
                      json_output=True)
@@ -898,7 +898,7 @@ class TestCommandsWithJsonOutput:
     def test_docs_accepts_json_output_parameter(self, prod_manifest, test_model, mocker):
         """docs() should accept json_output parameter"""
         mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
-        mocker.patch('dbt_meta.commands._print_warnings')
+        mocker.patch('dbt_meta.command_impl.base._print_warnings')
 
         result = docs(str(prod_manifest), test_model,
                      json_output=True)
@@ -907,7 +907,7 @@ class TestCommandsWithJsonOutput:
     def test_parents_accepts_json_output_parameter(self, prod_manifest, test_model, mocker):
         """parents() should accept json_output parameter"""
         mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
-        mocker.patch('dbt_meta.commands._print_warnings')
+        mocker.patch('dbt_meta.command_impl.base._print_warnings')
 
         result = parents(str(prod_manifest), test_model,
                         json_output=True)
@@ -916,7 +916,7 @@ class TestCommandsWithJsonOutput:
     def test_children_accepts_json_output_parameter(self, prod_manifest, test_model, mocker):
         """children() should accept json_output parameter"""
         mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
-        mocker.patch('dbt_meta.commands._print_warnings')
+        mocker.patch('dbt_meta.command_impl.base._print_warnings')
 
         result = children(str(prod_manifest), test_model,
                          json_output=True)
@@ -1198,7 +1198,7 @@ class TestCombinedFlags:
         mocker.patch.dict(os.environ, {"DBT_DEV_MANIFEST_PATH": str(dev_manifest)})
 
         # Mock schema command to verify both flags are processed
-        mock_schema = mocker.patch("dbt_meta.commands.schema")
+        mock_schema = mocker.patch("dbt_meta.command_impl.schema.SchemaCommand.execute")
         mock_schema.return_value = {"database": "test", "schema": "personal_user", "table": "model", "full_name": "test.personal_user.model"}
 
         from typer.testing import CliRunner
@@ -1224,7 +1224,7 @@ class TestCombinedFlags:
 
         mocker.patch.dict(os.environ, {"DBT_DEV_MANIFEST_PATH": str(dev_manifest)})
 
-        mock_parents = mocker.patch("dbt_meta.commands.parents")
+        mock_parents = mocker.patch("dbt_meta.command_impl.parents.ParentsCommand.execute")
         mock_parents.return_value = ["parent1", "parent2"]
 
         from typer.testing import CliRunner
@@ -1246,7 +1246,7 @@ class TestCombinedFlags:
         manifest_path = tmp_path / "custom.json"
         manifest_path.write_text('{"metadata": {"dbt_version": "1.5.0"}, "nodes": {}}')
 
-        mock_schema = mocker.patch("dbt_meta.commands.schema")
+        mock_schema = mocker.patch("dbt_meta.command_impl.schema.SchemaCommand.execute")
         mock_schema.return_value = {"database": "test", "schema": "analytics", "table": "model", "full_name": "test.analytics.model"}
 
         from typer.testing import CliRunner
@@ -1271,7 +1271,7 @@ class TestCombinedFlags:
 
         mocker.patch.dict(os.environ, {"DBT_DEV_MANIFEST_PATH": str(dev_manifest)})
 
-        mock_columns = mocker.patch("dbt_meta.commands.columns")
+        mock_columns = mocker.patch("dbt_meta.command_impl.columns.ColumnsCommand.execute")
         mock_columns.return_value = [{"name": "id", "data_type": "INTEGER"}]
 
         from typer.testing import CliRunner
@@ -1328,158 +1328,81 @@ class TestGitWarningFormatting:
 class TestBigQueryMessageFormatting:
     """Test prod/dev table distinction in BigQuery fallback messages (v0.1.4)."""
 
-    @pytest.fixture
-    def mock_config(self):
-        """Mock Config with BigQuery enabled."""
-        from unittest.mock import Mock
-        config = Mock()
-        config.fallback_bigquery_enabled = True
-        config.prod_table_name_strategy = "alias_or_name"
-        config.prod_schema_source = "config_or_model"
-        config.dev_schema = "personal_test_user"
-        return config
-
-    def test_prod_table_message_shows_prod_table(self, mock_config, capsys):
+    def test_prod_table_message_shows_prod_table(self, capsys):
         """BigQuery fallback for prod should show 'prod table'."""
         from io import StringIO
         from unittest.mock import patch
-        from dbt_meta.command_impl.columns import ColumnsCommand
+        from dbt_meta.command_impl.column_source import BigQueryColumnSource
         from dbt_meta.utils.model_state import ModelState
 
-        cmd = ColumnsCommand(
-            config=mock_config,
-            manifest_path='/fake/manifest.json',
-            model_name='test_model',
-            use_dev=False
-        )
-
-        # Capture stderr
         with patch('sys.stderr', new_callable=StringIO) as mock_stderr:
-            cmd._print_result_message(
-                state=ModelState.MODIFIED_UNCOMMITTED,
-                column_count=5,
-                table='core_client.test_table',
-                is_dev_table=False
+            BigQueryColumnSource._print_result_message(
+                ModelState.MODIFIED_UNCOMMITTED, 5, 'core_client.test_table', is_dev=False
             )
-
             output = mock_stderr.getvalue()
 
-        # Should show "prod table"
         assert 'prod table' in output
         assert 'BigQuery (prod table: core_client.test_table)' in output
-
-        # Should NOT show "dev table"
         assert 'dev table' not in output
 
-    def test_dev_table_message_shows_dev_table(self, mock_config, capsys):
+    def test_dev_table_message_shows_dev_table(self, capsys):
         """BigQuery fallback for dev should show 'dev table'."""
         from io import StringIO
         from unittest.mock import patch
-        from dbt_meta.command_impl.columns import ColumnsCommand
+        from dbt_meta.command_impl.column_source import BigQueryColumnSource
         from dbt_meta.utils.model_state import ModelState
 
-        cmd = ColumnsCommand(
-            config=mock_config,
-            manifest_path='/fake/manifest.json',
-            model_name='test_model',
-            use_dev=True
-        )
-
         with patch('sys.stderr', new_callable=StringIO) as mock_stderr:
-            cmd._print_result_message(
-                state=ModelState.NEW_UNCOMMITTED,
-                column_count=3,
-                table='personal_test_user.test_model',
-                is_dev_table=True
+            BigQueryColumnSource._print_result_message(
+                ModelState.NEW_UNCOMMITTED, 3, 'personal_test_user.test_model', is_dev=True
             )
-
             output = mock_stderr.getvalue()
 
-        # Should show "dev table"
         assert 'dev table' in output
         assert 'BigQuery (dev table: personal_test_user.test_model)' in output
-
-        # Should NOT show "prod table"
         assert 'prod table' not in output
 
-    def test_prod_table_no_using_dev_version_warning(self, mock_config, capsys):
+    def test_prod_table_no_using_dev_version_warning(self, capsys):
         """Production table should NOT show 'Using dev version' warning."""
         from io import StringIO
         from unittest.mock import patch
-        from dbt_meta.command_impl.columns import ColumnsCommand
+        from dbt_meta.command_impl.column_source import BigQueryColumnSource
         from dbt_meta.utils.model_state import ModelState
 
-        cmd = ColumnsCommand(
-            config=mock_config,
-            manifest_path='/fake/manifest.json',
-            model_name='test_model',
-            use_dev=False
-        )
-
         with patch('sys.stderr', new_callable=StringIO) as mock_stderr:
-            cmd._print_result_message(
-                state=ModelState.MODIFIED_UNCOMMITTED,
-                column_count=5,
-                table='core_client.test_table',
-                is_dev_table=False  # Production table
+            BigQueryColumnSource._print_result_message(
+                ModelState.MODIFIED_UNCOMMITTED, 5, 'core_client.test_table', is_dev=False
             )
-
             output = mock_stderr.getvalue()
 
-        # Should NOT show "Using dev version" for production
         assert 'Using dev version' not in output
 
-    def test_dev_table_shows_using_dev_version_for_modified(self, mock_config, capsys):
+    def test_dev_table_shows_using_dev_version_for_modified(self, capsys):
         """Dev table should show 'Using dev version' for MODIFIED_UNCOMMITTED."""
         from io import StringIO
         from unittest.mock import patch
-        from dbt_meta.command_impl.columns import ColumnsCommand
+        from dbt_meta.command_impl.column_source import BigQueryColumnSource
         from dbt_meta.utils.model_state import ModelState
 
-        cmd = ColumnsCommand(
-            config=mock_config,
-            manifest_path='/fake/manifest.json',
-            model_name='test_model',
-            use_dev=True
-        )
-
         with patch('sys.stderr', new_callable=StringIO) as mock_stderr:
-            cmd._print_result_message(
-                state=ModelState.MODIFIED_UNCOMMITTED,
-                column_count=5,
-                table='personal_test_user.test_model',
-                is_dev_table=True  # Dev table
+            BigQueryColumnSource._print_result_message(
+                ModelState.MODIFIED_UNCOMMITTED, 5, 'personal_test_user.test_model', is_dev=True
             )
-
             output = mock_stderr.getvalue()
 
-        # Should show "Using dev version" for dev table
         assert 'Using dev version' in output
 
-    def test_dev_table_no_warning_for_new_models(self, mock_config, capsys):
+    def test_dev_table_no_warning_for_new_models(self, capsys):
         """Dev table should NOT show 'Using dev version' for NEW models."""
         from io import StringIO
         from unittest.mock import patch
-        from dbt_meta.command_impl.columns import ColumnsCommand
+        from dbt_meta.command_impl.column_source import BigQueryColumnSource
         from dbt_meta.utils.model_state import ModelState
 
-        cmd = ColumnsCommand(
-            config=mock_config,
-            manifest_path='/fake/manifest.json',
-            model_name='test_model',
-            use_dev=True
-        )
-
         with patch('sys.stderr', new_callable=StringIO) as mock_stderr:
-            cmd._print_result_message(
-                state=ModelState.NEW_UNCOMMITTED,
-                column_count=3,
-                table='personal_test_user.new_model',
-                is_dev_table=True
+            BigQueryColumnSource._print_result_message(
+                ModelState.NEW_UNCOMMITTED, 3, 'personal_test_user.new_model', is_dev=True
             )
-
             output = mock_stderr.getvalue()
 
-        # NEW models don't need "Using dev version" warning
-        # (no committed version exists)
         assert 'Using dev version' not in output

@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from dbt_meta.commands import scan, validate
+from tests.helpers_cmd import scan, validate
 
 
 class TestValidateCommand:

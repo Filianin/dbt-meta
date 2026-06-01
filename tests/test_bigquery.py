@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from dbt_meta.commands import path
+from tests.helpers_cmd import path
 from dbt_meta.utils.bigquery import (
     _should_retry,
     fetch_columns_from_bigquery_direct,

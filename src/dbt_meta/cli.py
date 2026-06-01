@@ -18,7 +18,25 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.tree import Tree
 
-from dbt_meta import commands
+from dbt_meta.command_impl.analyze import AnalyzeCommand
+from dbt_meta.command_impl.branch import BranchCommand
+from dbt_meta.command_impl.children import ChildrenCommand
+from dbt_meta.command_impl.columns import ColumnsCommand
+from dbt_meta.command_impl.config import ConfigCommand
+from dbt_meta.command_impl.deps import DepsCommand
+from dbt_meta.command_impl.docs import DocsCommand
+from dbt_meta.command_impl.hotspots import HotspotsCommand
+from dbt_meta.command_impl.info import InfoCommand
+from dbt_meta.command_impl.ls import ListModelsCommand, LsCommand
+from dbt_meta.command_impl.parents import ParentsCommand
+from dbt_meta.command_impl.path import PathCommand
+from dbt_meta.command_impl.powerbi import PowerBiCommand
+from dbt_meta.command_impl.refresh import RefreshCommand
+from dbt_meta.command_impl.scan import ScanCommand
+from dbt_meta.command_impl.schema import SchemaCommand
+from dbt_meta.command_impl.search import SearchCommand
+from dbt_meta.command_impl.sql import SqlCommand
+from dbt_meta.command_impl.validate import ValidateCommand
 from dbt_meta.config import Config
 from dbt_meta.errors import DbtMetaError
 from dbt_meta.manifest.finder import ManifestFinder
@@ -720,7 +738,7 @@ def info(
     """
     try:
         manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-        result = commands.info(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
+        result = InfoCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output).execute()
 
         if not result:
             _not_found_error(model_name, json_output)
@@ -764,7 +782,7 @@ def schema(
     """
     try:
         manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-        result = commands.schema(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
+        result = SchemaCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output).execute()
 
         if not result or not result.get('full_name'):
             _not_found_error(model_name, json_output)
@@ -798,7 +816,7 @@ def columns(
     """
     try:
         manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-        result = commands.columns(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
+        result = ColumnsCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output).execute()
 
         if not result:
             _not_found_error(model_name, json_output)
@@ -837,7 +855,7 @@ def config(
     """
     try:
         manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-        result = commands.config(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
+        result = ConfigCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output).execute()
 
         if result is None:
             _not_found_error(model_name, json_output)
@@ -876,7 +894,7 @@ def deps(
     """
     try:
         manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-        result = commands.deps(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
+        result = DepsCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output).execute()
 
         if result is None:
             _not_found_error(model_name, json_output)
@@ -940,7 +958,7 @@ def sql(
         # manifest has it. ``jinja`` mode is exempt (it reads raw SQL).
         if not jinja:
             _preflight_compiled_sql_by_path(manifest_path, manifest, no_compile, json_output)
-        result = commands.sql(manifest_path, model_name, use_dev=effective_use_dev, raw=jinja, json_output=json_output)
+        result = SqlCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output, raw=jinja).execute()
 
         if result is None:
             _not_found_error(model_name, json_output)
@@ -979,7 +997,7 @@ def validate(
     try:
         manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
         _preflight_compiled_sql_by_path(manifest_path, manifest, no_compile, json_output)
-        result = commands.validate(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
+        result = ValidateCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output).execute()
 
         if result is None:
             _not_found_error(model_name, json_output)
@@ -1014,7 +1032,7 @@ def scan(
     try:
         manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
         _preflight_compiled_sql_by_path(manifest_path, manifest, no_compile, json_output)
-        result = commands.scan(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
+        result = ScanCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output).execute()
 
         if result is None:
             _not_found_error(model_name, json_output)
@@ -1056,7 +1074,7 @@ def path(
     """
     try:
         manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-        result = commands.path(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
+        result = PathCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output).execute()
 
         if result is None:
             _not_found_error(model_name, json_output)
@@ -1087,7 +1105,7 @@ def models_cmd(
     """
     try:
         manifest_path, _ = get_manifest_path(manifest)
-        result = commands.list_models(manifest_path, pattern)
+        result = ListModelsCommand(manifest_path, pattern).execute()
 
         if json_output:
             print(json.dumps(result, indent=2))
@@ -1123,7 +1141,7 @@ def search(
     """
     try:
         manifest_path, _ = get_manifest_path(manifest)
-        result = commands.search(manifest_path, query)
+        result = SearchCommand(manifest_path, query).execute()
 
         if json_output:
             print(json.dumps(result, indent=2))
@@ -1197,15 +1215,15 @@ def list_cmd(
         manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
         selector_list = list(selectors) if selectors else None
 
-        result = commands.ls(
+        result = LsCommand(
             manifest_path,
             selectors=selector_list,
             modified=modified,
             and_logic=and_logic,
             group=group,
             use_dev=effective_use_dev,
-            json_output=json_output
-        )
+            json_output=json_output,
+        ).execute()
 
         # Check for empty results (handles both list and dict formats)
         is_empty = (
@@ -1258,7 +1276,7 @@ def parents(
     """
     try:
         manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-        result = commands.parents(manifest_path, model_name, use_dev=effective_use_dev, recursive=all_ancestors, json_output=json_output)
+        result = ParentsCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output, recursive=all_ancestors).execute()
 
         if result is None:
             _not_found_error(model_name, json_output)
@@ -1307,7 +1325,7 @@ def children(
     """
     try:
         manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-        result = commands.children(manifest_path, model_name, use_dev=effective_use_dev, recursive=all_descendants, json_output=json_output)
+        result = ChildrenCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output, recursive=all_descendants).execute()
 
         if result is None:
             _not_found_error(model_name, json_output)
@@ -1361,7 +1379,7 @@ def refresh(
       meta refresh --dev        # Parse local project (dev mode)
     """
     try:
-        commands.refresh(use_dev=dev)
+        RefreshCommand(use_dev=dev).execute()
         console.print("[green]✅ Artifacts refreshed successfully[/green]")
     except DbtMetaError as e:
         handle_error(e)
@@ -1386,7 +1404,7 @@ def docs(
     """
     try:
         manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-        result = commands.docs(manifest_path, model_name, use_dev=effective_use_dev, json_output=json_output)
+        result = DocsCommand(manifest_path, model_name, effective_use_dev, json_output).execute()
 
         if not result:
             _not_found_error(model_name, json_output)
@@ -1434,7 +1452,7 @@ def analyze(
     """
     try:
         manifest_path, _ = get_manifest_path(manifest, False)
-        result = commands.analyze(manifest_path, model_name, use_dev=False, json_output=json_output)
+        result = AnalyzeCommand(Config.from_config_or_env(), manifest_path, model_name, False, json_output).execute()
 
         if result is None:
             _not_found_error(model_name, json_output)
@@ -1534,7 +1552,7 @@ def hotspots(
     """
     try:
         manifest_path, _ = get_manifest_path(manifest, False)
-        result = commands.hotspots(manifest_path, limit=limit, min_gb=min_gb, json_output=json_output)
+        result = HotspotsCommand(Config.from_config_or_env(), manifest_path, limit, min_gb, json_output).execute()
 
         if json_output:
             print(json.dumps(result, indent=2))
@@ -1685,7 +1703,7 @@ def branch(
         # heavily degraded (no filter analysis), so apply the same
         # pre-flight as the optimize advisors.
         _preflight_compiled_sql_by_path(manifest_path, manifest, no_compile, json_output)
-        result = commands.branch(manifest_path, model_name, use_dev=False, json_output=json_output)
+        result = BranchCommand(Config.from_config_or_env(), manifest_path, model_name, False, json_output).execute()
 
         if result is None:
             _not_found_error(model_name, json_output)
@@ -1819,7 +1837,8 @@ def powerbi(
     """
     try:
         manifest_path, _ = get_manifest_path(manifest, False)
-        result = commands.powerbi(
+        result = PowerBiCommand(
+            Config.from_config_or_env(),
             manifest_path,
             workspace_id=workspace_id,
             json_output=json_output,
@@ -1827,7 +1846,7 @@ def powerbi(
             show_columns=columns,
             show_full=full,
             by_table=by_table,
-        )
+        ).execute()
 
         if json_output:
             print(json.dumps(result, indent=2))
