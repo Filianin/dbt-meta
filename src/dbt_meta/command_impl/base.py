@@ -36,7 +36,7 @@ class BaseCommand(ABC):
     - SUPPORTS_DEV: Class attribute indicating dev mode support
 
     Example:
-        class InfoCommand(BaseCommand):
+        class ContextCommand(BaseCommand):
             SUPPORTS_BIGQUERY = True
             SUPPORTS_DEV = True
 

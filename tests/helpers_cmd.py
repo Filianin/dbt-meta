@@ -7,10 +7,8 @@ from dbt_meta.command_impl.branch import BranchCommand
 from dbt_meta.command_impl.children import ChildrenCommand
 from dbt_meta.command_impl.columns import ColumnsCommand
 from dbt_meta.command_impl.config import ConfigCommand
-from dbt_meta.command_impl.deps import DepsCommand
 from dbt_meta.command_impl.docs import DocsCommand
 from dbt_meta.command_impl.hotspots import HotspotsCommand
-from dbt_meta.command_impl.info import InfoCommand
 from dbt_meta.command_impl.ls import ListModelsCommand, LsCommand
 from dbt_meta.command_impl.parents import ParentsCommand
 from dbt_meta.command_impl.path import PathCommand
@@ -32,10 +30,6 @@ def _cfg() -> Config:
         return Config.from_env()
 
 
-def info(manifest_path, model_name, use_dev=False, json_output=False):
-    return InfoCommand(_cfg(), manifest_path, model_name, use_dev, json_output).execute()
-
-
 def schema(manifest_path, model_name, use_dev=False, json_output=False):
     return SchemaCommand(_cfg(), manifest_path, model_name, use_dev, json_output).execute()
 
@@ -46,10 +40,6 @@ def columns(manifest_path, model_name, use_dev=False, json_output=False):
 
 def config(manifest_path, model_name, use_dev=False, json_output=False):
     return ConfigCommand(_cfg(), manifest_path, model_name, use_dev, json_output).execute()
-
-
-def deps(manifest_path, model_name, use_dev=False, json_output=False):
-    return DepsCommand(_cfg(), manifest_path, model_name, use_dev, json_output).execute()
 
 
 def sql(manifest_path, model_name, use_dev=False, json_output=False, raw=False):

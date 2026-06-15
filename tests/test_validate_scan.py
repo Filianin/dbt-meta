@@ -102,6 +102,61 @@ class TestValidateCommand:
         assert result['valid'] is False
         assert 'No compiled SQL' in result['error']
 
+    def test_validate_dev_uses_dev_manifest_sql(self, tmp_path, monkeypatch):
+        """--dev uses compiled SQL from dev manifest (dev schema refs), not prod."""
+        prod_manifest = tmp_path / "prod_manifest.json"
+        prod_manifest.write_text(json.dumps({
+            "nodes": {
+                "model.test.my_model": {
+                    "name": "my_model",
+                    "compiled_code": "SELECT * FROM core.demo_trade_stats",  # prod ref
+                    "original_file_path": "models/my_model.sql",
+                    "schema": "core",
+                    "database": "project",
+                    "config": {}
+                }
+            }
+        }))
+
+        # Dev manifest with compiled SQL referencing dev schema
+        dev_dir = tmp_path / "project" / "target"
+        dev_dir.mkdir(parents=True)
+        dev_manifest = dev_dir / "manifest.json"
+        dev_manifest.write_text(json.dumps({
+            "nodes": {
+                "model.test.my_model": {
+                    "name": "my_model",
+                    "compiled_code": "SELECT * FROM personal_user.demo_trade_stats",  # dev ref
+                    "original_file_path": "models/my_model.sql",
+                    "schema": "personal_user",
+                    "database": "project",
+                    "config": {}
+                }
+            }
+        }))
+
+        monkeypatch.setenv('DBT_PROD_MANIFEST_PATH', str(prod_manifest))
+        monkeypatch.setenv('DBT_DEV_MANIFEST_PATH', str(dev_manifest))
+        monkeypatch.setenv('DBT_FALLBACK_TARGET', 'true')
+        monkeypatch.chdir(tmp_path / "project")
+
+        captured_sql = []
+
+        def capture_dry_run(sql):
+            captured_sql.append(sql)
+            return {'valid': True, 'bytes_processed': 0}
+
+        with patch('dbt_meta.config.Config.find_config_file', return_value=None), \
+             patch('dbt_meta.command_impl.validate.run_dry_run_query', side_effect=capture_dry_run):
+            result = validate(str(prod_manifest), 'my_model', use_dev=True, json_output=False)
+
+        assert result is not None
+        assert result['valid'] is True
+        # Must use dev SQL (personal_user), not prod SQL (core)
+        assert len(captured_sql) == 1
+        assert 'personal_user' in captured_sql[0]
+        assert 'core' not in captured_sql[0]
+
     def test_validate_model_not_found(self, tmp_path, monkeypatch, capsys):
         """Non-existent model returns None with error message."""
         manifest = tmp_path / "manifest.json"

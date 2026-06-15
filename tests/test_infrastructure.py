@@ -24,9 +24,7 @@ from tests.helpers_cmd import (
     children,
     columns,
     config,
-    deps,
     docs,
-    info,
     parents,
     path,
     schema,
@@ -366,23 +364,6 @@ class TestManifestParser:
         for model in results:
             assert 'unique_id' in model
             assert 'client' in model['unique_id'].lower()
-
-    def test_get_model_dependencies(self, prod_manifest, test_model):
-        """
-        Should extract model dependencies (refs and sources)
-
-        Returns: {"refs": [...], "sources": [...]}
-        """
-        parser = ManifestParser(str(prod_manifest))
-
-        model_name = test_model
-        deps = parser.get_dependencies(model_name)
-
-        assert isinstance(deps, dict)
-        assert 'refs' in deps
-        assert 'sources' in deps
-        assert isinstance(deps['refs'], list)
-        assert isinstance(deps['sources'], list)
 
 # ============================================================================
 # SECTION 3: Warning System Tests
@@ -850,15 +831,6 @@ class TestCommandsWithJsonOutput:
                         json_output=True)
         assert result is not None
 
-    def test_info_accepts_json_output_parameter(self, prod_manifest, test_model, mocker):
-        """info() should accept json_output parameter"""
-        mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
-        mocker.patch('dbt_meta.command_impl.base._print_warnings')
-
-        result = info(str(prod_manifest), test_model,
-                     json_output=True)
-        assert result is not None
-
     def test_config_accepts_json_output_parameter(self, prod_manifest, test_model, mocker):
         """config() should accept json_output parameter"""
         mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
@@ -866,15 +838,6 @@ class TestCommandsWithJsonOutput:
 
         result = config(str(prod_manifest), test_model,
                        json_output=True)
-        assert result is not None
-
-    def test_deps_accepts_json_output_parameter(self, prod_manifest, test_model, mocker):
-        """deps() should accept json_output parameter"""
-        mocker.patch('dbt_meta.utils.git.is_modified', return_value=False)
-        mocker.patch('dbt_meta.command_impl.base._print_warnings')
-
-        result = deps(str(prod_manifest), test_model,
-                     json_output=True)
         assert result is not None
 
     def test_sql_accepts_json_output_parameter(self, prod_manifest, test_model, mocker):
@@ -957,16 +920,6 @@ class TestWarningsWithCommands:
 
         columns(str(prod_manifest), test_model,
                use_dev=False, json_output=True)
-
-        assert mock_print_warnings.called
-
-    def test_info_calls_git_check_and_prints_warnings(self, prod_manifest, test_model, mocker):
-        """info() should check git and print warnings"""
-        mocker.patch('dbt_meta.utils.git.is_modified', return_value=True)
-        mock_print_warnings = mocker.patch('dbt_meta.command_impl.base._print_warnings')
-
-        info(str(prod_manifest), test_model,
-            use_dev=False, json_output=True)
 
         assert mock_print_warnings.called
 

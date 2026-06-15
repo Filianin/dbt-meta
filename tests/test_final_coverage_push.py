@@ -1,7 +1,6 @@
 """Final coverage push - target remaining gaps to reach 95%.
 
 Focus on uncovered lines in:
-- deps.py (lines 50-54, 70)
 - model_state.py (lines 138, 159-163)
 - git.py (lines 188-202, 271-279, 293-296, 380, 409-413)
 - columns.py, schema.py, base.py edge cases
@@ -14,26 +13,6 @@ import pytest
 
 from dbt_meta.utils.git import GitStatus, _find_sql_file_fast
 from dbt_meta.utils.model_state import ModelState, detect_model_state
-
-
-class TestDepsEdgeCases:
-    """Cover deps.py lines 50-54, 70."""
-
-    def test_deps_model_not_found_returns_empty_dict(self, tmp_path, monkeypatch):
-        """Test deps command returns empty dict when model not found."""
-        from tests.helpers_cmd import deps
-
-        # Empty manifests
-        prod_manifest = tmp_path / "manifest.json"
-        prod_manifest.write_text('{"metadata": {}, "nodes": {}}')
-
-        monkeypatch.setenv('DBT_FALLBACK_TARGET', 'false')
-        monkeypatch.setenv('DBT_FALLBACK_BIGQUERY', 'false')
-
-        result = deps(str(prod_manifest), 'nonexistent_model', use_dev=False, json_output=False)
-
-        # Should return empty dict (refs and sources lists) for nonexistent model
-        assert result == {'refs': [], 'sources': []}
 
 
 class TestModelStateEdgeCases:

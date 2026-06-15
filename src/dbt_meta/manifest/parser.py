@@ -7,7 +7,7 @@ for lazy loading and optimal performance.
 
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 import orjson
 
@@ -51,7 +51,7 @@ class ManifestParser:
 
         try:
             with open(manifest_file, 'rb') as f:
-                return orjson.loads(f.read())
+                return cast("dict[str, Any]", orjson.loads(f.read()))
         except orjson.JSONDecodeError as e:
             raise ManifestParseError(
                 path=self.manifest_path,
@@ -81,7 +81,7 @@ class ManifestParser:
 
             # Exact match required
             if uid_model_name == model_name:
-                return node
+                return cast("dict[str, Any]", node)
 
         return None
 
@@ -119,35 +119,3 @@ class ManifestParser:
             for unique_id, model in models.items()
             if pattern_lower in unique_id.lower()
         ]
-
-    def get_dependencies(self, model_name: str) -> dict[str, list[str]]:
-        """
-        Get model dependencies (refs and sources)
-
-        Args:
-            model_name: Model name
-
-        Returns:
-            Dictionary with 'refs' and 'sources' lists
-        """
-        model = self.get_model(model_name)
-
-        if not model:
-            return {'refs': [], 'sources': []}
-
-        # Extract refs from depends_on
-        depends_on = model.get('depends_on', {})
-        refs = [
-            node for node in depends_on.get('nodes', [])
-            if node.startswith('model.')
-        ]
-
-        sources = [
-            node for node in depends_on.get('nodes', [])
-            if node.startswith('source.')
-        ]
-
-        return {
-            'refs': refs,
-            'sources': sources
-        }

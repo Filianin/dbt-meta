@@ -23,10 +23,8 @@ from dbt_meta.command_impl.branch import BranchCommand
 from dbt_meta.command_impl.children import ChildrenCommand
 from dbt_meta.command_impl.columns import ColumnsCommand
 from dbt_meta.command_impl.config import ConfigCommand
-from dbt_meta.command_impl.deps import DepsCommand
-from dbt_meta.command_impl.docs import DocsCommand
+from dbt_meta.command_impl.context import ContextCommand
 from dbt_meta.command_impl.hotspots import HotspotsCommand
-from dbt_meta.command_impl.info import InfoCommand
 from dbt_meta.command_impl.ls import ListModelsCommand, LsCommand
 from dbt_meta.command_impl.parents import ParentsCommand
 from dbt_meta.command_impl.path import PathCommand
@@ -146,13 +144,11 @@ def _build_commands_panel() -> Panel:
 
     # Core commands (green)
     table.add_row("[bold green]Core:[/bold green]", "")
-    table.add_row("  [green]info[/green]", "Model summary (name, schema, table, materialization, tags)")
     table.add_row("  [green]schema[/green]", "BigQuery table name (--dev for dev schema)")
     table.add_row("  [green]path[/green]", "Relative file path to .sql file")
     table.add_row("  [green]columns[/green]", "Column names and types (--dev for dev schema)")
     table.add_row("  [green]sql[/green]", "Compiled SQL (default) or raw SQL with --jinja")
-    table.add_row("  [green]docs[/green]", "Column names, types, and descriptions")
-    table.add_row("  [green]deps[/green]", "Dependencies by type (refs, sources, macros)")
+    table.add_row("  [green]context[/green]", "Full queryable-shape bundle (1+ models) before a BigQuery query")
     table.add_row("  [green]parents[/green]", "Upstream dependencies (direct or -a/--all ancestors)")
     table.add_row("  [green]children[/green]", "Downstream dependencies (direct or -a/--all descendants)")
     table.add_row("  [green]config[/green]", "Full dbt config (29 fields: partition_by, cluster_by, etc.)")
@@ -253,8 +249,8 @@ def _build_examples_panel() -> Panel:
     table.add_row("  meta schema customers", "my_project.analytics.customers")
     table.add_row("  meta path customers", "models/analytics/customers.sql")
     table.add_row("  meta columns -j orders", "Get columns as JSON")
-    table.add_row("  meta docs customers", "Columns with descriptions")
     table.add_row("  meta config -j customers", "Full dbt config")
+    table.add_row("  meta context -j customers", "Full queryable-shape bundle")
     table.add_row("  meta sql customers", "View compiled SQL")
     table.add_row("  meta sql --jinja customers", "Raw SQL with Jinja")
     table.add_row('  meta search "customer"', "Search by name/description")
@@ -263,7 +259,6 @@ def _build_examples_panel() -> Panel:
     table.add_row("  meta parents customers", "Direct upstream dependencies")
     table.add_row("  meta parents -a customers", "All ancestors (tree view)")
     table.add_row("  meta children -a -j customers", "All descendants as nested JSON")
-    table.add_row("  meta deps -j customers", "Refs + sources + macros")
     table.add_row("", "")
     table.add_row("[bold]Dev workflow (with defer):[/bold]", "")
     table.add_row("  defer run --select customers", "Build dev table first")
@@ -723,50 +718,6 @@ def handle_command_output(
 
 
 @app.command()
-def info(
-    model_name: str = typer.Argument(..., help="Model name (e.g., core_client__events)"),
-    json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
-    use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
-) -> None:
-    """
-    Model summary (name, schema, table, materialization, tags)
-
-    Examples:
-        meta info -j customers               # Production
-        meta info --dev -j customers         # Dev (personal_USERNAME)
-    """
-    try:
-        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-        result = InfoCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output).execute()
-
-        if not result:
-            _not_found_error(model_name, json_output)
-
-        if json_output:
-            print(json.dumps(result, indent=2))
-        else:
-            # Rich table output with blank line first
-            print()
-            table = Table(title=f"[bold green not italic]Model: {result['name']}[/bold green not italic]", show_header=False)
-            table.add_column("Field", style=STYLE_COMMAND, no_wrap=True)
-            table.add_column("Value", style="white")
-
-            table.add_row("Database:", result['database'])
-            table.add_row("Schema:", result['schema'])
-            table.add_row("Table:", result['table'])
-            table.add_row("Full Name:", result['full_name'])
-            table.add_row("Materialized:", result['materialized'])
-            table.add_row("File:", result['file'])
-            table.add_row("Tags:", ', '.join(result['tags']) if result['tags'] else '(none)')
-
-            console.print(table)
-
-    except DbtMetaError as e:
-        handle_error(e, json_output)
-
-
-@app.command()
 def schema(
     model_name: str = typer.Argument(..., help="Model name"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
@@ -873,63 +824,6 @@ def config(
                 table.add_row(key, str(value))
 
             console.print(table)
-
-    except DbtMetaError as e:
-        handle_error(e, json_output)
-
-
-@app.command()
-def deps(
-    model_name: str = typer.Argument(..., help="Model name"),
-    json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
-    use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
-) -> None:
-    """
-    Dependencies by type (refs, sources, macros)
-
-    Examples:
-        meta deps -j model_name              # Production
-        meta deps --dev -j model_name        # Dev (personal_USERNAME)
-    """
-    try:
-        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-        result = DepsCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output).execute()
-
-        if result is None:
-            _not_found_error(model_name, json_output)
-
-        if json_output:
-            print(json.dumps(result, indent=2))
-        else:
-            # Rich table output with blank line first
-            print()
-
-            # Refs table
-            if result['refs']:
-                table_refs = Table(title=f"[bold green not italic]Refs ({len(result['refs'])})[/bold green not italic]", header_style="bold green")
-                table_refs.add_column("Ref", style=STYLE_COMMAND)
-                for ref in result['refs']:
-                    table_refs.add_row(ref)
-                console.print(table_refs)
-                print()
-
-            # Sources table
-            if result['sources']:
-                table_sources = Table(title=f"[bold green not italic]Sources ({len(result['sources'])})[/bold green not italic]", header_style="bold green")
-                table_sources.add_column("Source", style=STYLE_COMMAND)
-                for source in result['sources']:
-                    table_sources.add_row(source)
-                console.print(table_sources)
-                print()
-
-            # Macros table
-            if result.get('macros'):
-                table_macros = Table(title=f"[bold green not italic]Macros ({len(result.get('macros', []))})[/bold green not italic]", header_style="bold green")
-                table_macros.add_column("Macro", style=STYLE_COMMAND)
-                for macro in result.get('macros', []):
-                    table_macros.add_row(macro)
-                console.print(table_macros)
 
     except DbtMetaError as e:
         handle_error(e, json_output)
@@ -1388,45 +1282,98 @@ def refresh(
         raise typer.Exit(code=1) from None
 
 
+def _format_size(num_bytes: int) -> str:
+    """Human-readable byte size (KB/MB/GB/TB), binary units. JSON keeps raw bytes."""
+    size = float(num_bytes)
+    for unit in ('B', 'KB', 'MB', 'GB', 'TB'):
+        if abs(size) < 1024.0 or unit == 'TB':
+            return f"{size:.0f} {unit}" if unit == 'B' else f"{size:.2f} {unit}"
+        size /= 1024.0
+    return f"{size:.2f} TB"
+
+
 @app.command()
-def docs(
-    model_name: str = typer.Argument(..., help="Model name"),
+def context(
+    model_names: list[str] = typer.Argument(..., help="One or more model names"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
     use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev schema (personal_*)"),
 ) -> None:
     """
-    Column names, types, and descriptions
+    Full queryable-shape bundle for one or more models (one call before BigQuery)
+
+    Bundles FQN, materialization, partition/cluster/unique_key, row_count/bytes,
+    table description, and columns (type + description) so you can write a precise
+    query without exploratory SELECT */DISTINCT/COUNT probes. Output is always a
+    JSON object keyed by model name; not-found models become null + a warning.
 
     Examples:
-        meta docs customers              # Production
-        meta docs --dev customers        # Dev (personal_USERNAME)
+        meta context -j core_client__events                 # single, keyed
+        meta context -j model_a model_b model_c             # batch in one JSON
+        meta context --dev -j customers                     # dev schema
     """
     try:
         manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-        result = DocsCommand(manifest_path, model_name, effective_use_dev, json_output).execute()
 
-        if not result:
-            _not_found_error(model_name, json_output)
+        # Dedup preserving order.
+        ordered_names = list(dict.fromkeys(model_names))
+
+        results: dict[str, Optional[dict]] = {}
+        for name in ordered_names:
+            bundle = ContextCommand(
+                Config.from_config_or_env(), manifest_path, name, effective_use_dev, json_output
+            ).execute()
+            results[name] = bundle
+            if bundle is None and not json_output:
+                console.print(f"[{STYLE_ERROR}]Model not found:[/{STYLE_ERROR}] {name}")
 
         if json_output:
-            print(json.dumps(result, indent=2))
+            print(json.dumps(results, indent=2))
         else:
-            # Rich table output with blank line first
-            print()
-            table = Table(title=f"[bold green not italic]Column Documentation: {model_name}[/bold green not italic]", header_style="bold green")
-            table.add_column("Name", style=STYLE_COMMAND, no_wrap=True)
-            table.add_column("Type", style="white")
-            table.add_column("Description", style=STYLE_DESCRIPTION)
-
-            for col in result:
-                desc = col.get('description', '') or "(no description)"
-                table.add_row(col['name'], col['data_type'], desc)
-
-            console.print(table)
+            for bundle in results.values():
+                if bundle is None:
+                    continue
+                _render_context_bundle(bundle)
 
     except DbtMetaError as e:
         handle_error(e, json_output)
+
+
+def _render_context_bundle(bundle: dict) -> None:
+    """Render a single context bundle as Rich tables (header + columns)."""
+    print()
+    header = Table(
+        title=f"[bold green not italic]Context: {bundle['name']}[/bold green not italic]",
+        show_header=False,
+    )
+    header.add_column("Field", style=STYLE_COMMAND, no_wrap=True)
+    header.add_column("Value", style="white")
+
+    header.add_row("Full Name:", bundle['full_name'])
+    header.add_row("Materialized:", bundle['materialized'])
+    if bundle.get('description'):
+        header.add_row("Description:", bundle['description'])
+    header.add_row("Partition By:", str(bundle.get('partition_by') or '(none)'))
+    cluster_by = bundle.get('cluster_by')
+    header.add_row("Cluster By:", ', '.join(cluster_by) if cluster_by else '(none)')
+    unique_key = bundle.get('unique_key')
+    if isinstance(unique_key, list):
+        unique_key = ', '.join(unique_key)
+    header.add_row("Unique Key:", str(unique_key or '(none)'))
+    row_count = bundle.get('row_count')
+    header.add_row("Rows:", f"{row_count:,}" if isinstance(row_count, int) else '(unknown)')
+    byte_size = bundle.get('bytes')
+    header.add_row("Size:", _format_size(byte_size) if isinstance(byte_size, int) else '(unknown)')
+    header.add_row("Tags:", ', '.join(bundle['tags']) if bundle.get('tags') else '(none)')
+    console.print(header)
+
+    cols = Table(show_header=True, header_style="bold green")
+    cols.add_column("Name", style=STYLE_COMMAND, no_wrap=True)
+    cols.add_column("Type", style="white")
+    cols.add_column("Description", style=STYLE_DESCRIPTION)
+    for col in bundle.get('columns', []):
+        cols.add_row(col['name'], col.get('data_type', ''), col.get('description', '') or "(no description)")
+    console.print(cols)
 
 
 # =============================================================================

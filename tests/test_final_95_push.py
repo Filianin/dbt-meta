@@ -6,7 +6,7 @@ Target remaining lines across all modules.
 
 import pytest
 
-from tests.helpers_cmd import children, config, info, parents, schema
+from tests.helpers_cmd import children, config, parents, schema
 
 
 class TestSchemaEdgeCases:
@@ -99,26 +99,7 @@ class TestBaseCommandEdgeCases:
 
 
 class TestInfoConfigEdgeCases:
-    """Cover info.py and config.py edge cases."""
-
-    def test_info_json_output(self, enable_fallbacks, prod_manifest):
-        """Test info command with JSON output (line 117)."""
-        from dbt_meta.manifest.parser import ManifestParser
-
-        parser = ManifestParser(str(prod_manifest))
-        nodes = parser.manifest.get('nodes', {})
-
-        # Find a model
-        for node_id, node_data in nodes.items():
-            if node_data.get('resource_type') == 'model':
-                model_name = node_id.split('.')[-1]
-
-                result = info(str(prod_manifest), model_name, use_dev=False, json_output=True)
-
-                # Should return dict
-                if result:
-                    assert isinstance(result, dict)
-                    break
+    """Cover config.py edge cases."""
 
     def test_config_json_output(self, enable_fallbacks, prod_manifest):
         """Test config command with JSON output (line 75)."""

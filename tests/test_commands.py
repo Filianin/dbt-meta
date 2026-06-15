@@ -3,7 +3,7 @@ Tests for Commands - All command functionality
 
 This module consolidates all command tests:
 - Core commands: info, schema, columns
-- Advanced commands: config, deps, sql, docs, path, parents, children
+- Advanced commands: config, sql, docs, path, parents, children
 - Utilities: list, search, node, refresh
 - Dev mode: --dev flag with dev manifest priority
 - Fallback systems: production → dev → BigQuery
@@ -23,9 +23,7 @@ from tests.helpers_cmd import (
     children,
     columns,
     config,
-    deps,
     docs,
-    info,
     list_models,
     ls,
     parents,
@@ -35,45 +33,6 @@ from tests.helpers_cmd import (
     search,
     sql,
 )
-
-
-class TestInfoCommand:
-    """Test info command - basic model metadata"""
-
-
-    def test_info_nonexistent_model_returns_none(self, prod_manifest):
-        """
-        Should return None for non-existent model
-
-        Graceful error handling without exceptions.
-        """
-        result = info(str(prod_manifest), "nonexistent__model")
-
-        assert result is None
-
-    def test_info_extracts_materialized_type(self, prod_manifest, test_model):
-        """
-        Should extract materialization type from config
-
-        Common types: table, view, incremental, ephemeral
-        """
-        model_name = test_model  # Use fixture
-        result = info(str(prod_manifest), model_name)
-
-        assert 'materialized' in result
-        assert result['materialized'] in ['table', 'view', 'incremental', 'ephemeral']
-
-    def test_info_extracts_tags(self, prod_manifest, test_model):
-        """
-        Should extract tags as list
-
-        Empty list if no tags.
-        """
-        model_name = test_model  # Use fixture
-        result = info(str(prod_manifest), model_name)
-
-        assert 'tags' in result
-        assert isinstance(result['tags'], list)
 
 
 class TestSchemaCommand:
@@ -312,63 +271,6 @@ class TestConfigCommand:
         assert 'partition_by' in result
         # Partition config is a dict or None
         assert result['partition_by'] is None or isinstance(result['partition_by'], dict)
-
-
-class TestDepsCommand:
-    """Test deps command - model dependencies"""
-
-    def test_deps_returns_dict_with_refs_sources(self, prod_manifest, test_model):
-        """
-        Should return dictionary with refs and sources
-
-        Format: {"refs": [...], "sources": [...]}
-        """
-        model_name = test_model  # Use fixture
-        result = deps(str(prod_manifest), model_name)
-
-        assert isinstance(result, dict)
-        assert 'refs' in result
-        assert 'sources' in result
-        assert isinstance(result['refs'], list)
-        assert isinstance(result['sources'], list)
-
-
-    def test_deps_nonexistent_model_returns_empty(self, prod_manifest, test_model):
-        """Should return empty refs/sources for non-existent model"""
-        result = deps(str(prod_manifest), "nonexistent__model")
-        assert result == {'refs': [], 'sources': []}
-
-    def test_deps_includes_model_refs(self, prod_manifest, test_model):
-        """
-        Should include model dependencies (refs)
-
-        refs should be in format: model.project.model_name
-        """
-        model_name = test_model  # Use fixture
-        result = deps(str(prod_manifest), model_name)
-
-        # Model may or may not have refs, check structure
-        assert 'refs' in result and isinstance(result['refs'], list)
-        # All refs should start with 'model.'
-        for ref in result['refs']:
-            assert ref.startswith('model.')
-
-    def test_deps_model_not_found_error_message(self, prod_manifest, mocker, capsys):
-        """Test helpful error message when dependencies unavailable (parser returns None)"""
-        # Mock parser.get_dependencies() to return None (rare edge case)
-        mock_parser = mocker.patch('dbt_meta.utils.get_cached_parser')
-        mock_parser.return_value.get_dependencies.return_value = None
-
-        result = deps(str(prod_manifest), "nonexistent__model")
-
-        # Should return None when parser returns None
-        assert result is None
-
-        # Check error message
-        captured = capsys.readouterr()
-        assert "Dependencies not available" in captured.err
-        assert "defer run --select" in captured.err
-        assert "model not in manifest" in captured.err
 
 
 class TestSqlCommand:
@@ -1679,57 +1581,6 @@ class TestColumnsTargetFallback:
         assert all('name' in col for col in result)
 
 
-class TestInfoTargetFallback:
-    """Test info() command with target/ fallback"""
-
-    def test_info_falls_back_to_target(self, tmp_path, monkeypatch):
-        """Test that info() falls back to target/ when model not in production"""
-        project_root = tmp_path / "project"
-        project_root.mkdir()
-        dbt_state = project_root / ".dbt-state"
-        dbt_state.mkdir()
-        target = project_root / "target"
-        target.mkdir()
-
-        prod_manifest = dbt_state / "manifest.json"
-        prod_manifest.write_text('{"nodes": {}}')
-
-        dev_manifest = target / "manifest.json"
-        dev_manifest_data = {
-            "nodes": {
-                "model.my_project.test_schema__events": {
-                    "name": "test_schema__events",
-                    "schema": "personal_alice",
-                    "database": "test-project",
-                    "original_file_path": "models/test_schema/events.sql",
-                    "tags": ["dev", "test"],
-                    "unique_id": "model.my_project.test_schema__events",
-                    "config": {
-                        "alias": "client_profiles_events",
-                        "materialized": "table"
-                    }
-                }
-            }
-        }
-        dev_manifest.write_text(json.dumps(dev_manifest_data))
-
-        # Set manifest paths to test directories
-        monkeypatch.setenv('DBT_PROD_MANIFEST_PATH', str(prod_manifest))
-        monkeypatch.setenv('DBT_DEV_MANIFEST_PATH', str(dev_manifest))
-        monkeypatch.setenv('DBT_FALLBACK_TARGET', 'true')
-        monkeypatch.setenv('DBT_FALLBACK_BIGQUERY', 'false')
-
-        # Mock config file finder to force env var usage
-        with patch('dbt_meta.config.Config.find_config_file', return_value=None):
-            result = info(str(prod_manifest), "test_schema__events")
-
-        assert result is not None
-        assert result['schema'] == 'personal_alice'
-        assert result['materialized'] == 'table'
-        assert result['file'] == 'models/test_schema/events.sql'
-        assert 'dev' in result['tags']
-
-
 class TestConfigTargetFallback:
     """Test config() command with target/ fallback"""
 
@@ -2226,6 +2077,40 @@ class TestLsCommand:
         assert isinstance(result, list)
         for model_info in result:
             assert model_info['materialized'] == 'view'
+
+    def test_apply_selector_nested_config_key(self):
+        """config.meta.domain:its traverses nested dicts (universal dotted path)."""
+        from dbt_meta.command_impl.ls import _apply_selector
+
+        models = [
+            {'unique_id': 'model.p.a', 'config': {'meta': {'domain': 'its'}}},
+            {'unique_id': 'model.p.b', 'config': {'meta': {'domain': 'fin'}}},
+            {'unique_id': 'model.p.c', 'config': {}},
+        ]
+        result = _apply_selector(models, 'config.meta.domain:its')
+        assert [m['unique_id'] for m in result] == ['model.p.a']
+
+    def test_nested_get_missing_and_nondict_segments(self):
+        """_nested_get returns None when a path segment is absent or non-dict."""
+        from dbt_meta.command_impl.ls import _nested_get
+
+        assert _nested_get({'meta': {'domain': 'its'}}, ['meta', 'domain']) == 'its'
+        assert _nested_get({'meta': {}}, ['meta', 'domain']) is None
+        assert _nested_get({'meta': 'scalar'}, ['meta', 'domain']) is None
+        assert _nested_get({}, ['meta', 'domain']) is None
+
+    def test_format_json_includes_meta_only_when_present(self):
+        """JSON output carries 'meta' only for models that have a non-empty meta."""
+        from dbt_meta.command_impl.ls import _format_models_json
+
+        models = [
+            {'unique_id': 'model.p.a', 'config': {'meta': {'domain': 'its'}}, 'schema': 's'},
+            {'unique_id': 'model.p.b', 'config': {}, 'schema': 's'},
+        ]
+        result = _format_models_json(models, parser=None, use_dev=False)
+        by_name = {r['model']: r for r in result}
+        assert by_name['a']['meta'] == {'domain': 'its'}
+        assert 'meta' not in by_name['b']
 
     def test_ls_config_selector_invalid_format(self, prod_manifest):
         """Test config selector without colon - should return all models"""

@@ -135,8 +135,8 @@ class CatalogParser:
 
         stats = node.get('stats', {})
         return {
-            'row_count': stats.get('row_count', {}).get('value'),
-            'bytes': stats.get('bytes', {}).get('value'),
+            'row_count': stats.get('num_rows', {}).get('value'),
+            'bytes': stats.get('num_bytes', {}).get('value'),
         }
 
     def is_stale(self, max_age_hours: int = 2) -> bool:

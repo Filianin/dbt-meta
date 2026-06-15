@@ -80,7 +80,6 @@ Measured performance (~900 models manifest):
 | Command | Time | Notes |
 |---------|------|-------|
 | `meta schema` | ~250ms | Manifest only |
-| `meta info` | ~335ms | Manifest only |
 | `meta parents --all` | ~300ms | Traversed 295 ancestors |
 | `meta columns` (catalog) | ~50ms | With fresh `catalog.json` |
 | `meta columns` (BigQuery via bq CLI) | ~2-3s | Fallback when catalog stale |
@@ -137,7 +136,6 @@ dbt compile
 # Step 2: Use dbt-meta immediately!
 meta schema customers           # → your_project.analytics.customers
 meta columns -j orders          # → JSON array of columns
-meta deps customers             # → Dependencies list
 meta list tag:daily             # → Filter models by tag
 meta search "customer"          # → Find models by description
 
@@ -189,14 +187,12 @@ All commands accept `-h/--help` for detailed per-command help.
 
 | Command | Description | Key flags | Example |
 |---------|-------------|-----------|---------|
-| `info <model>` | Model summary (name, schema, table, materialization, tags) | `-j`, `-d` | `meta info -j customers` |
 | `schema <model>` | Full table name (`database.schema.table`) | `-j`, `-d` | `meta schema customers` |
 | `path <model>` | Relative file path to .sql file | `-j`, `-d` | `meta path customers` |
 | `columns <model>` | Column names and types | `-j`, `-d` | `meta columns -dj customers` |
 | `config <model>` | Full dbt config (partition_by, cluster_by, incremental, etc.) | `-j`, `-d` | `meta config -j customers` |
 | `sql <model>` | Compiled SQL (default) or raw with `--jinja` | `-j`, `-d`, `--jinja` | `meta sql --jinja customers` |
-| `docs <model>` | Column names, types, and descriptions | `-j`, `-d` | `meta docs customers` |
-| `deps <model>` | Dependencies by type (refs, sources, macros) | `-j`, `-d` | `meta deps -j customers` |
+| `context <model> [<model> ...]` | Full queryable-shape bundle (FQN, partition/cluster/unique_key, stats, columns with type+description) for one or more models, before a BigQuery query | `-j`, `-d` | `meta context -j orders customers` |
 
 ### Lineage (model-level)
 
@@ -270,7 +266,7 @@ The line is emitted via plain `print()` (not Rich) so terminal copy-paste return
 
 **`list` selectors:**
 - `tag:name` — filter by tag (OR logic by default)
-- `config.key:value` — filter by config value (e.g. `config.materialized:incremental`)
+- `config.key:value` — filter by config value (e.g. `config.materialized:incremental`); supports nested keys via dotted path (e.g. `config.meta.domain:its`)
 - `path:dir/` — filter by file path prefix
 - `package:name` — filter by package
 
@@ -570,6 +566,7 @@ meta models staging
 # Advanced filtering with selectors
 meta list tag:daily                           # Models with 'daily' tag
 meta list config.materialized:incremental     # Incremental models
+meta list config.meta.domain:its              # Nested config key (dotted path)
 meta list path:models/core/                   # Models in specific folder
 
 # Multiple selectors with OR logic (default)

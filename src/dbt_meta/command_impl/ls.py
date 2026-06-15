@@ -156,8 +156,8 @@ def _apply_selector(models: list[dict[str, Any]], selector: str) -> list[dict[st
         if ':' not in selector[7:]:
             return models
         config_part, config_val = selector.rsplit(':', 1)
-        config_key = config_part[7:]
-        return [m for m in models if m.get('config', {}).get(config_key) == config_val]
+        config_path = config_part[7:].split('.')
+        return [m for m in models if _nested_get(m.get('config', {}), config_path) == config_val]
 
     selector_type, selector_value = selector.split(':', 1)
 
@@ -169,6 +169,20 @@ def _apply_selector(models: list[dict[str, Any]], selector: str) -> list[dict[st
         return [m for m in models if m.get('package_name') == selector_value]
 
     return models
+
+
+def _nested_get(data: Any, path: list[str]) -> Any:
+    """Walk a dotted config path (e.g. ['meta', 'domain']) into nested dicts.
+
+    Returns the value coerced to str for comparison with the string selector
+    value, or None if any segment is missing or non-dict.
+    """
+    current: Any = data
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return str(current) if current is not None else None
 
 
 def _generate_git_warnings(models: list[dict[str, Any]], use_dev: bool) -> list[dict[str, str]]:
@@ -225,6 +239,9 @@ def _format_models_json(models: list[dict[str, Any]], parser: Any, use_dev: bool
             'materialized': model.get('config', {}).get('materialized', 'view'),
             'path': model.get('original_file_path', ''),
         }
+        meta = model.get('config', {}).get('meta') or model.get('meta') or {}
+        if meta:
+            model_dict['meta'] = meta
         if '_git_status' in model:
             model_dict['git_status'] = model['_git_status']
         result.append(model_dict)
