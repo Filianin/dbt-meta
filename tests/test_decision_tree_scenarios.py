@@ -13,7 +13,7 @@ Tests all 6 critical scenarios from .qa/decision_tree_visual.txt:
 import json
 from unittest.mock import patch
 
-from dbt_meta.commands import columns
+from tests.helpers_cmd import columns
 
 
 class TestScenarioA:
@@ -58,7 +58,7 @@ class TestScenarioA:
         monkeypatch.setenv('DBT_DEV_MANIFEST_PATH', str(dev_manifest))
 
         # Mock git to report NEW status (patch where imported, not where defined)
-        with patch('dbt_meta.command_impl.columns.get_model_git_status') as mock_git:
+        with patch('dbt_meta.utils.state_detector.get_model_git_status') as mock_git:
             from dbt_meta.utils.git import GitStatus
             mock_git.return_value = GitStatus(
                 exists=True,
@@ -70,7 +70,7 @@ class TestScenarioA:
             )
 
             # Mock BigQuery - ALWAYS called
-            with patch('dbt_meta.command_impl.columns._fetch_columns_from_bigquery_direct') as mock_bq:
+            with patch('dbt_meta.command_impl.column_source._fetch_columns_from_bigquery_direct') as mock_bq:
                 mock_bq.return_value = [
                     {'name': 'col1', 'data_type': 'string'}
                 ]
@@ -130,7 +130,7 @@ class TestScenarioB:
         monkeypatch.setenv('DBT_DEV_MANIFEST_PATH', str(dev_manifest))
 
         # Mock git to report NEW status
-        with patch('dbt_meta.command_impl.columns.get_model_git_status') as mock_git:
+        with patch('dbt_meta.utils.state_detector.get_model_git_status') as mock_git:
             from dbt_meta.utils.git import GitStatus
             mock_git.return_value = GitStatus(
                 exists=True,
@@ -142,7 +142,7 @@ class TestScenarioB:
             )
 
             # Mock BigQuery - ALWAYS called
-            with patch('dbt_meta.command_impl.columns._fetch_columns_from_bigquery_direct') as mock_bq:
+            with patch('dbt_meta.command_impl.column_source._fetch_columns_from_bigquery_direct') as mock_bq:
                 mock_bq.return_value = [
                     {'name': 'col1', 'data_type': 'string'},
                     {'name': 'col2', 'data_type': 'integer'}
@@ -211,7 +211,7 @@ class TestScenarioC:
         monkeypatch.setenv('DBT_DEV_MANIFEST_PATH', str(dev_manifest))
 
         # Mock git to report MODIFIED status
-        with patch('dbt_meta.command_impl.columns.get_model_git_status') as mock_git:
+        with patch('dbt_meta.utils.state_detector.get_model_git_status') as mock_git:
             from dbt_meta.utils.git import GitStatus
             mock_git.return_value = GitStatus(
                 exists=True,
@@ -223,7 +223,7 @@ class TestScenarioC:
             )
 
             # Mock BigQuery - ALWAYS called
-            with patch('dbt_meta.command_impl.columns._fetch_columns_from_bigquery_direct') as mock_bq:
+            with patch('dbt_meta.command_impl.column_source._fetch_columns_from_bigquery_direct') as mock_bq:
                 mock_bq.return_value = [
                     {'name': 'prod_col', 'data_type': 'string'}
                 ]
@@ -291,7 +291,7 @@ class TestScenarioD:
         monkeypatch.setenv('DBT_DEV_SCHEMA', 'personal_testuser')
 
         # Mock git to report MODIFIED status
-        with patch('dbt_meta.command_impl.columns.get_model_git_status') as mock_git:
+        with patch('dbt_meta.utils.state_detector.get_model_git_status') as mock_git:
             from dbt_meta.utils.git import GitStatus
             mock_git.return_value = GitStatus(
                 exists=True,
@@ -303,7 +303,7 @@ class TestScenarioD:
             )
 
             # Mock BigQuery - ALWAYS called
-            with patch('dbt_meta.command_impl.columns._fetch_columns_from_bigquery_direct') as mock_bq:
+            with patch('dbt_meta.command_impl.column_source._fetch_columns_from_bigquery_direct') as mock_bq:
                 mock_bq.return_value = [
                     {'name': 'dev_col', 'data_type': 'string'}
                 ]
@@ -371,7 +371,7 @@ class TestScenarioE:
         monkeypatch.setenv('DBT_DEV_SCHEMA', 'personal_testuser')
 
         # Mock git to report UNMODIFIED status
-        with patch('dbt_meta.command_impl.columns.get_model_git_status') as mock_git:
+        with patch('dbt_meta.utils.state_detector.get_model_git_status') as mock_git:
             from dbt_meta.utils.git import GitStatus
             mock_git.return_value = GitStatus(
                 exists=True,
@@ -383,7 +383,7 @@ class TestScenarioE:
             )
 
             # Mock BigQuery - ALWAYS called
-            with patch('dbt_meta.command_impl.columns._fetch_columns_from_bigquery_direct') as mock_bq:
+            with patch('dbt_meta.command_impl.column_source._fetch_columns_from_bigquery_direct') as mock_bq:
                 mock_bq.return_value = [
                     {'name': 'col', 'data_type': 'string'}
                 ]
@@ -440,9 +440,10 @@ class TestScenarioF:
         monkeypatch.setenv('DBT_PROD_MANIFEST_PATH', str(prod_manifest))
         monkeypatch.setenv('DBT_DEV_MANIFEST_PATH', str(dev_manifest))
         monkeypatch.setenv('DBT_DEV_SCHEMA', 'personal_testuser')
-        
+        monkeypatch.setenv('DBT_FALLBACK_TARGET', 'true')
+
         # Mock BigQuery fetch
-        with patch('dbt_meta.command_impl.columns._fetch_columns_from_bigquery_direct') as mock_bq:
+        with patch('dbt_meta.command_impl.column_source._fetch_columns_from_bigquery_direct') as mock_bq:
             mock_bq.return_value = [
                 {'name': 'col1', 'data_type': 'string'},
                 {'name': 'col2', 'data_type': 'integer'}
@@ -504,12 +505,13 @@ class TestScenarioG:
         
         monkeypatch.setenv('DBT_PROD_MANIFEST_PATH', str(prod_manifest))
         monkeypatch.setenv('DBT_DEV_MANIFEST_PATH', str(dev_manifest))
+        monkeypatch.setenv('DBT_FALLBACK_TARGET', 'true')
         # Clear DBT_DEV_SCHEMA to use USER-based calculation
         monkeypatch.delenv('DBT_DEV_SCHEMA', raising=False)
         monkeypatch.setenv('USER', 'testuser')
 
         # Mock BigQuery fetch
-        with patch('dbt_meta.command_impl.columns._fetch_columns_from_bigquery_direct') as mock_bq:
+        with patch('dbt_meta.command_impl.column_source._fetch_columns_from_bigquery_direct') as mock_bq:
             mock_bq.return_value = [
                 {'name': 'col1', 'data_type': 'string'}
             ]

@@ -93,61 +93,6 @@ class TestColumnsCommand:
         assert 'column' in result.stdout.lower()
 
 
-class TestInfoCommand:
-    """End-to-end tests for 'meta info' command"""
-
-    def test_info_json_output(self, cli_runner, prod_manifest, test_model, monkeypatch):
-        """Test info extraction with JSON output"""
-        monkeypatch.setenv('DBT_PROD_MANIFEST_PATH', str(prod_manifest))
-
-        result = cli_runner.invoke(app, ['info', test_model, '-j'])
-
-        assert result.exit_code == 0
-        data = json.loads(result.stdout)
-        assert isinstance(data, dict)
-        # Should contain model metadata
-        assert 'name' in data or 'schema' in data
-
-    def test_info_text_output(self, cli_runner, prod_manifest, test_model, monkeypatch):
-        """Test info extraction with text output"""
-        monkeypatch.setenv('DBT_PROD_MANIFEST_PATH', str(prod_manifest))
-
-        result = cli_runner.invoke(app, ['info', test_model])
-
-        assert result.exit_code == 0
-        assert len(result.stdout) > 0
-
-    def test_info_help(self, cli_runner):
-        """Test info command help text"""
-        result = cli_runner.invoke(app, ['info', '--help'])
-
-        assert result.exit_code == 0
-        assert 'info' in result.stdout.lower()
-
-
-class TestDepsCommand:
-    """End-to-end tests for 'meta deps' command"""
-
-    def test_deps_json_output(self, cli_runner, prod_manifest, test_model, monkeypatch):
-        """Test deps extraction with JSON output"""
-        monkeypatch.setenv('DBT_PROD_MANIFEST_PATH', str(prod_manifest))
-
-        result = cli_runner.invoke(app, ['deps', test_model, '-j'])
-
-        assert result.exit_code == 0
-        data = json.loads(result.stdout)
-        assert isinstance(data, dict)
-        # Should have refs/sources/macros keys
-        assert 'refs' in data or 'sources' in data or 'macros' in data
-
-    def test_deps_help(self, cli_runner):
-        """Test deps command help text"""
-        result = cli_runner.invoke(app, ['deps', '--help'])
-
-        assert result.exit_code == 0
-        assert 'depend' in result.stdout.lower()
-
-
 class TestParentsCommand:
     """End-to-end tests for 'meta parents' command"""
 
@@ -426,7 +371,7 @@ class TestHelpSystem:
     def test_all_commands_have_help(self, cli_runner):
         """Test that all commands have help text"""
         commands = [
-            'schema', 'columns', 'info', 'deps', 'parents', 'children',
+            'schema', 'columns', 'context', 'parents', 'children',
             'sql', 'path', 'config', 'list', 'search', 'refresh'
         ]
 
@@ -493,7 +438,7 @@ class TestDevFlag:
         monkeypatch.setenv('DBT_PROD_MANIFEST_PATH', str(dev_manifest_setup))
         monkeypatch.setenv('DBT_DEV_MANIFEST_PATH', str(dev_manifest_setup.parent / 'target' / 'manifest.json'))
 
-        commands_with_dev = ['schema', 'columns', 'info', 'config']
+        commands_with_dev = ['schema', 'columns', 'context', 'config']
 
         for cmd in commands_with_dev:
             result = cli_runner.invoke(app, [cmd, 'test_schema__test_model', '--dev'])
@@ -508,7 +453,7 @@ class TestJsonOutput:
         """Test that -j flag produces parseable JSON"""
         monkeypatch.setenv('DBT_PROD_MANIFEST_PATH', str(prod_manifest))
 
-        json_commands = ['schema', 'columns', 'info', 'deps', 'config', 'list']
+        json_commands = ['schema', 'columns', 'context', 'config', 'list']
 
         for cmd in json_commands:
             result = cli_runner.invoke(app, [cmd, test_model, '-j'])

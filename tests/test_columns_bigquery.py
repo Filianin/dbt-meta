@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from dbt_meta.commands import columns
+from tests.helpers_cmd import columns
 
 
 class TestColumnsBigQueryFirst:

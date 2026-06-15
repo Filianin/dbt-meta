@@ -7,6 +7,7 @@ from dbt_meta.command_impl.base import BaseCommand
 from dbt_meta.fallback import FallbackLevel
 from dbt_meta.utils.bigquery import run_dry_run_query
 from dbt_meta.utils.compiled_sql import get_compiled_sql
+from dbt_meta.utils.dev import find_dev_manifest as _find_dev_manifest
 
 
 class ValidateCommand(BaseCommand):
@@ -53,10 +54,17 @@ class ValidateCommand(BaseCommand):
         Returns:
             Validation result dict
         """
+        # When validating dev SQL, infer project root from the dev manifest
+        # so that disk lookup (target/compiled/) and auto-compile run in the
+        # correct project directory, not relative to the prod manifest path.
+        manifest_for_sql = self.manifest_path
+        if self.use_dev:
+            manifest_for_sql = _find_dev_manifest(self.manifest_path) or self.manifest_path
+
         sql, error = get_compiled_sql(
             model=model,
             model_name=self.model_name,
-            manifest_path=self.manifest_path,
+            manifest_path=manifest_for_sql,
             use_dev=self.use_dev,
         )
         if sql is None:

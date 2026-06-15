@@ -16,7 +16,7 @@
 
 ### 1. Parser caching
 
-**Всегда** через `_get_cached_parser(manifest_path)` (`commands.py`). Прямой `ManifestParser(path)` обходит LRU и роняет производительность с 5-10ms до 30-60ms на каждую команду.
+**Всегда** через `_get_cached_parser(manifest_path)` (`utils/__init__.py`). Прямой `ManifestParser(path)` обходит LRU и роняет производительность с 5-10ms до 30-60ms на каждую команду.
 
 ### 2. Manifest discovery — приоритет
 
@@ -46,7 +46,7 @@ PROD_MANIFEST → DEV_MANIFEST → BIGQUERY
 - Найдена в prod → prod schema
 - **Никогда** не делать повторный поиск в prod после нахождения в dev.
 
-Реализация: `command_impl/base.py`, `command_impl/columns.py` (через `prod_model` параметр).
+Реализация: `utils/state_detector.py` (`ModelStateDetector`), `command_impl/column_source.py` (`ColumnSourceFactory`).
 
 ### 5. Catalog staleness — by file mtime, not generated_at
 
@@ -69,6 +69,8 @@ PROD_MANIFEST → DEV_MANIFEST → BIGQUERY
 
 Project root найден walk-up'ом от manifest по `dbt_project.yml`. Без `--dev` шаг 3 не запускается (предлагается `meta validate --dev <model>`).
 
+**ВАЖНО:** `validate --dev` и `scan --dev` используют **dev** manifest path для определения project root в `get_compiled_sql`. Это критично: без этого disk lookup (`target/compiled/`) и auto-compile работают в prod project root, а не dev.
+
 ### 7. Dev schema resolution
 
 ```
@@ -82,18 +84,25 @@ Username из `DBT_USER` или `$USER`. Sanitize обязателен — BigQu
 
 - **Никаких** временных файлов в `/tmp/`. Тесты, debug-скрипты, артефакты — в корень проекта (видны в `git status`, легко ревьюить и удалять).
 
+### 9. `context` — стабильная полная схема, `list` — разреженная
+
+`meta context` всегда отдаёт **полный** набор ключей; пустое значение — это сигнал (`partition_by: null` = «не партиционирована», `description: ""` = «не задокументировано», но колонка существует). Не прятать пустые ключи — агент не должен ветвиться по их наличию. `meta list` наоборот: `meta` выводится только когда непустой (отсутствие = «нет model-level meta» для сотен моделей, `{}` был бы шумом).
+
 ## Architecture
 
 ```
 src/dbt_meta/
 ├── cli.py                 # Typer CLI + Rich (help panels, wiring)
-├── commands.py            # Thin wrappers + parser cache
 ├── errors.py              # DbtMetaError hierarchy
 ├── config.py              # TOML + env, XDG, Power BI section
 ├── fallback.py            # 3-level fallback strategy
 ├── command_impl/
-│   ├── base.py            # State detection + fallback orchestration
-│   ├── info.py, schema.py, columns.py, config.py, deps.py, sql.py, path.py
+│   ├── base.py            # Fallback orchestration (get_model_with_fallback)
+│   ├── column_source.py   # ColumnSource strategies: BigQuery/Catalog + ColumnSourceFactory
+│   ├── schema.py, columns.py, config.py, sql.py, path.py
+│   ├── context.py         # queryable-shape bundle (facade over columns/docs/config + catalog stats), 1+ models
+│   ├── docs.py            # column descriptions — no CLI command, used internally by context.py
+│   ├── ls.py, refresh.py, search.py
 │   ├── parents.py, children.py, lineage_utils.py
 │   ├── validate.py, scan.py
 │   ├── analyze.py, hotspots.py, branch.py
@@ -113,6 +122,7 @@ src/dbt_meta/
 ├── manifest/{parser,finder}.py
 ├── catalog/parser.py
 ├── utils/                 # bigquery, compiled_sql, monitoring, powerbi, git, dev, model_state
+│   └── state_detector.py  # ModelStateDetector: manifest + git → DetectedState
 └── templates/dbt-meta.toml
 ```
 

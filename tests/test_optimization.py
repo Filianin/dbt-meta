@@ -3,11 +3,11 @@
 import pytest
 from unittest.mock import patch, MagicMock
 
-from dbt_meta import commands
 from dbt_meta.command_impl.analyze import AnalyzeCommand
 from dbt_meta.command_impl.branch import BranchCommand
 from dbt_meta.command_impl.hotspots import HotspotsCommand
 from dbt_meta.config import Config
+from tests.helpers_cmd import analyze, branch, hotspots
 
 
 class TestAnalyzeCommand:
@@ -15,7 +15,7 @@ class TestAnalyzeCommand:
 
     def test_analyze_returns_dict(self, prod_manifest, test_model):
         """Test analyze returns dict with expected keys."""
-        result = commands.analyze(prod_manifest, test_model)
+        result = analyze(prod_manifest, test_model)
 
         assert result is not None
         assert isinstance(result, dict)
@@ -26,12 +26,12 @@ class TestAnalyzeCommand:
 
     def test_analyze_not_found_returns_none(self, prod_manifest):
         """Test analyze returns None for non-existent model."""
-        result = commands.analyze(prod_manifest, 'nonexistent_model_xyz')
+        result = analyze(prod_manifest, 'nonexistent_model_xyz')
         assert result is None
 
     def test_analyze_config_structure(self, prod_manifest, test_model):
         """Test config section has expected fields."""
-        result = commands.analyze(prod_manifest, test_model)
+        result = analyze(prod_manifest, test_model)
 
         assert result is not None
         config = result.get('config', {})
@@ -41,7 +41,7 @@ class TestAnalyzeCommand:
 
     def test_analyze_recommendations_is_list(self, prod_manifest, test_model):
         """Test recommendations is always a list."""
-        result = commands.analyze(prod_manifest, test_model)
+        result = analyze(prod_manifest, test_model)
 
         assert result is not None
         assert isinstance(result.get('recommendations', []), list)
@@ -51,7 +51,7 @@ class TestAnalyzeCommand:
         """Test analyze handles missing storage data gracefully."""
         mock_storage.return_value = None
 
-        result = commands.analyze(prod_manifest, test_model)
+        result = analyze(prod_manifest, test_model)
 
         assert result is not None
         assert result.get('storage') is None
@@ -61,7 +61,7 @@ class TestAnalyzeCommand:
         """Test analyze handles missing partition data gracefully."""
         mock_partitions.return_value = None
 
-        result = commands.analyze(prod_manifest, test_model)
+        result = analyze(prod_manifest, test_model)
 
         assert result is not None
         assert result.get('partitions') is None
@@ -96,7 +96,7 @@ class TestHotspotsCommand:
         mock_unused.return_value = []
         mock_total_bq.return_value = {'total_cost': 100.0, 'total_slot_hours': 500.0, 'total_queries': 10000}
 
-        result = commands.hotspots(prod_manifest)
+        result = hotspots(prod_manifest)
 
         assert result is not None
         assert isinstance(result, dict)
@@ -127,7 +127,7 @@ class TestHotspotsCommand:
         mock_unused.return_value = []
         mock_total_bq.return_value = None
 
-        result = commands.hotspots(prod_manifest)
+        result = hotspots(prod_manifest)
 
         assert result is not None
         assert result['hotspots'] == []
@@ -160,7 +160,7 @@ class TestHotspotsCommand:
         mock_unused.return_value = []
         mock_total_bq.return_value = None
 
-        result = commands.hotspots(prod_manifest, limit=3)
+        result = hotspots(prod_manifest, limit=3)
 
         assert result is not None
         assert len(result['hotspots']) <= 3
@@ -193,7 +193,7 @@ class TestHotspotsCommand:
         mock_unused.return_value = []
         mock_total_bq.return_value = None
 
-        result = commands.hotspots(prod_manifest)
+        result = hotspots(prod_manifest)
 
         assert result is not None
         if result['hotspots']:
@@ -206,7 +206,7 @@ class TestBranchCommand:
 
     def test_branch_returns_dict(self, prod_manifest, test_model):
         """Test branch returns dict with expected keys."""
-        result = commands.branch(prod_manifest, test_model)
+        result = branch(prod_manifest, test_model)
 
         assert result is not None
         assert isinstance(result, dict)
@@ -218,12 +218,12 @@ class TestBranchCommand:
 
     def test_branch_not_found_returns_none(self, prod_manifest):
         """Test branch returns None for non-existent model."""
-        result = commands.branch(prod_manifest, 'nonexistent_model_xyz')
+        result = branch(prod_manifest, 'nonexistent_model_xyz')
         assert result is None
 
     def test_branch_root_config_structure(self, prod_manifest, test_model):
         """Test root_config has expected fields."""
-        result = commands.branch(prod_manifest, test_model)
+        result = branch(prod_manifest, test_model)
 
         assert result is not None
         root_config = result.get('root_config', {})
@@ -232,21 +232,21 @@ class TestBranchCommand:
 
     def test_branch_upstream_is_list(self, prod_manifest, test_model):
         """Test upstream is always a list."""
-        result = commands.branch(prod_manifest, test_model)
+        result = branch(prod_manifest, test_model)
 
         assert result is not None
         assert isinstance(result.get('upstream', []), list)
 
     def test_branch_downstream_is_list(self, prod_manifest, test_model):
         """Test downstream is always a list."""
-        result = commands.branch(prod_manifest, test_model)
+        result = branch(prod_manifest, test_model)
 
         assert result is not None
         assert isinstance(result.get('downstream', []), list)
 
     def test_branch_recommendations_is_list(self, prod_manifest, test_model):
         """Test recommendations is always a list."""
-        result = commands.branch(prod_manifest, test_model)
+        result = branch(prod_manifest, test_model)
 
         assert result is not None
         assert isinstance(result.get('recommendations', []), list)
@@ -1048,12 +1048,13 @@ class TestBranchCommand:
         cmd = BranchCommand.__new__(BranchCommand)
         cmd.manifest_path = '/test/manifest.json'
         cmd.model_name = 'test_model'
+        cmd.config = Config.from_config_or_env()
 
         parents = [{'path': 'models/staging/stg_events.sql'}]
         root_filters = ['event_date', 'user_id']
         root_partition = 'event_date'
 
-        with patch('dbt_meta.commands.config') as mock_config:
+        with patch('dbt_meta.command_impl.config.ConfigCommand.execute') as mock_config:
             mock_config.return_value = {
                 'partition_by': {'field': 'event_date'},
                 'cluster_by': ['user_id'],
@@ -1074,12 +1075,13 @@ class TestBranchCommand:
         cmd = BranchCommand.__new__(BranchCommand)
         cmd.manifest_path = '/test/manifest.json'
         cmd.model_name = 'test_model'
+        cmd.config = Config.from_config_or_env()
 
         parents = [{'path': 'models/staging/stg_raw.sql'}]
         root_filters = ['event_date']
         root_partition = 'event_date'
 
-        with patch('dbt_meta.commands.config') as mock_config:
+        with patch('dbt_meta.command_impl.config.ConfigCommand.execute') as mock_config:
             mock_config.return_value = {
                 'partition_by': None,
                 'cluster_by': [],
@@ -1099,12 +1101,13 @@ class TestBranchCommand:
         cmd = BranchCommand.__new__(BranchCommand)
         cmd.manifest_path = '/test/manifest.json'
         cmd.model_name = 'test_model'
+        cmd.config = Config.from_config_or_env()
 
         parents = [{'path': 'models/staging/stg_view.sql'}]
         root_filters = []
         root_partition = None
 
-        with patch('dbt_meta.commands.config') as mock_config:
+        with patch('dbt_meta.command_impl.config.ConfigCommand.execute') as mock_config:
             mock_config.return_value = {
                 'partition_by': None,
                 'cluster_by': [],
@@ -1124,12 +1127,13 @@ class TestBranchCommand:
         cmd = BranchCommand.__new__(BranchCommand)
         cmd.manifest_path = '/test/manifest.json'
         cmd.model_name = 'test_model'
+        cmd.config = Config.from_config_or_env()
 
         parents = [{'path': 'models/staging/stg_events.sql'}]
         root_filters = ['country_code', 'platform']  # Not in cluster
         root_partition = None
 
-        with patch('dbt_meta.commands.config') as mock_config:
+        with patch('dbt_meta.command_impl.config.ConfigCommand.execute') as mock_config:
             mock_config.return_value = {
                 'partition_by': {'field': 'event_date'},
                 'cluster_by': ['user_id'],  # Doesn't include root filters
@@ -1150,10 +1154,11 @@ class TestBranchCommand:
         cmd = BranchCommand.__new__(BranchCommand)
         cmd.manifest_path = '/test/manifest.json'
         cmd.model_name = 'test_model'
+        cmd.config = Config.from_config_or_env()
 
         parents = [{'path': 'models/staging/stg_events.sql'}]
 
-        with patch('dbt_meta.commands.config') as mock_config:
+        with patch('dbt_meta.command_impl.config.ConfigCommand.execute') as mock_config:
             mock_config.side_effect = ModelNotFoundError('not_found', ['test'])
 
             result = cmd._analyze_upstream(parents, [], None)
@@ -1167,6 +1172,7 @@ class TestBranchCommand:
         cmd = BranchCommand.__new__(BranchCommand)
         cmd.manifest_path = '/test/manifest.json'
         cmd.model_name = 'test_model'
+        cmd.config = Config.from_config_or_env()
 
         parents = [{'path': ''}]  # Empty path
 
@@ -1181,12 +1187,13 @@ class TestBranchCommand:
         cmd = BranchCommand.__new__(BranchCommand)
         cmd.manifest_path = '/test/manifest.json'
         cmd.model_name = 'test_model'
+        cmd.config = Config.from_config_or_env()
 
         children = [{'path': 'models/core/core_events.sql'}]
         root_partition = 'event_date'
         root_cluster = ['user_id', 'country']
 
-        with patch('dbt_meta.commands.sql') as mock_sql, \
+        with patch('dbt_meta.command_impl.sql.SqlCommand.execute') as mock_sql, \
              patch('dbt_meta.utils.monitoring.fetch_downstream_filter_patterns') as mock_filters:
             mock_sql.return_value = 'SELECT * FROM events WHERE event_date > ...'
             mock_filters.return_value = ['event_date', 'user_id']
@@ -1205,12 +1212,13 @@ class TestBranchCommand:
         cmd = BranchCommand.__new__(BranchCommand)
         cmd.manifest_path = '/test/manifest.json'
         cmd.model_name = 'test_model'
+        cmd.config = Config.from_config_or_env()
 
         children = [{'path': 'models/core/core_events.sql'}]
         root_partition = 'event_date'
         root_cluster = ['user_id']
 
-        with patch('dbt_meta.commands.sql') as mock_sql, \
+        with patch('dbt_meta.command_impl.sql.SqlCommand.execute') as mock_sql, \
              patch('dbt_meta.utils.monitoring.fetch_downstream_filter_patterns') as mock_filters:
             mock_sql.return_value = 'SELECT * FROM events WHERE platform = ...'
             mock_filters.return_value = ['platform']  # Not in partition/cluster
@@ -1228,12 +1236,13 @@ class TestBranchCommand:
         cmd = BranchCommand.__new__(BranchCommand)
         cmd.manifest_path = '/test/manifest.json'
         cmd.model_name = 'test_model'
+        cmd.config = Config.from_config_or_env()
 
         children = [{'path': 'models/core/core_events.sql'}]
         root_partition = None  # No partition
         root_cluster = []  # No cluster
 
-        with patch('dbt_meta.commands.sql') as mock_sql, \
+        with patch('dbt_meta.command_impl.sql.SqlCommand.execute') as mock_sql, \
              patch('dbt_meta.utils.monitoring.fetch_downstream_filter_patterns') as mock_filters:
             mock_sql.return_value = 'SELECT * FROM events WHERE platform = ...'
             mock_filters.return_value = ['platform']
@@ -1251,10 +1260,11 @@ class TestBranchCommand:
         cmd = BranchCommand.__new__(BranchCommand)
         cmd.manifest_path = '/test/manifest.json'
         cmd.model_name = 'test_model'
+        cmd.config = Config.from_config_or_env()
 
         children = [{'path': 'models/core/core_events.sql'}]
 
-        with patch('dbt_meta.commands.sql') as mock_sql:
+        with patch('dbt_meta.command_impl.sql.SqlCommand.execute') as mock_sql:
             mock_sql.side_effect = ModelNotFoundError('not_found', ['test'])
 
             result = cmd._analyze_downstream(children, None, [])
@@ -1353,8 +1363,8 @@ class TestBranchCommand:
             'compiled_code': '',
         }
 
-        with patch('dbt_meta.commands.parents') as mock_parents, \
-             patch('dbt_meta.commands.children') as mock_children:
+        with patch('dbt_meta.command_impl.parents.ParentsCommand.execute') as mock_parents, \
+             patch('dbt_meta.command_impl.children.ChildrenCommand.execute') as mock_children:
             mock_parents.side_effect = ModelNotFoundError('not_found', ['test'])
             mock_children.return_value = []
 
@@ -1382,8 +1392,8 @@ class TestBranchCommand:
             'compiled_code': '',
         }
 
-        with patch('dbt_meta.commands.parents') as mock_parents, \
-             patch('dbt_meta.commands.children') as mock_children:
+        with patch('dbt_meta.command_impl.parents.ParentsCommand.execute') as mock_parents, \
+             patch('dbt_meta.command_impl.children.ChildrenCommand.execute') as mock_children:
             mock_parents.return_value = []
             mock_children.side_effect = ModelNotFoundError('not_found', ['test'])
 
@@ -1446,8 +1456,8 @@ class TestAnalyzeCommandCoverage:
 
         model = {'name': 'test_model'}
 
-        with patch('dbt_meta.commands.children') as mock_children, \
-             patch('dbt_meta.commands.sql') as mock_sql, \
+        with patch('dbt_meta.command_impl.children.ChildrenCommand.execute') as mock_children, \
+             patch('dbt_meta.command_impl.sql.SqlCommand.execute') as mock_sql, \
              patch('dbt_meta.utils.monitoring.fetch_downstream_filter_patterns') as mock_filters:
             mock_children.return_value = [
                 {'model': 'child1', 'path': 'models/child1.sql'},
@@ -1476,7 +1486,7 @@ class TestAnalyzeCommandCoverage:
         cmd.manifest_path = '/test/manifest.json'
         cmd.model_name = 'test_model'
 
-        with patch('dbt_meta.commands.children') as mock_children:
+        with patch('dbt_meta.command_impl.children.ChildrenCommand.execute') as mock_children:
             mock_children.side_effect = ModelNotFoundError('not_found', ['test'])
 
             result = cmd._analyze_downstream_filters({})
@@ -1495,8 +1505,8 @@ class TestAnalyzeCommandCoverage:
         cmd.manifest_path = '/test/manifest.json'
         cmd.model_name = 'test_model'
 
-        with patch('dbt_meta.commands.children') as mock_children, \
-             patch('dbt_meta.commands.sql') as mock_sql:
+        with patch('dbt_meta.command_impl.children.ChildrenCommand.execute') as mock_children, \
+             patch('dbt_meta.command_impl.sql.SqlCommand.execute') as mock_sql:
             mock_children.return_value = [{'model': 'child1'}]
             mock_sql.side_effect = ModelNotFoundError('not_found', ['test'])
 

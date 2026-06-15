@@ -348,7 +348,7 @@ class TestColumnsCommandEdgeCases:
         import json
         from unittest.mock import patch
 
-        from dbt_meta.commands import columns
+        from tests.helpers_cmd import columns
 
         # Setup manifests
         prod_manifest = tmp_path / ".dbt-state" / "manifest.json"
@@ -386,7 +386,7 @@ class TestColumnsCommandEdgeCases:
 
         # Mock BigQuery fetch to verify correct schema is used
         # NOTE: Patch where function is USED, not where it's defined
-        with patch('dbt_meta.command_impl.columns._fetch_columns_from_bigquery_direct') as mock_bq:
+        with patch('dbt_meta.command_impl.column_source._fetch_columns_from_bigquery_direct') as mock_bq:
             mock_bq.return_value = [
                 {'name': 'col1', 'data_type': 'string'},
                 {'name': 'col2', 'data_type': 'integer'}

@@ -476,7 +476,7 @@ class TestValidateWithDiskFallback:
     def test_validate_uses_disk_fallback(self, dbt_project, monkeypatch):
         import json as _json
 
-        from dbt_meta.commands import validate
+        from tests.helpers_cmd import validate
 
         # Manifest has model but no compiled_code
         manifest = dbt_project['manifest']

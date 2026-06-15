@@ -121,17 +121,14 @@ class AnalyzeCommand(BaseCommand):
         Returns list of column names commonly used in WHERE clauses
         of models that depend on this one.
         """
-        # Import here to avoid circular dependency
-        from dbt_meta import commands
+        from dbt_meta.command_impl.children import ChildrenCommand
+        from dbt_meta.command_impl.sql import SqlCommand
 
         try:
-            children = commands.children(
-                self.manifest_path,
-                self.model_name,
-                use_dev=False,
-                recursive=False,
-                json_output=True
-            )
+            children = ChildrenCommand(
+                self.config, self.manifest_path, self.model_name,
+                use_dev=False, json_output=True, recursive=False,
+            ).execute()
         except DbtMetaError:
             return []
 
@@ -151,12 +148,10 @@ class AnalyzeCommand(BaseCommand):
                 child_name = child_name.split('/')[-1].replace('.sql', '')
 
             try:
-                sql_result = commands.sql(
-                    self.manifest_path,
-                    child_name,
-                    use_dev=False,
-                    raw=False
-                )
+                sql_result = SqlCommand(
+                    self.config, self.manifest_path, child_name,
+                    use_dev=False, json_output=False, raw=False,
+                ).execute()
                 if sql_result:
                     sql_text = sql_result if isinstance(sql_result, str) else sql_result.get('sql', '')
                     filters = fetch_downstream_filter_patterns(sql_text)

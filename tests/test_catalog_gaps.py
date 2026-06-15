@@ -25,8 +25,8 @@ def catalog_with_stats(tmp_path):
         'nodes': {
             'model.admirals_bi_dwh.core__events': {
                 'stats': {
-                    'row_count': {'value': 123456},
-                    'bytes': {'value': 9876543},
+                    'num_rows': {'value': 123456},
+                    'num_bytes': {'value': 9876543},
                 },
                 'columns': {},
             },
@@ -68,7 +68,7 @@ class TestGetTableStats:
             'metadata': {},
             'nodes': {
                 'model.my_project.x': {
-                    'stats': {'row_count': {'value': 1}, 'bytes': {'value': 2}},
+                    'stats': {'num_rows': {'value': 1}, 'num_bytes': {'value': 2}},
                     'columns': {},
                 },
             },
