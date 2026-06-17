@@ -28,7 +28,6 @@ from dbt_meta.command_impl.hotspots import HotspotsCommand
 from dbt_meta.command_impl.ls import ListModelsCommand, LsCommand
 from dbt_meta.command_impl.parents import ParentsCommand
 from dbt_meta.command_impl.path import PathCommand
-from dbt_meta.command_impl.powerbi import PowerBiCommand
 from dbt_meta.command_impl.refresh import RefreshCommand
 from dbt_meta.command_impl.scan import ScanCommand
 from dbt_meta.command_impl.schema import SchemaCommand
@@ -184,7 +183,7 @@ def _build_commands_panel() -> Panel:
 
     # Integration (blue)
     table.add_row("[bold blue]Integration:[/bold blue]", "")
-    table.add_row("  [blue]powerbi[/blue]", "Power BI table mappings (--measures, --columns, --full, --by-table)")
+    table.add_row("  [blue]powerbi[/blue]", "Power BI dashboards → BigQuery tables (scan, build, find, show)")
     table.add_row("", "")
 
     # Settings management (magenta)
@@ -227,11 +226,11 @@ def _build_flags_panel() -> Panel:
     table.add_row("-n, --limit N", "Number of hotspots to show (default: 10)")
     table.add_row("--min-gb GB", "Minimum table size in GB (default: 1.0)")
     table.add_row("", "")
-    table.add_row("[bold cyan]powerbi flags:[/bold cyan]", "")
-    table.add_row("--measures", "Include DAX measure expressions")
-    table.add_row("--columns", "Include column schemas")
-    table.add_row("--full", "Include all metadata (measures + columns)")
-    table.add_row("--by-table", "Group by BigQuery tables instead of datasets")
+    table.add_row("[bold cyan]powerbi subcommands:[/bold cyan]", "")
+    table.add_row("powerbi scan", "Scan workspaces → raw scanResult JSON")
+    table.add_row("powerbi build", "Build compact agent index (raw + manifest)")
+    table.add_row("powerbi find <q>", "Find reports / metrics behind a dashboard")
+    table.add_row("powerbi show <report>", "Report breakdown: tables + SQL analysis")
     table.add_row("", "")
     table.add_row("[bold cyan]settings init flags:[/bold cyan]", "")
     table.add_row("-f, --force", "Overwrite existing config file")
@@ -294,9 +293,9 @@ def _build_examples_panel() -> Panel:
     table.add_row("  meta lineage stats -j", "Artifact stats as JSON")
     table.add_row("", "")
     table.add_row("[bold]Power BI integration:[/bold]", "")
-    table.add_row("  meta powerbi", "Datasets → tables hierarchy")
-    table.add_row("  meta powerbi --by-table", "Aggregated by BigQuery table")
-    table.add_row("  meta powerbi --full -j", "All metadata (measures + columns)")
+    table.add_row("  meta powerbi build", "Build agent index from scan + manifest")
+    table.add_row("  meta powerbi find leads", "Reports/metrics matching 'leads'")
+    table.add_row("  meta powerbi show 'Organic Leads'", "Full report breakdown")
     table.add_row("", "")
     table.add_row("[bold]Combined flags:[/bold]", "")
     table.add_row("  meta schema -dj customers", "Dev + JSON output")
@@ -1757,242 +1756,194 @@ def _print_branch_result(result: dict) -> None:
         console.print(f"[{STYLE_DIM}]No branch optimization recommendations[/{STYLE_DIM}]")
 
 
-@app.command()
-def powerbi(
-    workspace_id: Optional[str] = typer.Argument(None, help="Power BI workspace ID"),
-    json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
-    measures: bool = typer.Option(False, "--measures", help="Include measures with DAX expressions"),
-    columns: bool = typer.Option(False, "--columns", help="Include column schemas"),
-    full: bool = typer.Option(False, "--full", help="Include all metadata (measures + columns)"),
-    by_table: bool = typer.Option(False, "--by-table", help="Group by tables instead of datasets"),
+# ============================================================================
+# Power BI Commands
+# ============================================================================
+
+powerbi_app = typer.Typer(
+    help="Power BI dashboard metadata — scan, build index, find/show reports.",
+    no_args_is_help=True,
+)
+app.add_typer(powerbi_app, name="powerbi")
+
+
+@powerbi_app.command("scan")
+def powerbi_scan(
+    output: str = typer.Option(
+        "target/powerbi_raw.json", "-o", "--output", help="Raw scanResult output path"
+    ),
+    json_output: bool = typer.Option(False, "-j", "--json", help="Output summary as JSON"),
 ) -> None:
-    """
-    Extract BigQuery tables used by Power BI dashboards
+    """Scan configured workspaces via the Admin Scanner API into a raw JSON dump."""
+    from dbt_meta.command_impl import powerbi as pbi
 
-    Maps Power BI datasets to BigQuery tables and dbt models.
-    Optionally includes measures (DAX) and column schemas.
-    Requires Power BI Admin API configured in settings.
-
-    Examples:
-        meta powerbi                          # Tables only
-        meta powerbi --measures               # + Measures with DAX
-        meta powerbi --columns                # + Column schemas
-        meta powerbi --full                   # All metadata
-        meta powerbi -j                       # JSON (always full)
-        meta powerbi --by-table               # Group by tables
-    """
     try:
-        manifest_path, _ = get_manifest_path(manifest, False)
-        result = PowerBiCommand(
-            Config.from_config_or_env(),
-            manifest_path,
-            workspace_id=workspace_id,
-            json_output=json_output,
-            show_measures=measures,
-            show_columns=columns,
-            show_full=full,
-            by_table=by_table,
-        ).execute()
-
-        if json_output:
-            print(json.dumps(result, indent=2))
-        else:
-            # Route to appropriate print function
-            if result.get('view') == 'by_table':
-                _print_powerbi_by_table(result)
-            else:
-                _print_powerbi_result(result, show_measures=measures or full, show_columns=columns or full)
-
+        result = pbi.scan_command(Config.from_config_or_env(), output)
     except DbtMetaError as e:
         handle_error(e, json_output)
-
-
-def _print_powerbi_result(result: dict, show_measures: bool = False, show_columns: bool = False) -> None:
-    """Pretty print powerbi command result with optional extended metadata.
-
-    Args:
-        result: Power BI scan result dictionary
-        show_measures: Include measures with DAX expressions
-        show_columns: Include column schemas
-    """
-    print()
-    workspace = result.get('workspace', 'Unknown')
-    summary = result.get('summary', {})
-
-    console.print(f"[bold green]{workspace}[/bold green] ({summary.get('total_datasets', 0)} datasets, "
-                  f"{summary.get('total_reports', 0)} reports, {summary.get('total_tables', 0)} BigQuery tables)")
-    print()
-
-    datasets = result.get('datasets', [])
-    for dataset in datasets:
-        # Dataset header with mode and refresh schedule
-        name = dataset.get('name', '')
-        mode = dataset.get('mode', 'Import')
-        refresh = dataset.get('refresh_schedule')
-
-        console.print(f"[bold cyan]{name}[/bold cyan]")
-
-        # Configured by
-        configured_by = dataset.get('configured_by', '')
-        if configured_by:
-            console.print(f"   [dim]Owner:[/dim] {configured_by}")
-
-        # Mode and refresh schedule
-        if mode == 'DirectQuery':
-            console.print("   [dim]Mode:[/dim] [magenta]DirectQuery[/magenta] — real-time queries to BigQuery")
-        else:
-            # Import mode - show type and refresh schedule
-            console.print("   [dim]Mode:[/dim] Import — cached data, updated by schedule")
-            if refresh and refresh.get('enabled'):
-                freq = refresh.get('frequency', '')
-                times = refresh.get('times', [])
-                times_str = ', '.join(times) if times else ''
-                if times_str:
-                    console.print(f"   [dim]Refresh:[/dim] [green]{freq}[/green] at {times_str}")
-                else:
-                    console.print(f"   [dim]Refresh:[/dim] [green]{freq}[/green]")
-            elif refresh and not refresh.get('enabled'):
-                console.print("   [dim]Refresh:[/dim] [yellow]disabled[/yellow]")
-            else:
-                console.print("   [dim]Refresh:[/dim] [yellow]no schedule[/yellow]")
-
-        # Reports using this dataset (group similar reports)
-        reports = dataset.get('reports', [])
-        if reports:
-            # Find pairs: "Name" and "[App] Name"
-            app_reports = {r[6:] for r in reports if r.startswith('[App] ')}
-            shown = set()
-            report_lines = []
-
-            for report in reports:
-                if report in shown:
-                    continue
-
-                base_name = report[6:] if report.startswith('[App] ') else report
-                has_app = base_name in app_reports
-                has_regular = base_name in reports
-
-                if has_app and has_regular and not report.startswith('[App] '):
-                    # Both versions exist - show combined
-                    report_lines.append(f"{base_name} [dim](+ App)[/dim]")
-                    shown.add(base_name)
-                    shown.add(f'[App] {base_name}')
-                elif not report.startswith('[App] ') or base_name not in reports:
-                    # Only one version
-                    report_lines.append(report)
-                    shown.add(report)
-
-            for line in report_lines:
-                console.print(f"   [dim]Report:[/dim] {line}")
-
-        # Tables
-        tables = dataset.get('tables', [])
-        if tables:
-            console.print("   [dim]Tables:[/dim]")
-            for table in tables:
-                bq_table = table.get('bigquery_table', '')
-                dbt_model = table.get('dbt_model')
-                in_manifest = table.get('in_manifest', False)
-
-                if in_manifest:
-                    console.print(f"   [green]   {bq_table}[/green] -> {dbt_model}")
-                else:
-                    console.print(f"   [yellow]   {bq_table}[/yellow] [dim](not in manifest)[/dim]")
-
-                # Show measures if requested
-                if show_measures and 'measures' in table:
-                    measures = table['measures']
-                    console.print(f"      [dim]Measures ({len(measures)}):[/dim]")
-                    for measure in measures[:3]:  # Show first 3
-                        name = measure['name']
-                        expr = measure['expression'][:60] + '...' if len(measure['expression']) > 60 else measure['expression']
-                        console.print(f"      [cyan]•[/cyan] {name}: {expr}")
-                    if len(measures) > 3:
-                        console.print(f"      [dim]... and {len(measures) - 3} more[/dim]")
-
-                # Show columns if requested
-                if show_columns and 'columns' in table:
-                    columns = table['columns']
-                    console.print(f"      [dim]Columns ({len(columns)}):[/dim]")
-                    for col in columns[:5]:  # Show first 5
-                        name = col['name']
-                        dtype = col['data_type']
-                        hidden = '[dim](hidden)[/dim]' if col.get('is_hidden') else ''
-                        console.print(f"      [cyan]•[/cyan] {name} ({dtype}) {hidden}")
-                    if len(columns) > 5:
-                        console.print(f"      [dim]... and {len(columns) - 5} more[/dim]")
-
-        print()
-
-    # Summary
-    tables_in = summary.get('tables_in_manifest', 0)
-    tables_total = summary.get('total_tables', 0)
-    pct = (tables_in / tables_total * 100) if tables_total > 0 else 0
-
-    console.print(f"[dim]Summary: {tables_in}/{tables_total} tables in dbt manifest ({pct:.0f}%)[/dim]")
-
-
-def _print_powerbi_by_table(result: dict) -> None:
-    """Pretty print powerbi result in table-centric view.
-
-    Args:
-        result: Power BI scan result with tables aggregation
-    """
-    from rich.table import Table
-
-    print()
-    workspace = result.get('workspace', 'Unknown')
-    summary = result.get('summary', {})
-
-    # Workspace header
-    console.print(
-        f"[bold green]{workspace}[/bold green] "
-        f"({summary.get('total_tables', 0)} BigQuery tables, "
-        f"{summary.get('total_reports', 0)} reports, "
-        f"{summary.get('total_datasets', 0)} datasets)"
-    )
-    print()
-
-    # Create ASCII table
-    table = Table(show_header=True, header_style="bold cyan")
-    table.add_column("BigQuery Table", style="white", no_wrap=False, width=45)
-    table.add_column("Reports", justify="right", style="cyan", width=8)
-    table.add_column("Datasets", justify="right", style="cyan", width=9)
-    table.add_column("dbt Model", style="green", no_wrap=False, width=40)
-
-    # Add rows
-    tables = result.get('tables', [])
-    for table_info in tables:
-        bq_table = table_info['bigquery_table']
-        report_count = table_info['report_count']
-        dataset_count = table_info['dataset_count']
-        dbt_model = table_info['dbt_model'] or '[dim](not in manifest)[/dim]'
-
-        # Color code based on manifest status
-        if table_info['in_manifest']:
-            bq_table_styled = f"[green]{bq_table}[/green]"
-        else:
-            bq_table_styled = f"[yellow]{bq_table}[/yellow]"
-
-        table.add_row(
-            bq_table_styled,
-            str(report_count),
-            str(dataset_count),
-            dbt_model
+        return
+    if json_output:
+        print(json.dumps(result, indent=2))
+    else:
+        console.print(
+            f"[green]Scanned[/green] {result['workspaces']} workspaces, "
+            f"{result['datasets']} datasets, {result['reports']} reports, "
+            f"{result['tables']} tables → {result['output']}"
         )
 
-    console.print(table)
-    print()
 
-    # Summary
-    tables_in = summary.get('tables_in_manifest', 0)
-    tables_total = summary.get('total_tables', 0)
-    pct = (tables_in / tables_total * 100) if tables_total > 0 else 0
+@powerbi_app.command("build")
+def powerbi_build(
+    raw: str = typer.Option(
+        "target/powerbi_raw.json", "--raw", help="Raw scanResult path"
+    ),
+    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    output: str = typer.Option(
+        "target/powerbi_index.json", "-o", "--output", help="Compact index output path"
+    ),
+    json_output: bool = typer.Option(False, "-j", "--json", help="Output summary as JSON"),
+) -> None:
+    """Build the compact agent index from a raw scanResult + dbt manifest."""
+    from dbt_meta.command_impl import powerbi as pbi
 
-    console.print(f"[dim]Summary: {tables_in}/{tables_total} tables in dbt manifest ({pct:.0f}%)[/dim]")
+    try:
+        manifest_path, _ = get_manifest_path(manifest, False)
+        result = pbi.build_index_artifact(raw, manifest_path, output)
+    except DbtMetaError as e:
+        handle_error(e, json_output)
+        return
+    if json_output:
+        print(json.dumps(result, indent=2))
+    else:
+        console.print(
+            f"[green]Indexed[/green] {result['reports']} reports, "
+            f"{result['tables']} tables, {result['metrics']} metrics → {result['output']}"
+        )
 
 
+@powerbi_app.command("find")
+def powerbi_find(
+    query: str = typer.Argument(..., help="Report / dataset / table / metric substring"),
+    artifact: Optional[str] = typer.Option(
+        None, "--artifact", help="Explicit powerbi_index.json path"
+    ),
+    json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
+) -> None:
+    """Find reports / metrics behind a dashboard name or metric."""
+    from dbt_meta.command_impl import powerbi as pbi
+    from dbt_meta.powerbi.artifact import find_powerbi_artifact
+
+    try:
+        path = find_powerbi_artifact(explicit_path=artifact)
+        result = pbi.find_in_index(path, query)
+    except FileNotFoundError as e:
+        handle_error(DbtMetaError(str(e)), json_output)
+        return
+    except DbtMetaError as e:
+        handle_error(e, json_output)
+        return
+    if json_output:
+        print(json.dumps(result, indent=2))
+    else:
+        _print_powerbi_find(result)
+
+
+@powerbi_app.command("show")
+def powerbi_show(
+    report: str = typer.Argument(..., help="Report name (exact or substring)"),
+    artifact: Optional[str] = typer.Option(
+        None, "--artifact", help="Explicit powerbi_index.json path"
+    ),
+    json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
+) -> None:
+    """Show one report's full breakdown — tables, SQL analysis, dbt mapping."""
+    from dbt_meta.command_impl import powerbi as pbi
+    from dbt_meta.powerbi.artifact import find_powerbi_artifact
+
+    try:
+        path = find_powerbi_artifact(explicit_path=artifact)
+        result = pbi.show_report(path, report)
+    except FileNotFoundError as e:
+        handle_error(DbtMetaError(str(e)), json_output)
+        return
+    except DbtMetaError as e:
+        handle_error(e, json_output)
+        return
+    if json_output:
+        print(json.dumps(result, indent=2))
+    else:
+        _print_powerbi_show(result)
+
+
+def _print_powerbi_find(result: dict) -> None:
+    """Render `meta powerbi find` results."""
+    from rich.table import Table
+
+    reports = result.get("reports", [])
+    metrics = result.get("metrics", {})
+    if not reports and not metrics:
+        console.print(
+            f"[{STYLE_DIM}]No matches for {result.get('query')!r}[/{STYLE_DIM}]"
+        )
+        return
+    if reports:
+        table = Table(show_header=True, header_style="bold cyan")
+        table.add_column("Workspace", style="cyan")
+        table.add_column("Report", style="white")
+        table.add_column("Dataset", style="white")
+        table.add_column("Tables", justify="right", style="green")
+        for r in reports:
+            table.add_row(
+                r["workspace"], r["report"], r["dataset"], str(len(r["tables"]))
+            )
+        console.print(table)
+    if metrics:
+        console.print()
+        console.print("[bold cyan]Metrics[/bold cyan]")
+        for name, tables in metrics.items():
+            joined = ", ".join(tables) if tables else "[dim]?[/dim]"
+            console.print(f"  [white]{name}[/white] → {joined}")
+
+
+def _print_powerbi_show(result: dict) -> None:
+    """Render `meta powerbi show` results."""
+    from rich.table import Table
+
+    console.print(
+        f"[bold green]{result['report']}[/bold green] "
+        f"([cyan]{result['workspace']}[/cyan] / dataset "
+        f"[white]{result['dataset']}[/white])"
+    )
+    tables = result.get("tables", [])
+    if tables:
+        table = Table(show_header=True, header_style="bold cyan")
+        table.add_column("BigQuery Table", style="white", width=55)
+        table.add_column("Status", style="cyan")
+        table.add_column("dbt Model", style="green")
+        for t in tables:
+            status = t["status"]
+            color = {"model": "green", "source": "cyan", "external": "yellow"}.get(
+                status, "white"
+            )
+            table.add_row(
+                t["bq"], f"[{color}]{status}[/{color}]", t.get("dbt_model") or ""
+            )
+        console.print(table)
+    sql = result.get("sql_analysis", [])
+    if sql:
+        console.print()
+        console.print("[bold cyan]SQL analysis (logic outside dbt)[/bold cyan]")
+        for s in sql:
+            console.print(
+                f"  [white]{s['query']}[/white] "
+                f"[{STYLE_DIM}]({s['parse_status']})[/{STYLE_DIM}]"
+            )
+            if s.get("filters"):
+                console.print(f"    filters: {', '.join(s['filters'])}")
+            if s.get("joins"):
+                console.print(f"    joins:   {', '.join(s['joins'])}")
+            if s.get("group_by"):
+                console.print(f"    group:   {', '.join(s['group_by'])}")
 # ============================================================================
 # Column-Level Lineage Commands
 # ============================================================================

@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-06-17
+
+Complete rework of the Power BI integration around a scan → build → query flow.
+
+### Changed
+- **`meta powerbi` is now a command group** (breaking) — the single
+  `meta powerbi [workspace_id]` command (with `--by-table`/`--measures`/
+  `--columns`/`--full`) is replaced by four subcommands:
+  - `meta powerbi scan` — pull a raw scanResult from the Admin Scanner API into
+    `target/powerbi_raw.json`. Enriches with `lineage` / `datasourceDetails` /
+    `datasetSchema` / `datasetExpressions` / `getArtifactUsers`; all configured
+    workspaces go out in one `getInfo` batch. The OAuth token never touches disk.
+  - `meta powerbi build` — compile the scanResult against the dbt manifest into a
+    compact, queryable index (`target/powerbi_index.json`).
+  - `meta powerbi find <query>` — find reports / metrics behind a dashboard name.
+  - `meta powerbi show <report>` — full breakdown of one report: BigQuery tables,
+    dbt model/source/external classification, and native-SQL analysis.
+
+### Added
+- **Native SQL parsing** — both 1:1 navigation imports
+  (`Source{[Name=…,Kind="Table"]}[Data]`) and custom `Value.NativeQuery(...)`
+  expressions are parsed (SQLGlot, BigQuery dialect) to recover the full list of
+  imported BigQuery tables. M-escape sequences (`#(lf)`, `#"…"`) are decoded
+  before parsing; CTE references are filtered out (require ≥1 dotted qualifier).
+- **Intra-dataset cross-query resolution** — `Table.NestedJoin(...)` references to
+  sibling M-queries (bare or `#"quoted"`) are resolved transitively, with cycle
+  guarding, so tables pulled in via a referenced query are attributed correctly.
+- **Native-SQL analysis** — filters (WHERE), join columns, and group-by columns
+  are extracted per query and surfaced in `show`, since custom SQL is logic living
+  outside the dbt project.
+- **Index artifact** — JSON artifact with staleness metadata; discovery order
+  `--artifact` → `DBT_PROD_POWERBI_PATH` → `./target/powerbi_index.json` →
+  `~/dbt-state/powerbi_index.json`.
+
+### Security
+- **PII scrubbing in `powerbi scan`** — user emails (`emailAddress` and the
+  `identifier` UPN) are stripped from every `users` array in the scanResult before
+  it is written to disk; `displayName` and the opaque Azure AD `graphId` are kept
+  so users stay trackable without storing emails.
+
 ## [0.3.2] - 2026-06-15
 
 Internal refactor, `--dev` validation fix, the `context` bundle command, and
