@@ -220,7 +220,7 @@ Backed by SQLGlot 30.7+ (`sqlglot.lineage`, all-columns mode) and rustworkx for 
 - `--timeout N` — per-model SIGALRM budget in seconds (default 30, 0 disables)
 - `-o PATH` — explicit output path (default: `~/dbt-state/lineage.json` for prod, `./target/lineage.json` for `--dev`)
 
-For best performance install the mypyc-compiled SQLGlot: `pip install 'dbt-meta[lineage]' 'sqlglot[c]'` — gives 2-4× speedup on large projects (~470 s → ~150 s for 934 models).
+For best performance install the mypyc-compiled SQLGlot: `pip install 'sqlglot[c]'` — gives 2-4× speedup on large projects (~470 s → ~150 s for 934 models).
 
 ### Optimization advisors (`meta optimize`)
 
@@ -300,17 +300,25 @@ Uses BigQuery dry run (no rows processed, no charge for dry run itself). Both co
 
 ### Integration — Power BI
 
-Requires Azure AD Service Principal with Power BI Admin API access.
+Requires Azure AD Service Principal with Power BI Admin API access. The flow is
+two-phase: `scan` pulls a raw scanResult from the Admin Scanner API, `build`
+compiles it against the dbt manifest into a compact, queryable index, then
+`find` / `show` answer "which BigQuery tables/models sit behind this dashboard?".
+
+Both 1:1 navigation imports **and** custom Native SQL queries are parsed (via
+SQLGlot) to recover the full list of imported BigQuery tables. Native SQL is also
+analyzed separately (filters / joins / group-by) because it is logic living
+outside the dbt project.
 
 | Command | Description | Key flags | Example |
 |---------|-------------|-----------|---------|
-| `powerbi [workspace_id]` | Power BI → BigQuery → dbt model mapping | `-j`, `--by-table`, `--measures`, `--columns`, `--full` | `meta powerbi --by-table -j` |
+| `powerbi scan` | Scan workspaces → raw scanResult JSON | `-o/--output`, `-j` | `meta powerbi scan` |
+| `powerbi build` | Build compact index (scanResult + manifest) | `--raw`, `--manifest`, `-o/--output`, `-j` | `meta powerbi build` |
+| `powerbi find` | Find reports / metrics behind a name | `--artifact`, `-j` | `meta powerbi find "organic leads"` |
+| `powerbi show` | Full breakdown of one report | `--artifact`, `-j` | `meta powerbi show "Organic Leads"` |
 
-**`powerbi` flags:**
-- `--measures` — include DAX measure expressions
-- `--columns` — include column schemas with data types
-- `--full` — include all metadata (measures + columns)
-- `--by-table` — aggregated view grouped by BigQuery table
+Index artifact discovery (for `find` / `show`): `--artifact` → `DBT_PROD_POWERBI_PATH`
+→ `./target/powerbi_index.json` → `~/dbt-state/powerbi_index.json`.
 
 ### Artifacts & Settings
 
@@ -521,32 +529,30 @@ meta optimize cluster core_sessions -j | jq '.recommendations[].column'
 ### Power BI Integration
 
 ```bash
-# Extract table mappings from default workspace (from config)
-meta powerbi
-# → Shows datasets, reports, BigQuery tables, and dbt model mappings
+# 1. Scan configured workspaces → raw scanResult dump
+meta powerbi scan
+# → target/powerbi_raw.json (navigation imports + native SQL expressions)
 
-# Table usage view: aggregated by BigQuery table with report/dataset counts
-meta powerbi --by-table
-# → Table | Reports | Datasets | dbt Model
+# 2. Build the compact, queryable index against the dbt manifest
+meta powerbi build
+# → target/powerbi_index.json (reports → BQ tables → dbt model/source/external)
 
-# Include DAX measure expressions
-meta powerbi --measures
+# 3a. Find reports / metrics behind a dashboard name
+meta powerbi find "organic leads"
+# → matching reports (workspace / dataset / table count) + metrics
 
-# Include column schemas (name, data type, visibility)
-meta powerbi --columns
+# 3b. Full breakdown of one report: tables, dbt mapping, native-SQL analysis
+meta powerbi show "Organic Leads"
+# → BigQuery Table | Status (model/source/external) | dbt Model
+#   + SQL analysis (filters / joins / group-by — logic living outside dbt)
 
-# All metadata: tables + measures + columns
-meta powerbi --full
-
-# Specific workspace
-meta powerbi 677db568-5923-4c5b-9b45-f14ec16a2b62
-
-# JSON output for automation (always returns full metadata when -j is set)
-meta powerbi -j | jq '.datasets[] | {name: .name, tables: .tables | length}'
-
-# Table usage as JSON (includes report/dataset lists per table)
-meta powerbi --by-table -j | jq '.tables[] | select(.in_manifest == false) | .bigquery_table'
+# JSON output for automation
+meta powerbi find "leads" -j | jq '.reports[].tables[] | select(.status == "external") | .bq'
 # → BigQuery tables used in Power BI but not tracked in dbt
+
+# Explicit index artifact path (otherwise: DBT_PROD_POWERBI_PATH →
+# ./target/powerbi_index.json → ~/dbt-state/powerbi_index.json)
+meta powerbi show "Organic Leads" --artifact ~/dbt-state/powerbi_index.json
 
 # Configuration (in ~/.config/dbt-meta/config.toml)
 [powerbi]
@@ -687,6 +693,9 @@ All TOML settings can be set via environment variables. **CLI flags > TOML > env
 | `powerbi.client_id` | `POWERBI_CLIENT_ID` |
 | `powerbi.client_secret` | `POWERBI_CLIENT_SECRET` |
 | `powerbi.workspaces` | `POWERBI_WORKSPACES` (comma-separated) |
+
+Index artifact path for `powerbi find` / `powerbi show`: `DBT_PROD_POWERBI_PATH`
+(default discovery: `./target/powerbi_index.json` → `~/dbt-state/powerbi_index.json`).
 
 ## 🧪 Development
 
