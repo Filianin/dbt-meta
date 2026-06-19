@@ -21,7 +21,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import orjson
 
@@ -34,8 +34,8 @@ def save_artifact(
     graph: LineageGraph,
     path: str,
     *,
-    manifest_sha: Optional[str] = None,
-    warnings: Optional[list[str]] = None,
+    manifest_sha: str | None = None,
+    warnings: list[str] | None = None,
 ) -> str:
     """Write graph to disk as a JSON artifact.
 
@@ -100,7 +100,7 @@ def load_artifact(path: str) -> tuple[LineageGraph, dict[str, Any]]:
     return graph, metadata
 
 
-def get_artifact_age_hours(path: str) -> Optional[float]:
+def get_artifact_age_hours(path: str) -> float | None:
     """Return file mtime age in hours, or None if missing."""
     p = Path(path).expanduser()
     if not p.exists():

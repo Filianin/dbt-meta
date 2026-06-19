@@ -14,12 +14,12 @@ from typing import Any, Optional
 
 # TOML support: Python 3.11+ has tomllib, earlier versions need tomli
 try:
-    import tomllib
+    import tomllib  # type: ignore[import-not-found]
 except ImportError:
     try:
         import tomli as tomllib  # type: ignore
     except ImportError:
-        tomllib = None  # type: ignore
+        tomllib = None
 
 
 def _parse_bool(value: str) -> bool:

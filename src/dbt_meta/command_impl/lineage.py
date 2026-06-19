@@ -8,7 +8,7 @@ on a rustworkx-backed graph.
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Any, Optional
+from typing import Any
 
 from dbt_meta.lineage import LineageGraph, find_lineage_artifact, load_artifact
 from dbt_meta.lineage.graph import make_node_id, split_node_id
@@ -20,7 +20,7 @@ def _get_cached_graph(artifact_path: str) -> tuple[LineageGraph, dict[str, Any]]
     return load_artifact(artifact_path)
 
 
-def _resolve_node_id(graph: LineageGraph, ref: str) -> Optional[str]:
+def _resolve_node_id(graph: LineageGraph, ref: str) -> str | None:
     """Best-effort lookup: accepts 'model.column' or 'model:column' notation."""
     if graph.has_node(ref):
         return ref
@@ -48,7 +48,7 @@ def column_lineage(
     artifact_path: str,
     column_ref: str,
     direction: str = "upstream",
-) -> Optional[dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Return upstream or downstream lineage for a single column.
 
     Args:
@@ -103,6 +103,6 @@ def lineage_stats(artifact_path: str) -> dict[str, Any]:
     }
 
 
-def find_artifact(use_dev: bool = False, explicit: Optional[str] = None) -> str:
+def find_artifact(explicit: str | None = None) -> str:
     """Wrapper exposing the finder for CLI consumers."""
-    return find_lineage_artifact(explicit_path=explicit, use_dev=use_dev)
+    return find_lineage_artifact(explicit_path=explicit)

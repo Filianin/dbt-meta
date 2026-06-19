@@ -16,6 +16,7 @@ from dbt_meta.errors import DbtMetaError
 from dbt_meta.powerbi.artifact import (
     artifact_age_hours,
     find_powerbi_artifact,
+    find_powerbi_raw,
     load_index,
     save_index,
 )
@@ -677,6 +678,50 @@ class TestScanner:
 
         assert scanner.scan_workspaces("tok", ["ws1"], poll_interval=0) is None
 
+    def test_empty_workspaces_returns_none(self):
+        assert scanner.scan_workspaces("tok", [], poll_interval=0) is None
+
+    def test_getinfo_without_id_returns_none(self, monkeypatch):
+        def fake(token, endpoint, method="GET", data=None, timeout=30):
+            if endpoint.startswith("/admin/workspaces/getInfo"):
+                return {}  # no "id"
+            return None
+
+        monkeypatch.setattr(scanner, "_call_powerbi_api", fake)
+
+        assert scanner.scan_workspaces("tok", ["ws1"], poll_interval=0) is None
+
+    def test_status_poll_none_returns_none(self, monkeypatch):
+        def fake(token, endpoint, method="GET", data=None, timeout=30):
+            if endpoint.startswith("/admin/workspaces/getInfo"):
+                return {"id": "scan-123"}
+            if endpoint.startswith("/admin/workspaces/scanStatus"):
+                return None  # status call fails mid-poll
+            return None
+
+        monkeypatch.setattr(scanner, "_call_powerbi_api", fake)
+
+        assert scanner.scan_workspaces("tok", ["ws1"], poll_interval=0) is None
+
+    def test_poll_exhausted_returns_none(self, monkeypatch):
+        slept = []
+        monkeypatch.setattr(scanner.time, "sleep", lambda s: slept.append(s))
+        fake = _FakeApi(statuses=["Running", "Running"])
+        monkeypatch.setattr(scanner, "_call_powerbi_api", fake)
+
+        result = scanner.scan_workspaces(
+            "tok", ["ws1"], poll_interval=1, max_polls=2
+        )
+
+        assert result is None
+        assert slept == [1, 1]  # sleep happened on each non-terminal poll
+
+    def test_result_without_workspaces_returns_none(self, monkeypatch):
+        fake = _FakeApi(statuses=["Succeeded"], scan_result={"no": "workspaces"})
+        monkeypatch.setattr(scanner, "_call_powerbi_api", fake)
+
+        assert scanner.scan_workspaces("tok", ["ws1"], poll_interval=0) is None
+
     def test_scan_strips_user_emails_keeps_names(self, monkeypatch):
         scan_result = {
             "workspaces": [
@@ -694,6 +739,9 @@ class TestScanner:
                     "reports": [
                         {
                             "name": "Org Leads",
+                            "modifiedBy": "bob@example.com",
+                            "createdBy": "carol@example.com",
+                            "configuredBy": "dave@example.com",
                             "users": [
                                 {
                                     "displayName": "Jane Roe",
@@ -721,6 +769,151 @@ class TestScanner:
         assert report_user["displayName"] == "Jane Roe"
         assert "emailAddress" not in report_user
         assert "identifier" not in report_user
+        # scalar UPN/email fields on the artifact are dropped entirely
+        report = result["workspaces"][0]["reports"][0]
+        assert "modifiedBy" not in report
+        assert "createdBy" not in report
+        assert "configuredBy" not in report
+
+
+# ============================================================================
+# API transport — secrets must never reach process argv
+# ============================================================================
+
+
+class _CapturedRun:
+    """Stand-in for subprocess.run that records argv + stdin and returns stdout."""
+
+    def __init__(self, stdout):
+        self.stdout = stdout
+        self.cmd = None
+        self.input = None
+
+    def __call__(self, cmd, *, input=None, capture_output=None, text=None, timeout=None):
+        self.cmd = cmd
+        self.input = input
+
+        class _Result:
+            returncode = 0
+
+        r = _Result()
+        r.stdout = self.stdout
+        return r
+
+
+class TestApiTransport:
+    def test_token_secret_not_in_argv(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pbi_utils
+
+        run = _CapturedRun('{"access_token": "abc"}')
+        monkeypatch.setattr(pbi_utils.subprocess, "run", run)
+        monkeypatch.setattr(pbi_utils.shutil, "which", lambda _: "/usr/bin/curl")
+
+        token = pbi_utils.get_powerbi_token("tenant", "client", "s3cret-value")
+
+        assert token == "abc"
+        assert "s3cret-value" not in " ".join(run.cmd)
+        assert "s3cret-value" in run.input
+        assert "@-" in run.cmd
+
+    def test_bearer_token_not_in_argv(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pbi_utils
+
+        run = _CapturedRun('{"ok": true}')
+        monkeypatch.setattr(pbi_utils.subprocess, "run", run)
+        monkeypatch.setattr(pbi_utils.shutil, "which", lambda _: "/usr/bin/curl")
+
+        result = pbi_utils._call_powerbi_api("jwt-token-xyz", "/admin/x")
+
+        assert result == {"ok": True}
+        assert "jwt-token-xyz" not in " ".join(run.cmd)
+        assert "jwt-token-xyz" in run.input
+        assert run.cmd[run.cmd.index("-K") + 1] == "-"
+
+    def test_token_none_when_curl_missing(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pbi_utils
+
+        monkeypatch.setattr(pbi_utils.shutil, "which", lambda _: None)
+
+        assert pbi_utils.get_powerbi_token("t", "c", "s") is None
+
+    def test_token_none_on_nonzero_exit(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pbi_utils
+
+        def run(cmd, **kw):
+            class _R:
+                returncode = 1
+                stdout = ""
+            return _R()
+
+        monkeypatch.setattr(pbi_utils.shutil, "which", lambda _: "/usr/bin/curl")
+        monkeypatch.setattr(pbi_utils.subprocess, "run", run)
+
+        assert pbi_utils.get_powerbi_token("t", "c", "s") is None
+
+    def test_token_none_on_timeout(self, monkeypatch):
+        import subprocess
+
+        from dbt_meta.utils import powerbi as pbi_utils
+
+        def run(cmd, **kw):
+            raise subprocess.TimeoutExpired(cmd, 30)
+
+        monkeypatch.setattr(pbi_utils.shutil, "which", lambda _: "/usr/bin/curl")
+        monkeypatch.setattr(pbi_utils.subprocess, "run", run)
+
+        assert pbi_utils.get_powerbi_token("t", "c", "s") is None
+
+    def test_api_none_when_curl_missing(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pbi_utils
+
+        monkeypatch.setattr(pbi_utils.shutil, "which", lambda _: None)
+
+        assert pbi_utils._call_powerbi_api("tok", "/admin/x") is None
+
+    def test_api_none_on_nonzero_exit(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pbi_utils
+
+        def run(cmd, **kw):
+            class _R:
+                returncode = 1
+                stdout = ""
+            return _R()
+
+        monkeypatch.setattr(pbi_utils.shutil, "which", lambda _: "/usr/bin/curl")
+        monkeypatch.setattr(pbi_utils.subprocess, "run", run)
+
+        assert pbi_utils._call_powerbi_api("tok", "/admin/x") is None
+
+    def test_api_empty_stdout_returns_empty_dict(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pbi_utils
+
+        run = _CapturedRun("   ")
+        monkeypatch.setattr(pbi_utils.shutil, "which", lambda _: "/usr/bin/curl")
+        monkeypatch.setattr(pbi_utils.subprocess, "run", run)
+
+        assert pbi_utils._call_powerbi_api("tok", "/admin/x") == {}
+
+    def test_api_none_on_malformed_json(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pbi_utils
+
+        run = _CapturedRun("not json{")
+        monkeypatch.setattr(pbi_utils.shutil, "which", lambda _: "/usr/bin/curl")
+        monkeypatch.setattr(pbi_utils.subprocess, "run", run)
+
+        assert pbi_utils._call_powerbi_api("tok", "/admin/x") is None
+
+    def test_api_post_data_passed_as_argument(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pbi_utils
+
+        run = _CapturedRun('{"ok": true}')
+        monkeypatch.setattr(pbi_utils.shutil, "which", lambda _: "/usr/bin/curl")
+        monkeypatch.setattr(pbi_utils.subprocess, "run", run)
+
+        pbi_utils._call_powerbi_api("tok", "/admin/x", method="POST", data={"a": 1})
+
+        assert "-d" in run.cmd
+        assert '{"a": 1}' in run.cmd
 
 
 # ============================================================================
@@ -772,6 +965,45 @@ def _cmd_scan_result():
     }
 
 
+class TestCommandArtifacts:
+    def test_artifacts_writes_both_files_and_returns_summary(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cmd, "get_powerbi_token", lambda *a, **k: "tok")
+        monkeypatch.setattr(cmd, "scan_workspaces", lambda *a, **k: _cmd_scan_result())
+        man = _cmd_write(tmp_path / "manifest.json", CMD_MANIFEST)
+        raw_out = tmp_path / "powerbi_raw.json"
+        idx_out = tmp_path / "powerbi_index.json"
+        config = Config()
+        config.powerbi_tenant_id = "t"
+        config.powerbi_client_id = "c"
+        config.powerbi_client_secret = "s"
+        config.powerbi_workspaces = ["ws1"]
+
+        result = cmd.artifacts_cmd(config, man, str(raw_out), str(idx_out))
+
+        assert raw_out.exists()
+        assert idx_out.exists()
+        assert result["reports"] == 1
+        assert result["raw_path"] == str(raw_out)
+        assert result["index_path"] == str(idx_out)
+
+    def test_artifacts_scan_failure_raises(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cmd, "get_powerbi_token", lambda *a, **k: "tok")
+        monkeypatch.setattr(cmd, "scan_workspaces", lambda *a, **k: None)
+        man = _cmd_write(tmp_path / "manifest.json", CMD_MANIFEST)
+        config = Config()
+        config.powerbi_tenant_id = "t"
+        config.powerbi_client_id = "c"
+        config.powerbi_client_secret = "s"
+        config.powerbi_workspaces = ["ws1"]
+
+        with pytest.raises(DbtMetaError):
+            cmd.artifacts_cmd(
+                config, man,
+                str(tmp_path / "raw.json"),
+                str(tmp_path / "idx.json"),
+            )
+
+
 class TestCommandBuild:
     def test_build_writes_index_and_reports_counts(self, tmp_path):
         raw = _cmd_write(tmp_path / "raw.json", _cmd_scan_result())
@@ -811,6 +1043,61 @@ class TestCommandFind:
         result = cmd.find_in_index(str(out), "total")
 
         assert "Total" in result["metrics"]
+
+
+class TestCommandList:
+    def test_lists_all_reports_sorted(self, tmp_path):
+        index = PowerBiIndex(
+            reports=[
+                ReportEntry(
+                    workspace="BI Sales",
+                    report="Zebra",
+                    dataset="DS2",
+                    tables=[TableRef(bq="p.s.t2", status="model", dbt_model="t2")],
+                ),
+                ReportEntry(
+                    workspace="BI Marketing",
+                    report="Alpha",
+                    dataset="DS1",
+                    tables=[TableRef(bq="p.s.t1", status="model", dbt_model="t1")],
+                ),
+            ]
+        )
+        path = tmp_path / "index.json"
+        save_index(index, str(path))
+
+        result = cmd.list_cmd(str(path))
+
+        assert result["count"] == 2
+        assert [(r["workspace"], r["report"]) for r in result["reports"]] == [
+            ("BI Marketing", "Alpha"),
+            ("BI Sales", "Zebra"),
+        ]
+        assert result["reports"][0]["tables"][0]["bq"] == "p.s.t1"
+
+    def test_empty_index_returns_zero(self, tmp_path):
+        path = tmp_path / "index.json"
+        save_index(PowerBiIndex(reports=[]), str(path))
+
+        result = cmd.list_cmd(str(path))
+
+        assert result["count"] == 0
+        assert result["reports"] == []
+
+
+class TestSqlInIndex:
+    def test_show_sql_analysis_contains_sql_text(self, tmp_path):
+        raw = _cmd_write(tmp_path / "raw.json", _cmd_scan_result())
+        man = _cmd_write(tmp_path / "manifest.json", CMD_MANIFEST)
+        out = tmp_path / "index.json"
+        cmd.build_index_artifact(raw, man, str(out))
+
+        result = cmd.show_report(str(out), "Clients Report")
+
+        sql_entries = result.get("sql_analysis", [])
+        assert len(sql_entries) == 1
+        assert "SELECT" in sql_entries[0]["sql"]
+        assert "client_info" in sql_entries[0]["sql"]
 
 
 class TestCommandShow:
@@ -870,3 +1157,772 @@ class TestCommandScan:
 
         with pytest.raises(DbtMetaError):
             cmd.scan_command(config, str(tmp_path / "raw.json"))
+
+    def test_scan_missing_workspaces_raises(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cmd, "get_powerbi_token", lambda *a, **k: "tok")
+        config = Config()
+        config.powerbi_tenant_id = "t"
+        config.powerbi_client_id = "c"
+        config.powerbi_client_secret = "s"
+        config.powerbi_workspaces = []
+
+        with pytest.raises(DbtMetaError, match="workspaces"):
+            cmd.scan_command(config, str(tmp_path / "raw.json"))
+
+    def test_scan_token_none_raises(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cmd, "get_powerbi_token", lambda *a, **k: None)
+        config = Config()
+        config.powerbi_tenant_id = "t"
+        config.powerbi_client_id = "c"
+        config.powerbi_client_secret = "s"
+        config.powerbi_workspaces = ["ws1"]
+
+        with pytest.raises(DbtMetaError, match="token"):
+            cmd.scan_command(config, str(tmp_path / "raw.json"))
+
+
+# ============================================================================
+# TestCommandBuild — _load_json error branches
+# ============================================================================
+
+
+class TestCommandBuildErrors:
+    def test_build_file_not_found_raises(self, tmp_path):
+        with pytest.raises(DbtMetaError, match="not found"):
+            cmd.build_index_artifact(
+                str(tmp_path / "nonexistent.json"),
+                str(tmp_path / "man.json"),
+                str(tmp_path / "out.json"),
+            )
+
+    def test_build_bad_json_raises(self, tmp_path):
+        bad = tmp_path / "bad.json"
+        bad.write_bytes(b"bad")
+        man = tmp_path / "manifest.json"
+        man.write_bytes(b"{}")
+
+        with pytest.raises(DbtMetaError, match="Invalid JSON"):
+            cmd.build_index_artifact(str(bad), str(man), str(tmp_path / "out.json"))
+
+
+# ============================================================================
+# TestRawReader — _load_raw and _find_report error branches
+# ============================================================================
+
+
+def _raw_with_reports(*reports, dataset_id="ds1"):
+    """Build a minimal raw artifact dict with the given report dicts."""
+    return {
+        "workspaces": [
+            {
+                "name": "BI WS",
+                "datasets": [
+                    {"id": dataset_id, "name": "DS", "tables": []}
+                ],
+                "reports": list(reports),
+            }
+        ]
+    }
+
+
+class TestRawReader:
+    def test_load_raw_file_not_found_raises(self, tmp_path):
+        with pytest.raises(DbtMetaError, match="not found"):
+            cmd.measures_cmd(str(tmp_path / "nonexistent.json"), "Any")
+
+    def test_load_raw_bad_json_raises(self, tmp_path):
+        bad = tmp_path / "bad.json"
+        bad.write_bytes(b"not-json")
+
+        with pytest.raises(DbtMetaError, match="Invalid JSON"):
+            cmd.measures_cmd(str(bad), "Any")
+
+    def test_exact_ambiguity_raises(self, tmp_path):
+        raw_data = _raw_with_reports(
+            {"name": "Exact Name", "datasetId": "ds1"},
+            {"name": "Exact Name", "datasetId": "ds1"},
+        )
+        raw_path = _cmd_write(tmp_path / "raw.json", raw_data)
+
+        with pytest.raises(DbtMetaError, match="Ambiguous"):
+            cmd.owners_cmd(raw_path, "Exact Name")
+
+    def test_partial_ambiguity_raises(self, tmp_path):
+        raw_data = _raw_with_reports(
+            {"name": "Alpha partial report", "datasetId": "ds1"},
+            {"name": "Beta partial report", "datasetId": "ds1"},
+        )
+        raw_path = _cmd_write(tmp_path / "raw.json", raw_data)
+
+        with pytest.raises(DbtMetaError, match="Ambiguous"):
+            cmd.owners_cmd(raw_path, "partial")
+
+    def test_dataset_not_found_returns_empty_measures(self, tmp_path):
+        raw_data = _raw_with_reports(
+            {"name": "My Report", "datasetId": "nonexistent"},
+        )
+        raw_path = _cmd_write(tmp_path / "raw.json", raw_data)
+
+        result = cmd.measures_cmd(raw_path, "My Report")
+
+        assert result["report"] == "My Report"
+        assert result["measures"] == []
+
+    def test_single_partial_match_returns_report(self, tmp_path):
+        raw_data = _raw_with_reports({"name": "Alpha unique report", "datasetId": "ds1"})
+        raw_path = _cmd_write(tmp_path / "raw.json", raw_data)
+
+        result = cmd.measures_cmd(raw_path, "unique")
+
+        assert result["report"] == "Alpha unique report"
+
+    def test_report_not_found_raises(self, tmp_path):
+        raw_data = _raw_with_reports({"name": "Some Report", "datasetId": "ds1"})
+        raw_path = _cmd_write(tmp_path / "raw.json", raw_data)
+
+        with pytest.raises(DbtMetaError, match="not found"):
+            cmd.measures_cmd(raw_path, "nonexistent report xyz")
+
+    def test_measures_with_dataset_and_tables(self, tmp_path):
+        raw_data = {
+            "workspaces": [
+                {
+                    "name": "BI WS",
+                    "datasets": [
+                        {
+                            "id": "ds1",
+                            "name": "DS",
+                            "tables": [
+                                {
+                                    "name": "sales",
+                                    "measures": [
+                                        {
+                                            "name": "Revenue",
+                                            "expression": "SUM(sales[amount])",
+                                            "isHidden": False,
+                                        }
+                                    ],
+                                    "source": [],
+                                    "columns": [],
+                                }
+                            ],
+                        }
+                    ],
+                    "reports": [{"name": "Sales Report", "datasetId": "ds1"}],
+                }
+            ]
+        }
+        raw_path = _cmd_write(tmp_path / "raw.json", raw_data)
+
+        result = cmd.measures_cmd(raw_path, "Sales Report")
+
+        assert result["report"] == "Sales Report"
+        assert len(result["measures"]) == 1
+        assert result["measures"][0]["name"] == "Revenue"
+        assert result["measures"][0]["table"] == "sales"
+
+    def test_source_cmd_returns_expressions(self, tmp_path):
+        native_expr = (
+            "let\n    Source = GoogleBigQuery.Database(),\n"
+            '    p = Source{[Name="p"]}[Data],\n'
+            '    s = p{[Name="s",Kind="Schema"]}[Data],\n'
+            '    t = s{[Name="tbl",Kind="Table"]}[Data]\nin\n    t'
+        )
+        raw_data = {
+            "workspaces": [
+                {
+                    "name": "BI WS",
+                    "datasets": [
+                        {
+                            "id": "ds1",
+                            "name": "DS",
+                            "tables": [
+                                {
+                                    "name": "tbl",
+                                    "source": [{"expression": native_expr}],
+                                    "measures": [],
+                                    "columns": [],
+                                }
+                            ],
+                        }
+                    ],
+                    "reports": [{"name": "Source Report", "datasetId": "ds1"}],
+                }
+            ]
+        }
+        raw_path = _cmd_write(tmp_path / "raw.json", raw_data)
+
+        result = cmd.source_cmd(raw_path, "Source Report")
+
+        assert result["report"] == "Source Report"
+        assert len(result["sources"]) == 1
+        assert result["sources"][0]["table"] == "tbl"
+
+    def test_owners_cmd_returns_owners(self, tmp_path):
+        raw_data = {
+            "workspaces": [
+                {
+                    "name": "BI WS",
+                    "datasets": [],
+                    "reports": [
+                        {
+                            "name": "Owners Report",
+                            "datasetId": "ds1",
+                            "modifiedBy": "alice@example.com",
+                            "modifiedDateTime": "2026-01-01T00:00:00",
+                            "users": [
+                                {
+                                    "displayName": "Alice",
+                                    "reportUserAccessRight": "Owner",
+                                },
+                                {
+                                    "displayName": "Bob",
+                                    "reportUserAccessRight": "Read",
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+        raw_path = _cmd_write(tmp_path / "raw.json", raw_data)
+
+        result = cmd.owners_cmd(raw_path, "Owners Report")
+
+        assert result["report"] == "Owners Report"
+        assert result["owners"] == ["Alice"]
+        assert result["modified_by"] == "alice@example.com"
+
+
+# ============================================================================
+# TestArtifact — find_powerbi_raw and find_powerbi_artifact missing branches
+# ============================================================================
+
+
+class TestArtifactMissingBranches:
+    def test_find_raw_explicit_path_not_exists(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            find_powerbi_raw(explicit_path=str(tmp_path / "nonexistent.json"))
+
+    def test_find_raw_no_path_anywhere_raises(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("DBT_PROD_POWERBI_RAW_PATH", raising=False)
+        monkeypatch.setattr(
+            "dbt_meta.powerbi.artifact.Path.home", lambda: tmp_path / "nohome"
+        )
+
+        with pytest.raises(FileNotFoundError):
+            find_powerbi_raw()
+
+    def test_find_raw_env_set_but_file_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DBT_PROD_POWERBI_RAW_PATH", str(tmp_path / "missing.json"))
+
+        with pytest.raises(FileNotFoundError):
+            find_powerbi_raw()
+
+    def test_find_raw_default_home_path_exists(self, tmp_path, monkeypatch):
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        dbt_state = fake_home / "dbt-state"
+        dbt_state.mkdir()
+        raw_file = dbt_state / "powerbi_raw.json"
+        raw_file.write_bytes(b"{}")
+        monkeypatch.delenv("DBT_PROD_POWERBI_RAW_PATH", raising=False)
+        monkeypatch.setattr("dbt_meta.powerbi.artifact.Path.home", lambda: fake_home)
+
+        result = find_powerbi_raw()
+
+        assert result == str(raw_file.absolute())
+
+    def test_find_artifact_explicit_path_not_exists(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            find_powerbi_artifact(explicit_path=str(tmp_path / "nonexistent.json"))
+
+    def test_find_artifact_env_set_but_file_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DBT_PROD_POWERBI_PATH", str(tmp_path / "missing.json"))
+
+        with pytest.raises(FileNotFoundError):
+            find_powerbi_artifact()
+
+    def test_find_artifact_default_home_path_exists(self, tmp_path, monkeypatch):
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        dbt_state = fake_home / "dbt-state"
+        dbt_state.mkdir()
+        index_file = dbt_state / "powerbi_index.json"
+        save_index(_sample_index(), str(index_file))
+        monkeypatch.delenv("DBT_PROD_POWERBI_PATH", raising=False)
+        monkeypatch.setattr("dbt_meta.powerbi.artifact.Path.home", lambda: fake_home)
+
+        result = find_powerbi_artifact()
+
+        assert result == str(index_file.absolute())
+
+
+# ============================================================================
+# TestQueryFind — match by dataset name
+# ============================================================================
+
+
+class TestQueryFindDataset:
+    def test_matches_dataset_name(self):
+        # "leads ds" is in dataset="Leads DS" but NOT in report="Organic Leads"
+        # and NOT in bq tables ("p.core_client.client_info", "p.raw_amas.events")
+        results = find(_query_index(), "leads ds")
+
+        assert len(results.reports) == 1
+        assert results.reports[0].report == "Organic Leads"
+
+
+# ============================================================================
+# TestQueryReportsForModel — reports_for_model coverage
+# ============================================================================
+
+
+class TestQueryReportsForModel:
+    def test_finds_reports_by_dbt_model(self):
+        from dbt_meta.powerbi.query import reports_for_model
+
+        results = reports_for_model(_query_index(), "client_info")
+
+        assert len(results) == 1
+        report, matched = results[0]
+        assert report.report == "Organic Leads"
+        assert "p.core_client.client_info" in matched
+
+    def test_no_match_returns_empty(self):
+        from dbt_meta.powerbi.query import reports_for_model
+
+        assert reports_for_model(_query_index(), "nonexistent_xyz") == []
+
+    def test_case_insensitive(self):
+        from dbt_meta.powerbi.query import reports_for_model
+
+        results = reports_for_model(_query_index(), "CLIENT_INFO")
+
+        assert len(results) == 1
+        assert results[0][0].report == "Organic Leads"
+
+    def test_external_tables_not_matched(self):
+        from dbt_meta.powerbi.query import reports_for_model
+
+        # "p.raw_amas.events" is external (no dbt_model), should not match "events"
+        results = reports_for_model(_query_index(), "events")
+
+        assert results == []
+
+
+# ============================================================================
+# TestFindRawExisting — find_powerbi_raw success branches
+# ============================================================================
+
+
+class TestFindRawExisting:
+    def test_find_raw_explicit_path_exists(self, tmp_path):
+        raw = tmp_path / "powerbi_raw.json"
+        raw.write_bytes(b"{}")
+
+        assert find_powerbi_raw(explicit_path=str(raw)) == str(raw.absolute())
+
+    def test_find_raw_env_path_exists(self, tmp_path, monkeypatch):
+        raw = tmp_path / "powerbi_raw.json"
+        raw.write_bytes(b"{}")
+        monkeypatch.setenv("DBT_PROD_POWERBI_RAW_PATH", str(raw))
+        monkeypatch.delenv("DBT_PROD_POWERBI_PATH", raising=False)
+
+        assert find_powerbi_raw() == str(raw.absolute())
+
+
+# ============================================================================
+# TestCommandReports — reports_for_model_cmd coverage
+# ============================================================================
+
+CMD_MANIFEST_MULTI = {
+    "nodes": {
+        "model.proj.core_alpha": {
+            "resource_type": "model",
+            "name": "core_alpha",
+            "database": "my-project",
+            "schema": "s",
+            "config": {"alias": "core_alpha"},
+        },
+        "model.proj.core_beta": {
+            "resource_type": "model",
+            "name": "core_beta",
+            "database": "my-project",
+            "schema": "s",
+            "config": {"alias": "core_beta"},
+        },
+    },
+    "sources": {},
+}
+
+_NATIVE_CORE_ALPHA = (
+    'let\n    Source = Value.NativeQuery(GoogleBigQuery.Database()'
+    '{[Name="my-project"]}[Data], "SELECT id FROM `my-project.s.core_alpha`",'
+    " null, [EnableFolding=true])\nin\n    Source"
+)
+
+_NATIVE_CORE_BETA = (
+    'let\n    Source = Value.NativeQuery(GoogleBigQuery.Database()'
+    '{[Name="my-project"]}[Data], "SELECT id FROM `my-project.s.core_beta`",'
+    " null, [EnableFolding=true])\nin\n    Source"
+)
+
+
+def _cmd_scan_result_ambiguous():
+    return {
+        "workspaces": [
+            {
+                "name": "BI WS",
+                "datasets": [
+                    {
+                        "id": "ds1",
+                        "name": "Alpha DS",
+                        "tables": [
+                            {
+                                "name": "alpha",
+                                "source": [{"expression": _NATIVE_CORE_ALPHA}],
+                                "measures": [],
+                                "columns": [],
+                            }
+                        ],
+                    },
+                    {
+                        "id": "ds2",
+                        "name": "Beta DS",
+                        "tables": [
+                            {
+                                "name": "beta",
+                                "source": [{"expression": _NATIVE_CORE_BETA}],
+                                "measures": [],
+                                "columns": [],
+                            }
+                        ],
+                    },
+                ],
+                "reports": [
+                    {"name": "Alpha Report", "datasetId": "ds1"},
+                    {"name": "Beta Report", "datasetId": "ds2"},
+                ],
+            }
+        ]
+    }
+
+
+class TestCommandReports:
+    def test_returns_reports_using_model(self, tmp_path):
+        raw = _cmd_write(tmp_path / "raw.json", _cmd_scan_result())
+        man = _cmd_write(tmp_path / "manifest.json", CMD_MANIFEST)
+        out = tmp_path / "index.json"
+        cmd.build_index_artifact(raw, man, str(out))
+
+        result = cmd.reports_for_model_cmd(str(out), "client_info")
+
+        assert result["model"] == "client_info"
+        assert len(result["reports"]) == 1
+        assert result["reports"][0]["report"] == "Clients Report"
+        assert "my-project.core_client.client_info" in result["reports"][0]["matched_tables"]
+
+    def test_no_match_returns_empty_list(self, tmp_path):
+        raw = _cmd_write(tmp_path / "raw.json", _cmd_scan_result())
+        man = _cmd_write(tmp_path / "manifest.json", CMD_MANIFEST)
+        out = tmp_path / "index.json"
+        cmd.build_index_artifact(raw, man, str(out))
+
+        result = cmd.reports_for_model_cmd(str(out), "nonexistent_xyz")
+
+        assert result["reports"] == []
+
+    def test_ambiguous_model_raises(self, tmp_path):
+        raw = _cmd_write(tmp_path / "raw.json", _cmd_scan_result_ambiguous())
+        man = _cmd_write(tmp_path / "manifest.json", CMD_MANIFEST_MULTI)
+        out = tmp_path / "index.json"
+        cmd.build_index_artifact(raw, man, str(out))
+
+        with pytest.raises(DbtMetaError, match="core_alpha"):
+            cmd.reports_for_model_cmd(str(out), "core")
+
+
+# ============================================================================
+# TestCommandLineage — lineage_cmd
+# ============================================================================
+
+def _make_lineage_graph_with(node_ids: list[str], edges: dict[str, list[str]]):
+    """Build a minimal LineageGraph stub for lineage_cmd tests."""
+    from dbt_meta.lineage.graph import LineageGraph
+
+    g = LineageGraph()
+    for nid in node_ids:
+        g.add_node(nid)
+    for src, targets in edges.items():
+        for tgt in targets:
+            g.add_edge(src, tgt)
+    return g
+
+
+def _lineage_scan_result():
+    """Scan result where the table has a native SQL with a WHERE filter on registration_time."""
+    return {
+        "workspaces": [
+            {
+                "name": "BI WS",
+                "datasets": [
+                    {
+                        "id": "ds1",
+                        "name": "Clients DS",
+                        "tables": [
+                            {
+                                "name": "clients",
+                                "source": [
+                                    {
+                                        "expression": (
+                                            'let\n  Source = Value.NativeQuery('
+                                            'GoogleBigQuery.Database(){[Name="my-project"]}[Data],'
+                                            ' "SELECT registration_time FROM'
+                                            ' `my-project.core_client.client_info`'
+                                            " WHERE registration_time >= '2023-01-01'\","
+                                            " null, [EnableFolding=true])\nin\n  Source"
+                                        )
+                                    }
+                                ],
+                                "measures": [],
+                                "columns": [],
+                            }
+                        ],
+                    }
+                ],
+                "reports": [{"name": "Clients Report", "datasetId": "ds1"}],
+            }
+        ]
+    }
+
+
+class TestCommandLineage:
+    def test_returns_upstream_for_filter_columns(self, tmp_path, monkeypatch):
+        raw = _cmd_write(tmp_path / "raw.json", _lineage_scan_result())
+        man = _cmd_write(tmp_path / "manifest.json", CMD_MANIFEST)
+        idx = tmp_path / "index.json"
+        cmd.build_index_artifact(raw, man, str(idx))
+
+        graph = _make_lineage_graph_with(
+            node_ids=[
+                "client_info.registration_time",
+                "raw_registrations.registration_time",
+            ],
+            edges={
+                "raw_registrations.registration_time": ["client_info.registration_time"]
+            },
+        )
+        monkeypatch.setattr(cmd, "_load_lineage_graph", lambda path: graph)
+
+        result = cmd.lineage_cmd(str(idx), "/fake/lineage.json", "Clients Report")
+
+        assert result["report"] == "Clients Report"
+        cols = result["columns"]
+        assert any(c["bq_column"] == "registration_time" for c in cols)
+        match = next(c for c in cols if c["bq_column"] == "registration_time")
+        assert "raw_registrations.registration_time" in match["ancestors"]
+
+    def test_unknown_column_skipped_gracefully(self, tmp_path, monkeypatch):
+        raw = _cmd_write(tmp_path / "raw.json", _lineage_scan_result())
+        man = _cmd_write(tmp_path / "manifest.json", CMD_MANIFEST)
+        idx = tmp_path / "index.json"
+        cmd.build_index_artifact(raw, man, str(idx))
+
+        graph = _make_lineage_graph_with(node_ids=[], edges={})
+        monkeypatch.setattr(cmd, "_load_lineage_graph", lambda path: graph)
+
+        result = cmd.lineage_cmd(str(idx), "/fake/lineage.json", "Clients Report")
+
+        assert result["columns"] == []
+
+    def test_missing_lineage_artifact_raises(self, tmp_path):
+        raw = _cmd_write(tmp_path / "raw.json", _lineage_scan_result())
+        man = _cmd_write(tmp_path / "manifest.json", CMD_MANIFEST)
+        idx = tmp_path / "index.json"
+        cmd.build_index_artifact(raw, man, str(idx))
+
+        with pytest.raises(DbtMetaError, match="lineage"):
+            cmd.lineage_cmd(str(idx), str(tmp_path / "nonexistent.json"), "Clients Report")
+
+    def test_unknown_report_raises(self, tmp_path):
+        raw = _cmd_write(tmp_path / "raw.json", _lineage_scan_result())
+        man = _cmd_write(tmp_path / "manifest.json", CMD_MANIFEST)
+        idx = tmp_path / "index.json"
+        cmd.build_index_artifact(raw, man, str(idx))
+
+        with pytest.raises(DbtMetaError, match="Report not found"):
+            cmd.lineage_cmd(str(idx), "/fake/lineage.json", "Nonexistent Report")
+
+    def test_duplicate_column_resolved_once(self, tmp_path, monkeypatch):
+        index = PowerBiIndex(
+            reports=[
+                ReportEntry(
+                    workspace="W",
+                    report="Dup Report",
+                    dataset="D",
+                    tables=[TableRef(bq="p.s.t", status="model", dbt_model="m")],
+                    sql_analysis=[
+                        SqlAnalysisEntry(
+                            query="q1",
+                            tables=("p.s.t",),
+                            filters=("col",),
+                            joins=(),
+                            group_by=(),
+                            parse_status="ok",
+                        ),
+                        SqlAnalysisEntry(
+                            query="q2",
+                            tables=("p.s.t",),
+                            filters=("col",),
+                            joins=(),
+                            group_by=(),
+                            parse_status="ok",
+                        ),
+                    ],
+                )
+            ]
+        )
+        idx = tmp_path / "index.json"
+        save_index(index, str(idx))
+
+        graph = _make_lineage_graph_with(
+            node_ids=["m.col", "up.col"], edges={"up.col": ["m.col"]}
+        )
+        monkeypatch.setattr(cmd, "_load_lineage_graph", lambda path: graph)
+
+        result = cmd.lineage_cmd(str(idx), "/fake/lineage.json", "Dup Report")
+
+        # 'col' appears in two sql_analysis entries → resolved only once
+        assert [c["bq_column"] for c in result["columns"]] == ["col"]
+
+    def test_load_lineage_graph_reads_real_artifact(self, tmp_path):
+        from dbt_meta.lineage.artifact import save_artifact
+
+        graph = _make_lineage_graph_with(
+            node_ids=["m.col", "up.col"], edges={"up.col": ["m.col"]}
+        )
+        path = tmp_path / "lineage.json"
+        save_artifact(graph, str(path))
+
+        loaded = cmd._load_lineage_graph(str(path))
+
+        assert loaded.has_node("m.col")
+        assert "up.col" in loaded.ancestors("m.col")
+
+
+# ============================================================================
+# TestCommandCost — cost_cmd
+# ============================================================================
+
+
+class TestCommandCost:
+    def test_returns_cost_for_dbt_model_tables(self, tmp_path, monkeypatch):
+        raw = _cmd_write(tmp_path / "raw.json", _cmd_scan_result())
+        man = _cmd_write(tmp_path / "manifest.json", CMD_MANIFEST)
+        out = tmp_path / "index.json"
+        cmd.build_index_artifact(raw, man, str(out))
+        monkeypatch.setattr(
+            cmd, "fetch_model_query_costs",
+            lambda **kw: [
+                {
+                    "dbt_model_name": "client_info",
+                    "query_cost_usd": 1.23,
+                    "query_count": 42,
+                    "bytes_processed": 500_000_000,
+                    "cache_hit_ratio": 0.6,
+                }
+            ],
+        )
+
+        result = cmd.cost_cmd(str(out), "Clients Report")
+
+        assert result["report"] == "Clients Report"
+        tables = result["tables"]
+        assert len(tables) == 1
+        assert tables[0]["bq"] == "my-project.core_client.client_info"
+        assert tables[0]["query_cost_usd"] == 1.23
+
+    def test_external_tables_have_null_cost(self, tmp_path, monkeypatch):
+        raw = _cmd_write(tmp_path / "raw.json", _cmd_scan_result())
+        man = _cmd_write(tmp_path / "manifest.json", CMD_MANIFEST)
+        out = tmp_path / "index.json"
+        cmd.build_index_artifact(raw, man, str(out))
+        monkeypatch.setattr(cmd, "fetch_model_query_costs", lambda **kw: [])
+
+        result = cmd.cost_cmd(str(out), "Clients Report")
+
+        assert result["tables"][0]["query_cost_usd"] is None
+
+    def test_unknown_report_raises(self, tmp_path, monkeypatch):
+        raw = _cmd_write(tmp_path / "raw.json", _cmd_scan_result())
+        man = _cmd_write(tmp_path / "manifest.json", CMD_MANIFEST)
+        out = tmp_path / "index.json"
+        cmd.build_index_artifact(raw, man, str(out))
+        monkeypatch.setattr(cmd, "fetch_model_query_costs", lambda **kw: [])
+
+        with pytest.raises(DbtMetaError):
+            cmd.cost_cmd(str(out), "Nonexistent Report")
+
+
+# ============================================================================
+# TestDaxParser — parse_dax_refs
+# ============================================================================
+
+
+class TestDaxParser:
+    def test_quoted_table_column(self):
+        from dbt_meta.powerbi.dax import parse_dax_refs
+
+        refs = parse_dax_refs("CALCULATE(SUM('Sales Data'[Revenue]))")
+
+        assert {"table": "Sales Data", "column": "Revenue"} in refs
+
+    def test_bare_table_column(self):
+        from dbt_meta.powerbi.dax import parse_dax_refs
+
+        refs = parse_dax_refs("CALCULATE(SUM(Sales[Revenue]), FILTER(Sales, Sales[Date] > 0))")
+
+        tables = {r["table"] for r in refs}
+        columns = {r["column"] for r in refs}
+        assert tables == {"Sales"}
+        assert "Revenue" in columns
+        assert "Date" in columns
+
+    def test_deduplicates_refs(self):
+        from dbt_meta.powerbi.dax import parse_dax_refs
+
+        refs = parse_dax_refs("Sales[Revenue] + Sales[Revenue]")
+
+        assert refs.count({"table": "Sales", "column": "Revenue"}) == 1
+
+    def test_empty_expression_returns_empty(self):
+        from dbt_meta.powerbi.dax import parse_dax_refs
+
+        assert parse_dax_refs("") == []
+
+    def test_measures_cmd_includes_dax_refs(self, tmp_path):
+        raw_data = _raw_with_reports(
+            {
+                "name": "Sales Report",
+                "datasetId": "ds1",
+            },
+            dataset_id="ds1",
+        )
+        raw_data["workspaces"][0]["datasets"][0]["tables"] = [
+            {
+                "name": "Sales",
+                "measures": [
+                    {"name": "Total Revenue", "expression": "SUM(Sales[Revenue])"}
+                ],
+                "columns": [],
+                "source": [],
+            }
+        ]
+        raw_path = _cmd_write(tmp_path / "raw.json", raw_data)
+
+        result = cmd.measures_cmd(raw_path, "Sales Report")
+
+        measure = result["measures"][0]
+        assert measure["name"] == "Total Revenue"
+        assert {"table": "Sales", "column": "Revenue"} in measure["dax_refs"]

@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import sys
 import time
-from typing import Optional
+from typing import Any, Optional
 
 # Common installation paths for bq CLI (Google Cloud SDK)
 _BQ_SEARCH_PATHS = [
@@ -167,7 +167,7 @@ def fetch_table_metadata_from_bigquery(
     dataset: str,
     table: str,
     database: Optional[str] = None
-) -> Optional[dict]:
+) -> Optional[dict[str, Any]]:
     """
     Fetch table metadata from BigQuery using bq show.
 
@@ -196,14 +196,14 @@ def fetch_table_metadata_from_bigquery(
     # Execute bq show command
     try:
         result = run_bq_command(['show', '--format=json', full_table], timeout=10)
-        metadata = json_lib.loads(result.stdout)
+        metadata: dict[str, Any] = json_lib.loads(result.stdout)
         return metadata
 
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, json_lib.JSONDecodeError):
         return None
 
 
-def run_bq_command(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess:
+def run_bq_command(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
     """
     Run bq command with PYTHONPATH workaround for dwh-pipeline projects.
 
@@ -352,7 +352,7 @@ def format_bytes(bytes_count: int) -> str:
     return f"{mb:.1f} MB"
 
 
-def run_dry_run_query(sql: str, timeout: int = 30) -> dict:
+def run_dry_run_query(sql: str, timeout: int = 30) -> dict[str, Any]:
     """Run bq query --dry_run and return validation result.
 
     Uses BigQuery dry run to validate SQL syntax and estimate scan size

@@ -90,21 +90,23 @@ class TestFinder:
         with pytest.raises(FileNotFoundError):
             find_lineage_artifact(explicit_path=str(tmp_path / "nope.json"))
 
-    def test_dev_uses_env_var(self, tmp_path, sample_graph, monkeypatch):
-        out = tmp_path / "target" / "lineage.json"
-        save_artifact(sample_graph, str(out))
-        monkeypatch.setenv("DBT_DEV_LINEAGE_PATH", str(out))
-        found = find_lineage_artifact(use_dev=True)
-        assert found == str(out.absolute())
-
     def test_prod_uses_env_var(self, tmp_path, sample_graph, monkeypatch):
         out = tmp_path / "lineage.json"
         save_artifact(sample_graph, str(out))
         monkeypatch.setenv("DBT_PROD_LINEAGE_PATH", str(out))
         # Clear any conflicting state
         monkeypatch.chdir(tmp_path)
-        found = find_lineage_artifact(use_dev=False)
+        found = find_lineage_artifact()
         assert found == str(out.absolute())
+
+    def test_default_prod_home_location(self, tmp_path, sample_graph, monkeypatch):
+        home = tmp_path / "home"
+        save_artifact(sample_graph, str(home / "dbt-state" / "lineage.json"))
+        monkeypatch.delenv("DBT_PROD_LINEAGE_PATH", raising=False)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(Path, "home", lambda: home)
+        found = find_lineage_artifact()
+        assert found == str((home / "dbt-state" / "lineage.json").absolute())
 
     def test_no_artifact_raises(self, tmp_path, monkeypatch):
         monkeypatch.delenv("DBT_PROD_LINEAGE_PATH", raising=False)
@@ -112,5 +114,18 @@ class TestFinder:
         monkeypatch.chdir(tmp_path)
         # Force the home-dir fallback to point to an empty tmp dir
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        with pytest.raises(FileNotFoundError):
+            find_lineage_artifact()
+
+    def test_prod_ignores_cwd_target(self, tmp_path, sample_graph, monkeypatch):
+        # lineage is a prod-only concept: a lineage.json sitting in ./target
+        # must NOT be auto-discovered. Resolution is explicit →
+        # DBT_PROD_LINEAGE_PATH → ~/dbt-state only.
+        target = tmp_path / "target"
+        target.mkdir()
+        save_artifact(sample_graph, str(target / "lineage.json"))
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("DBT_PROD_LINEAGE_PATH", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "empty-home")
         with pytest.raises(FileNotFoundError):
             find_lineage_artifact()

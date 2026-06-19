@@ -8,7 +8,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 
 def find_dev_manifest(prod_manifest_path: str) -> Optional[str]:
@@ -137,7 +137,7 @@ def validate_dev_dataset(dataset: str) -> str:
     return dataset
 
 
-def build_dev_table_name(model: dict, model_name: str) -> str:
+def build_dev_table_name(model: dict[str, Any], model_name: str) -> str:
     """
     Build dev table name based on DBT_DEV_TABLE_PATTERN.
 
@@ -234,7 +234,7 @@ def build_dev_table_name(model: dict, model_name: str) -> str:
         return pattern
 
 
-def build_dev_schema_result(model: dict, model_name: str) -> dict[str, str]:
+def build_dev_schema_result(model: dict[str, Any], model_name: str) -> dict[str, str]:
     """
     Build dev schema result from model data.
 

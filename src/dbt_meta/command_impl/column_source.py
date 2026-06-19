@@ -7,12 +7,14 @@ ColumnSourceFactory routes to the right source based on model state.
 import os
 import sys
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Any, Optional
 
 from dbt_meta.catalog.parser import CatalogParser
 from dbt_meta.config import Config
 from dbt_meta.utils.bigquery import (
     fetch_columns_from_bigquery_direct as _fetch_columns_from_bigquery_direct,
+)
+from dbt_meta.utils.bigquery import (
     infer_table_parts,
 )
 from dbt_meta.utils.dev import calculate_dev_schema as _calculate_dev_schema
@@ -35,10 +37,10 @@ class ColumnSource(ABC):
     @abstractmethod
     def fetch(
         self,
-        model: Optional[dict],
+        model: Optional[dict[str, Any]],
         model_name: str,
         state: ModelState,
-        prod_model: Optional[dict] = None,
+        prod_model: Optional[dict[str, Any]] = None,
     ) -> Optional[list[dict[str, str]]]:
         """Fetch column list for the given model.
 
@@ -63,10 +65,10 @@ class BigQueryColumnSource(ColumnSource):
 
     def fetch(
         self,
-        model: Optional[dict],
+        model: Optional[dict[str, Any]],
         model_name: str,
         state: ModelState,
-        prod_model: Optional[dict] = None,
+        prod_model: Optional[dict[str, Any]] = None,
     ) -> Optional[list[dict[str, str]]]:
         if model is not None:
             return self._fetch_with_model(model, model_name, state, prod_model)
@@ -78,10 +80,10 @@ class BigQueryColumnSource(ColumnSource):
 
     def _fetch_with_model(
         self,
-        model: dict,
+        model: dict[str, Any],
         model_name: str,
         state: ModelState,
-        prod_model: Optional[dict],
+        prod_model: Optional[dict[str, Any]],
     ) -> Optional[list[dict[str, str]]]:
         if self._use_dev:
             database = model.get('database', '')
@@ -107,7 +109,7 @@ class BigQueryColumnSource(ColumnSource):
         self,
         model_name: str,
         state: ModelState,
-        prod_model: Optional[dict],
+        prod_model: Optional[dict[str, Any]],
     ) -> Optional[list[dict[str, str]]]:
         if state == ModelState.MODIFIED_UNCOMMITTED and not self._use_dev:
             if prod_model:
@@ -182,7 +184,7 @@ class BigQueryColumnSource(ColumnSource):
         if attempted:
             print(f"   Tried: {attempted}", file=sys.stderr)
         if state in (ModelState.NEW_UNCOMMITTED, ModelState.NEW_COMMITTED):
-            print(f"\n\U0001f4a1 Model appears to be NEW but not built in dev", file=sys.stderr)
+            print("\n\U0001f4a1 Model appears to be NEW but not built in dev", file=sys.stderr)
         elif state == ModelState.NOT_FOUND:
             print("\n\U0001f4a1 To find similar models:", file=sys.stderr)
             print("   meta list | grep keyword", file=sys.stderr)
@@ -208,10 +210,10 @@ class CatalogColumnSource(ColumnSource):
 
     def fetch(
         self,
-        model: Optional[dict],
+        model: Optional[dict[str, Any]],
         model_name: str,
         state: ModelState,
-        prod_model: Optional[dict] = None,
+        prod_model: Optional[dict[str, Any]] = None,
     ) -> Optional[list[dict[str, str]]]:
         if model is not None:
             columns = self._try_catalog(model, model_name, state)
@@ -223,7 +225,7 @@ class CatalogColumnSource(ColumnSource):
 
     def _try_catalog(
         self,
-        model: dict,
+        model: dict[str, Any],
         model_name: str,
         state: ModelState,
     ) -> Optional[list[dict[str, str]]]:

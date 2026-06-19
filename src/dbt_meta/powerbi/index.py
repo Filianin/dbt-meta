@@ -48,6 +48,7 @@ class SqlAnalysisEntry:
     joins: tuple[str, ...]
     group_by: tuple[str, ...]
     parse_status: str
+    sql: str | None = None
 
 
 @dataclass
@@ -102,6 +103,7 @@ def _build_dataset(dataset: dict[str, Any], dbt_index: DbtTableIndex) -> _Datase
                 joins=analysis.joins,
                 group_by=analysis.group_by,
                 parse_status=analysis.parse_status,
+                sql=analysis.sql,
             )
         else:
             nodes[name] = QueryNode(

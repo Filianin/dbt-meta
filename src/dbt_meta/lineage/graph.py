@@ -8,7 +8,7 @@ Edge direction: upstream → downstream (raw_clients.id → core_clients.client_
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 import rustworkx as rx
 
@@ -60,13 +60,13 @@ class LineageGraph:
 
     # ----- mutation -----
 
-    def add_node(self, node_id: str, attrs: Optional[dict[str, Any]] = None) -> int:
+    def add_node(self, node_id: str, attrs: dict[str, Any] | None = None) -> int:
         """Add a node, return its index. Idempotent — returns existing index if present."""
         existing = self._id_to_idx.get(node_id)
         if existing is not None:
             if attrs:
-                payload = self._graph[existing]
-                payload.update(attrs)
+                existing_payload: dict[str, Any] = self._graph[existing]
+                existing_payload.update(attrs)
             return existing
 
         payload: dict[str, Any] = {"id": node_id}
@@ -80,7 +80,7 @@ class LineageGraph:
         self,
         src: str,
         dst: str,
-        attrs: Optional[dict[str, Any]] = None,
+        attrs: dict[str, Any] | None = None,
     ) -> None:
         """Add a directed edge upstream→downstream. Auto-creates missing nodes."""
         src_idx = self.add_node(src)
@@ -95,7 +95,7 @@ class LineageGraph:
     def has_node(self, node_id: str) -> bool:
         return node_id in self._id_to_idx
 
-    def get_node(self, node_id: str) -> Optional[dict[str, Any]]:
+    def get_node(self, node_id: str) -> dict[str, Any] | None:
         idx = self._id_to_idx.get(node_id)
         if idx is None:
             return None

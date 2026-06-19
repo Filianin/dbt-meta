@@ -5,7 +5,7 @@ storage, partitioning, clustering, and query patterns across all tables.
 """
 
 import math
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from typing import Any, Optional
 
 from dbt_meta.config import Config
@@ -72,7 +72,7 @@ class HotspotsCommand:
         self.min_gb = min_gb
         self.json_output = json_output
 
-    def execute(self) -> dict:
+    def execute(self) -> dict[str, Any]:
         """Execute hotspots analysis."""
         # Fetch all data sources in parallel-ish manner
         all_tables = fetch_all_tables_storage(min_gb=self.min_gb, monitoring_dataset=self.config.monitoring_dataset)
@@ -94,7 +94,7 @@ class HotspotsCommand:
         reverse_model_map = self._build_reverse_model_lookup(parser)
 
         with ThreadPoolExecutor(max_workers=8) as executor:
-            futures = {
+            futures: dict[Future[Any], str] = {
                 executor.submit(self._build_query_freq_map): 'query_freq',
                 executor.submit(self._build_query_cost_map, parser): 'query_cost',
                 executor.submit(self._build_partition_map): 'partition',
@@ -212,7 +212,7 @@ class HotspotsCommand:
             },
         }
 
-    def _build_query_freq_map(self) -> dict:
+    def _build_query_freq_map(self) -> dict[str, Any]:
         """Build lookup map for query frequency."""
         result = {}
         data = fetch_table_query_frequency(days=7, monitoring_dataset=self.config.monitoring_dataset)  # 7 days to match monitoring
@@ -225,7 +225,7 @@ class HotspotsCommand:
                 }
         return result
 
-    def _build_query_cost_map(self, parser: Any) -> dict:
+    def _build_query_cost_map(self, parser: Any) -> dict[str, Any]:
         """Build lookup map for query costs from models_costs_incremental.
 
         Uses manifest to correctly map dbt_model_name to dataset.table format.
@@ -264,7 +264,7 @@ class HotspotsCommand:
                         result[key] = cost_data
         return result
 
-    def _build_partition_map(self) -> dict:
+    def _build_partition_map(self) -> dict[str, Any]:
         """Build lookup map for partition info."""
         result = {}
         data = fetch_partition_info_all(monitoring_dataset=self.config.monitoring_dataset)
@@ -279,7 +279,7 @@ class HotspotsCommand:
                 }
         return result
 
-    def _build_read_heavy_map(self) -> dict:
+    def _build_read_heavy_map(self) -> dict[str, Any]:
         """Build lookup map for read-heavy tables."""
         result = {}
         data = fetch_read_heavy_tables(monitoring_dataset=self.config.monitoring_dataset)
@@ -292,7 +292,7 @@ class HotspotsCommand:
                 }
         return result
 
-    def _build_unused_map(self) -> dict:
+    def _build_unused_map(self) -> dict[str, Any]:
         """Build lookup map for unused tables."""
         result = {}
         data = fetch_unused_tables(days_threshold=30, monitoring_dataset=self.config.monitoring_dataset)
@@ -305,7 +305,7 @@ class HotspotsCommand:
                 }
         return result
 
-    def _build_reverse_model_lookup(self, parser: Any) -> dict:
+    def _build_reverse_model_lookup(self, parser: Any) -> dict[str, Any]:
         """Build reverse lookup map: schema.table → model_name.
 
         Pre-computes mapping for all models in manifest to avoid
@@ -325,7 +325,7 @@ class HotspotsCommand:
 
         return result
 
-    def _build_model_metrics_map(self, parser: Any) -> dict:
+    def _build_model_metrics_map(self, parser: Any) -> dict[str, Any]:
         """Build lookup map for model execution metrics.
 
         Uses manifest to correctly map dbt_model_name to dataset.table format.
@@ -359,14 +359,14 @@ class HotspotsCommand:
         dataset: str,
         total_gb: float,
         partition_count: int,
-        query_freq: dict,
-        query_cost: dict,
-        partition_info: dict,
-        read_heavy: dict,
-        unused_info: dict,
-        model_metrics: dict,
+        query_freq: dict[str, Any],
+        query_cost: dict[str, Any],
+        partition_info: dict[str, Any],
+        read_heavy: dict[str, Any],
+        unused_info: dict[str, Any],
+        model_metrics: dict[str, Any],
         parser: Any,
-    ) -> tuple[int, list[dict], dict]:
+    ) -> tuple[int, list[dict[str, Any]], dict[str, Any]]:
         """Score a table for optimization potential (v4 algorithm).
 
         Scoring calibrated in "cents equivalent" (€0.01 = 1pt).

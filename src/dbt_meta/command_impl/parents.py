@@ -40,7 +40,7 @@ class ParentsCommand(BaseCommand):
     SUPPORTS_BIGQUERY = False  # Lineage is manifest-only
     SUPPORTS_DEV = True
 
-    def __init__(self, *args, recursive: bool = False, **kwargs):
+    def __init__(self, *args: Any, recursive: bool = False, **kwargs: Any) -> None:
         """Initialize parents command.
 
         Args:
@@ -76,11 +76,11 @@ class ParentsCommand(BaseCommand):
 
     def process_model(
         self,
-        model: dict,
+        model: dict[str, Any],
         level: Optional[FallbackLevel] = None,
-        parent_map: Optional[dict] = None,
-        nodes: Optional[dict] = None,
-        sources: Optional[dict] = None
+        parent_map: Optional[dict[str, Any]] = None,
+        nodes: Optional[dict[str, Any]] = None,
+        sources: Optional[dict[str, Any]] = None
     ) -> Optional[list[dict[str, Any]]]:
         """Process model data and return parent dependencies.
 

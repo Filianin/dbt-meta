@@ -59,10 +59,8 @@ class CatalogParser:
             raise FileNotFoundError(f"Catalog not found: {self.catalog_path}")
 
         with open(self.catalog_path, 'rb') as f:
-            if HAS_ORJSON:
-                return orjson.loads(f.read())
-            else:
-                return json.load(f)
+            data: dict[str, Any] = orjson.loads(f.read()) if HAS_ORJSON else json.load(f)
+            return data
 
     def get_columns(
         self,

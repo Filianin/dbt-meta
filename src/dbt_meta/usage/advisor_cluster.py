@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, ClassVar
 
 from dbt_meta.usage._common import (
     collect_events,
@@ -33,7 +33,6 @@ from dbt_meta.usage._common import (
     direct_downstream,
     find_target_node,
     model_partition_columns,
-    upstream_table_aliases,
 )
 from dbt_meta.usage.extractor import ColumnUsageExtractor, UsageEvent
 
@@ -101,7 +100,7 @@ class ClusterAdvisor:
     # the extractor are intentionally absent: they neither prune scans nor
     # constrain block ranges, so giving them a fallback weight would
     # silently inflate scores without surfacing in ``reasoning``.
-    WEIGHTS_WHERE = {
+    WEIGHTS_WHERE: ClassVar[dict[str, float]] = {
         "eq": 3.0,
         "in": 2.5,
         "between": 2.0,
@@ -114,8 +113,8 @@ class ClusterAdvisor:
     def __init__(
         self,
         manifest: dict[str, Any],
-        catalog: Optional[dict[str, Any]] = None,
-        extractor: Optional[ColumnUsageExtractor] = None,
+        catalog: dict[str, Any] | None = None,
+        extractor: ColumnUsageExtractor | None = None,
         top_n: int = BQ_MAX_CLUSTER_KEYS,
     ) -> None:
         self.manifest = manifest

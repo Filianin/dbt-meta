@@ -28,9 +28,10 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Optional
+from typing import Any
 
 from dbt_meta.usage._common import (
     find_target_node,
@@ -84,9 +85,9 @@ class RefreshAdvisor:
     def __init__(
         self,
         manifest: dict[str, Any],
-        catalog: Optional[dict[str, Any]] = None,
-        extractor: Optional[ColumnUsageExtractor] = None,
-        manifest_path: Optional[str] = None,
+        catalog: dict[str, Any] | None = None,
+        extractor: ColumnUsageExtractor | None = None,
+        manifest_path: str | None = None,
         auto_compile: bool = True,
     ) -> None:
         """Initialize the refresh advisor.
@@ -108,14 +109,14 @@ class RefreshAdvisor:
         self.extractor = extractor or ColumnUsageExtractor(dialect="bigquery")
         self.manifest_path = manifest_path
         self.auto_compile = auto_compile
-        self._project_root: Optional[str] = (
+        self._project_root: str | None = (
             _infer_project_root(manifest_path) if manifest_path else None
         )
         self._bulk_compile_attempted = False
 
     def plan(
         self,
-        changes: Mapping[str, Optional[set[str]]],
+        changes: Mapping[str, set[str] | None],
     ) -> RefreshPlan:
         """Build the refresh plan with chain-aware propagation.
 
@@ -146,7 +147,7 @@ class RefreshAdvisor:
         nodes = self.manifest.get("nodes", {})
 
         # 1) Resolve changed models, collect transitive downstream
-        resolved: list[tuple[str, dict[str, Any], Optional[set[str]]]] = []
+        resolved: list[tuple[str, dict[str, Any], set[str] | None]] = []
         all_downstream: set[str] = set()
         changed_uids: set[str] = set()
         for changed_short, cols in changes.items():
@@ -166,7 +167,7 @@ class RefreshAdvisor:
         # 3) Initialise affected-set with the changed models themselves.
         # Value is ``None`` (= "all output cols affected, including via
         # SELECT *") OR a set of specific column names.
-        affected_cols: dict[str, Optional[set[str]]] = {}
+        affected_cols: dict[str, set[str] | None] = {}
         affected_via: dict[str, list[str]] = {}  # uid -> human-readable reasons
         for uid, _node, cols in resolved:
             affected_cols[uid] = None if cols is None else set(cols)
@@ -270,9 +271,9 @@ class RefreshAdvisor:
         self,
         ds_node: dict[str, Any],
         parents: list[str],
-        affected_cols: dict[str, Optional[set[str]]],
+        affected_cols: dict[str, set[str] | None],
         nodes: dict[str, Any],
-    ) -> tuple[Optional[set[str]], list[str]]:
+    ) -> tuple[set[str] | None, list[str]]:
         """Decide whether ``ds_node`` is affected via the chain.
 
         Returns:
@@ -298,7 +299,7 @@ class RefreshAdvisor:
             return set(), []
 
         reasons: list[str] = []
-        ds_affected: Optional[set[str]] = set()  # local accumulator
+        ds_affected: set[str] | None = set()  # local accumulator
         whole_row = False
 
         for parent_uid in parents:
@@ -354,7 +355,7 @@ class RefreshAdvisor:
         ds_short: str,
         ds_node: dict[str, Any],
         *,
-        affected_cols: Optional[set[str]],
+        affected_cols: set[str] | None,
         reasons: list[str],
     ) -> _RefreshDecision:
         """Decide full-refresh vs incremental for an already-affected model."""
@@ -366,7 +367,7 @@ class RefreshAdvisor:
         if not sql.strip():
             return _RefreshDecision(
                 model=ds_short, bucket="full",
-                reasons=reasons + ["no compiled_code; cannot prove safety"],
+                reasons=[*reasons, "no compiled_code; cannot prove safety"],
             )
 
         # Whole-row propagation (SELECT * or unknown column set) is
@@ -374,14 +375,14 @@ class RefreshAdvisor:
         if affected_cols is None:
             return _RefreshDecision(
                 model=ds_short, bucket="full",
-                reasons=reasons + ["whole-row impact propagated through chain"],
+                reasons=[*reasons, "whole-row impact propagated through chain"],
             )
 
         # Refresh is needed; choose full-vs-incremental
         if not is_incremental:
             return _RefreshDecision(
                 model=ds_short, bucket="full",
-                reasons=reasons + ["materialization is not incremental"],
+                reasons=[*reasons, "materialization is not incremental"],
             )
         # Incremental — check whether incremental keys (unique_key /
         # partition_by) intersect the affected columns of *this* model.
@@ -392,12 +393,12 @@ class RefreshAdvisor:
         if unique_hit:
             return _RefreshDecision(
                 model=ds_short, bucket="full",
-                reasons=reasons + [f"unique_key column(s) affected: {sorted(unique_hit)}"],
+                reasons=[*reasons, f"unique_key column(s) affected: {sorted(unique_hit)}"],
             )
         if partition_hit:
             return _RefreshDecision(
                 model=ds_short, bucket="full",
-                reasons=reasons + [f"partition_by column(s) affected: {sorted(partition_hit)}"],
+                reasons=[*reasons, f"partition_by column(s) affected: {sorted(partition_hit)}"],
             )
         return _RefreshDecision(
             model=ds_short, bucket="incremental",
@@ -451,7 +452,7 @@ class RefreshAdvisor:
                 return disk_sql
         return ""
 
-    def _maybe_bulk_compile(self, downstream_ids: set[str], plan: "RefreshPlan") -> None:
+    def _maybe_bulk_compile(self, downstream_ids: set[str], plan: RefreshPlan) -> None:
         """Run ``dbt compile`` once for downstream models that lack compiled SQL.
 
         Scans the ENTIRE downstream set (not a sample) and triggers a single
@@ -511,7 +512,7 @@ class RefreshAdvisor:
             )
 
 
-def _infer_project_root(manifest_path: Optional[str]) -> Optional[str]:
+def _infer_project_root(manifest_path: str | None) -> str | None:
     """Find a dbt project root by walking from the manifest path, then cwd.
 
     Two-step strategy:
@@ -576,7 +577,7 @@ def _read_disk_compiled(project_root: str, node: dict[str, Any]) -> str:
     return content if content.strip() else ""
 
 
-def _find_dbt_executable(project_root: Optional[str]) -> Optional[str]:
+def _find_dbt_executable(project_root: str | None) -> str | None:
     """Locate the dbt CLI to use, preferring the project's own venv.
 
     Order:
@@ -598,9 +599,9 @@ def _find_dbt_executable(project_root: Optional[str]) -> Optional[str]:
                 return str(local)
     venv_env = os.environ.get("VIRTUAL_ENV")
     if venv_env:
-        candidate = Path(venv_env) / "bin" / "dbt"
-        if candidate.is_file():
-            return str(candidate)
+        venv_dbt = Path(venv_env) / "bin" / "dbt"
+        if venv_dbt.is_file():
+            return str(venv_dbt)
     return shutil.which("dbt")
 
 
@@ -608,7 +609,7 @@ def _run_bulk_dbt_compile(
     model_names: list[str],
     project_root: str,
     timeout: int = DBT_COMPILE_TIMEOUT,
-) -> tuple[bool, Optional[str]]:
+) -> tuple[bool, str | None]:
     """Invoke ``dbt compile --select <models...>`` in the project root.
 
     Returns (success, error_text). The dbt CLI honours the user's default

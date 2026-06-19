@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, ClassVar
 
 from dbt_meta.usage._common import (
     collect_events,
@@ -45,6 +45,7 @@ from dbt_meta.usage._common import (
     downstream_short_to_materialized,
     find_target_node,
 )
+from dbt_meta.usage.extractor import ColumnUsageExtractor, UsageEvent
 
 # Materialization values where reading the upstream table partially
 # (with partition pruning) is the intent — so missing pruning is a bug.
@@ -69,7 +70,6 @@ PARTITION_PRUNING_FRIENDLY_FNS = {
     "datetrunc",
     "timetrunc",
 }
-from dbt_meta.usage.extractor import ColumnUsageExtractor, UsageEvent
 
 TIME_TYPES = {"TIMESTAMP", "DATE", "DATETIME"}
 INT_TYPES = {"INT64", "INTEGER", "INT", "BIGINT"}
@@ -127,7 +127,7 @@ class PartitionAdvisorResult:
     current_partition_by: list[str]
     direct_downstream_count: int
     analysed_downstream_count: int
-    recommendation: Optional[PartitionRecommendation] = None
+    recommendation: PartitionRecommendation | None = None
     alternatives: list[PartitionRecommendation] = field(default_factory=list)
     # Direct-downstream breakdown by materialization. ``incremental_count``
     # is where partition pruning matters most — these run repeatedly and
@@ -140,14 +140,14 @@ class PartitionAdvisorResult:
 
 
 class PartitionAdvisor:
-    OP_WEIGHTS = {
+    OP_WEIGHTS: ClassVar[dict[str, float]] = {
         "eq": 2.0,
         "in": 1.5,
         "between": 3.0,
         "gt": 2.5, "ge": 2.5, "lt": 2.5, "le": 2.5,
         "fn": 0.0,
     }
-    TYPE_BONUS = {
+    TYPE_BONUS: ClassVar[dict[str, float]] = {
         "TIMESTAMP": 1.5, "DATE": 1.5,
         "DATETIME": 1.3,
         "INT64": 1.0, "INTEGER": 1.0, "INT": 1.0, "BIGINT": 1.0,
@@ -156,8 +156,8 @@ class PartitionAdvisor:
     def __init__(
         self,
         manifest: dict[str, Any],
-        catalog: Optional[dict[str, Any]] = None,
-        extractor: Optional[ColumnUsageExtractor] = None,
+        catalog: dict[str, Any] | None = None,
+        extractor: ColumnUsageExtractor | None = None,
     ) -> None:
         self.manifest = manifest
         self.catalog = catalog or {}

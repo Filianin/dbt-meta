@@ -1,7 +1,7 @@
 """Scan command - Estimate query scan size using BigQuery dry run."""
 
 import sys
-from typing import Optional
+from typing import Any, Optional
 
 from dbt_meta.command_impl.base import BaseCommand
 from dbt_meta.fallback import FallbackLevel
@@ -31,7 +31,7 @@ class ScanCommand(BaseCommand):
     SUPPORTS_BIGQUERY = False  # Needs compiled SQL from manifest
     SUPPORTS_DEV = True
 
-    def execute(self) -> Optional[dict]:
+    def execute(self) -> Optional[dict[str, Any]]:
         """Execute scan command.
 
         Returns:
@@ -45,7 +45,7 @@ class ScanCommand(BaseCommand):
 
         return self.process_model(model)
 
-    def process_model(self, model: dict, level: Optional[FallbackLevel] = None) -> dict:
+    def process_model(self, model: dict[str, Any], level: Optional[FallbackLevel] = None) -> dict[str, Any]:
         """Estimate query scan size.
 
         Args:

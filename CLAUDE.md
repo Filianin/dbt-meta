@@ -257,7 +257,7 @@ Type hints обязательны (strict mypy).
 - `DBT_PROD_MANIFEST_PATH` (default `~/dbt-state/manifest.json`)
 - `DBT_DEV_MANIFEST_PATH` (default `./target/manifest.json`)
 - `DBT_PROD_CATALOG_PATH`, `DBT_DEV_CATALOG_PATH`
-- `DBT_PROD_LINEAGE_PATH`, `DBT_DEV_LINEAGE_PATH`
+- `DBT_PROD_LINEAGE_PATH` (lineage is prod-only — no dev variant; resolution: `--artifact` → `DBT_PROD_LINEAGE_PATH` → `~/dbt-state/lineage.json`)
 
 **Fallback toggles:**
 - `DBT_FALLBACK_TARGET` (dev manifest, default `true`)
@@ -270,7 +270,7 @@ Type hints обязательны (strict mypy).
 - `DBT_DEV_SCHEMA` — explicit (overrides `personal_{username}`)
 - `DBT_USER` — username override
 
-**Power BI:** `POWERBI_ENABLED`, `POWERBI_TENANT_ID`, `POWERBI_CLIENT_ID`, `POWERBI_CLIENT_SECRET`, `POWERBI_WORKSPACES`, `DBT_PROD_POWERBI_PATH` (index artifact for `powerbi find`/`show`; default `./target/powerbi_index.json` → `~/dbt-state/powerbi_index.json`).
+**Power BI:** `POWERBI_ENABLED`, `POWERBI_TENANT_ID`, `POWERBI_CLIENT_ID`, `POWERBI_CLIENT_SECRET`, `POWERBI_WORKSPACES`, `DBT_PROD_POWERBI_PATH` (index artifact for `powerbi list`/`find`/`show`/`reports`/`cost`/`lineage`; default `~/dbt-state/powerbi_index.json`). `powerbi artifacts` is prod-only: scans workspaces and builds the index in one shot, default outputs land next to the prod manifest (`~/dbt-state/powerbi_raw.json`, `~/dbt-state/powerbi_index.json`); override via `--raw`/`-o`. The scanResult scrub strips user emails (`users[].emailAddress`/`identifier`) and scalar `modifiedBy`/`createdBy`/`configuredBy` so no PII reaches disk; credentials are piped to `curl` over stdin, never via argv.
 
 **Deprecated** (warning при использовании): `DBT_DEV_DATASET`, `DBT_DEV_SCHEMA_TEMPLATE`, `DBT_DEV_SCHEMA_PREFIX` → use `DBT_DEV_SCHEMA`.
 

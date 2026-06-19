@@ -44,7 +44,7 @@ class LsCommand:
         self.use_dev = use_dev
         self.json_output = json_output
 
-    def execute(self) -> str | list[dict[str, Any]] | dict[str, list[dict[str, Any]]]:
+    def execute(self) -> str | list[dict[str, Any]] | dict[str, list[dict[str, Any]]] | dict[str, list[str]]:
         parser = _get_cached_parser(self.manifest_path)
         models = parser.get_all_models()
 

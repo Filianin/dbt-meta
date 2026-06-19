@@ -8,10 +8,10 @@ import json
 import os
 import shutil
 import subprocess
-from typing import Optional
+from typing import Any, Optional
 
 
-def run_monitoring_query(sql: str, timeout: int = 30) -> Optional[list[dict]]:
+def run_monitoring_query(sql: str, timeout: int = 30) -> Optional[list[dict[str, Any]]]:
     """Execute BigQuery query and return results as list of dicts.
 
     Args:
@@ -42,13 +42,14 @@ def run_monitoring_query(sql: str, timeout: int = 30) -> Optional[list[dict]]:
         if not output or output == '[]':
             return []
 
-        return json.loads(output)
+        rows: list[dict[str, Any]] = json.loads(output)
+        return rows
 
     except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError):
         return None
 
 
-def fetch_storage_metrics(dataset: str, table: str, monitoring_dataset: str = "prod") -> Optional[dict]:
+def fetch_storage_metrics(dataset: str, table: str, monitoring_dataset: str = "prod") -> Optional[dict[str, Any]]:
     """Fetch storage metrics from prod.storage_with_cost.
 
     Args:
@@ -89,7 +90,7 @@ def fetch_storage_metrics(dataset: str, table: str, monitoring_dataset: str = "p
     return None
 
 
-def fetch_partition_stats(dataset: str, table: str, monitoring_dataset: str = "prod") -> Optional[dict]:
+def fetch_partition_stats(dataset: str, table: str, monitoring_dataset: str = "prod") -> Optional[dict[str, Any]]:
     """Fetch partition statistics from prod.partitions_monitoring.
 
     Args:
@@ -126,7 +127,7 @@ def fetch_partition_stats(dataset: str, table: str, monitoring_dataset: str = "p
     return None
 
 
-def fetch_usage_stats(dataset: str, table: str, days: int = 30, monitoring_dataset: str = "prod") -> Optional[dict]:
+def fetch_usage_stats(dataset: str, table: str, days: int = 30, monitoring_dataset: str = "prod") -> Optional[dict[str, Any]]:
     """Fetch query usage statistics from prod.table_reference_incremental.
 
     Args:
@@ -158,7 +159,7 @@ def fetch_usage_stats(dataset: str, table: str, days: int = 30, monitoring_datas
     return None
 
 
-def fetch_partition_details(dataset: str, table: str, monitoring_dataset: str = "prod") -> Optional[list[dict]]:
+def fetch_partition_details(dataset: str, table: str, monitoring_dataset: str = "prod") -> Optional[list[dict[str, Any]]]:
     """Fetch detailed partition information from INFORMATION_SCHEMA.
 
     Args:
@@ -185,7 +186,7 @@ def fetch_partition_details(dataset: str, table: str, monitoring_dataset: str = 
     return run_monitoring_query(query, timeout=60)
 
 
-def fetch_column_clustering_info(dataset: str, table: str, monitoring_dataset: str = "prod") -> Optional[dict]:
+def fetch_column_clustering_info(dataset: str, table: str, monitoring_dataset: str = "prod") -> Optional[dict[str, Any]]:
     """Fetch partitioning and clustering column info from INFORMATION_SCHEMA.
 
     Args:
@@ -233,7 +234,7 @@ def fetch_column_clustering_info(dataset: str, table: str, monitoring_dataset: s
     return None
 
 
-def fetch_all_tables_storage(min_gb: float = 1.0, monitoring_dataset: str = "prod") -> Optional[list[dict]]:
+def fetch_all_tables_storage(min_gb: float = 1.0, monitoring_dataset: str = "prod") -> Optional[list[dict[str, Any]]]:
     """Fetch storage metrics for all tables above size threshold.
 
     Used for hotspots analysis.
@@ -262,7 +263,7 @@ def fetch_all_tables_storage(min_gb: float = 1.0, monitoring_dataset: str = "pro
     return run_monitoring_query(query, timeout=120)
 
 
-def fetch_table_query_frequency(days: int = 30, monitoring_dataset: str = "prod") -> Optional[list[dict]]:
+def fetch_table_query_frequency(days: int = 30, monitoring_dataset: str = "prod") -> Optional[list[dict[str, Any]]]:
     """Fetch query frequency for all tables.
 
     Used for hotspots analysis to identify high-usage tables.
@@ -289,7 +290,7 @@ def fetch_table_query_frequency(days: int = 30, monitoring_dataset: str = "prod"
     return run_monitoring_query(query, timeout=120)
 
 
-def fetch_model_query_costs(monitoring_dataset: str = "prod") -> Optional[list[dict]]:
+def fetch_model_query_costs(monitoring_dataset: str = "prod") -> Optional[list[dict[str, Any]]]:
     """Fetch query costs per dbt model from models_costs_incremental.
 
     Aggregates 7-day query cost data for ALL models (not just top N).
@@ -320,7 +321,7 @@ def fetch_model_query_costs(monitoring_dataset: str = "prod") -> Optional[list[d
     return run_monitoring_query(query, timeout=60)
 
 
-def fetch_tables_with_savings(min_savings: float = 0.0, monitoring_dataset: str = "prod") -> Optional[list[dict]]:
+def fetch_tables_with_savings(min_savings: float = 0.0, monitoring_dataset: str = "prod") -> Optional[list[dict[str, Any]]]:
     """Fetch tables with potential storage savings.
 
     Args:
@@ -344,7 +345,7 @@ def fetch_tables_with_savings(min_savings: float = 0.0, monitoring_dataset: str 
     return run_monitoring_query(query, timeout=60)
 
 
-def fetch_dataset_billing_recommendations(monitoring_dataset: str = "prod") -> Optional[list[dict]]:
+def fetch_dataset_billing_recommendations(monitoring_dataset: str = "prod") -> Optional[list[dict[str, Any]]]:
     """Fetch aggregated billing recommendations per dataset with net impact.
 
     Calculates NET savings for switching entire dataset to optimal billing,
@@ -382,7 +383,7 @@ def fetch_dataset_billing_recommendations(monitoring_dataset: str = "prod") -> O
     return run_monitoring_query(query, timeout=60)
 
 
-def fetch_total_bigquery_costs(days: int = 7, monitoring_dataset: str = "prod") -> Optional[dict]:
+def fetch_total_bigquery_costs(days: int = 7, monitoring_dataset: str = "prod") -> Optional[dict[str, Any]]:
     """Fetch total BigQuery costs from all jobs (not just dbt).
 
     Queries jobs_costs_incremental for aggregate costs across all
@@ -415,7 +416,7 @@ def fetch_total_bigquery_costs(days: int = 7, monitoring_dataset: str = "prod") 
     return None
 
 
-def fetch_partition_info_all(monitoring_dataset: str = "prod") -> Optional[list[dict]]:
+def fetch_partition_info_all(monitoring_dataset: str = "prod") -> Optional[list[dict[str, Any]]]:
     """Fetch partition info for all partitioned tables.
 
     Returns:
@@ -436,7 +437,7 @@ def fetch_partition_info_all(monitoring_dataset: str = "prod") -> Optional[list[
     return run_monitoring_query(query, timeout=120)
 
 
-def fetch_read_heavy_tables(monitoring_dataset: str = "prod") -> Optional[list[dict]]:
+def fetch_read_heavy_tables(monitoring_dataset: str = "prod") -> Optional[list[dict[str, Any]]]:
     """Fetch tables with high read frequency.
 
     Returns:
@@ -457,7 +458,7 @@ def fetch_read_heavy_tables(monitoring_dataset: str = "prod") -> Optional[list[d
     return run_monitoring_query(query, timeout=60)
 
 
-def fetch_unused_tables(days_threshold: int = 30, monitoring_dataset: str = "prod") -> Optional[list[dict]]:
+def fetch_unused_tables(days_threshold: int = 30, monitoring_dataset: str = "prod") -> Optional[list[dict[str, Any]]]:
     """Fetch tables not used in the last N days.
 
     Args:
@@ -480,7 +481,7 @@ def fetch_unused_tables(days_threshold: int = 30, monitoring_dataset: str = "pro
     return run_monitoring_query(query, timeout=60)
 
 
-def fetch_model_metrics(monitoring_dataset: str = "prod") -> Optional[list[dict]]:
+def fetch_model_metrics(monitoring_dataset: str = "prod") -> Optional[list[dict[str, Any]]]:
     """Fetch model execution metrics from models_costs_incremental.
 
     Returns 7-day aggregated metrics: failed_runs, p90_duration, avg_duration.

@@ -9,6 +9,7 @@ Provides dbt-meta CLI with:
 """
 
 import json
+from pathlib import Path
 from typing import Any, Callable, NoReturn, Optional
 
 import typer
@@ -138,7 +139,7 @@ def _build_tree_recursive(parent_tree: Tree, nodes: list[dict[str, Any]]) -> Non
 def _build_commands_panel() -> Panel:
     """Build Commands panel with categorized commands"""
     table = Table(show_header=False, box=None, padding=(0, 1))
-    table.add_column(style=STYLE_COMMAND, no_wrap=True, width=20)
+    table.add_column(style=STYLE_COMMAND, no_wrap=True, width=28)
     table.add_column(style=STYLE_DESCRIPTION)
 
     # Core commands (green)
@@ -176,14 +177,23 @@ def _build_commands_panel() -> Panel:
     # Column-level lineage (magenta)
     table.add_row("[bold magenta]Lineage:[/bold magenta]", "")
     table.add_row("  [magenta]lineage build[/magenta]", "Build column-level lineage artifact (SQLGlot + rustworkx)")
-    table.add_row("  [magenta]lineage column[/magenta]", "Upstream lineage for a column (model.col)")
-    table.add_row("  [magenta]lineage downstream[/magenta]", "Downstream impact for a column")
+    table.add_row("  [magenta]lineage column <m.col>[/magenta]", "Upstream lineage for a column")
+    table.add_row("  [magenta]lineage downstream <m.col>[/magenta]", "Downstream impact for a column")
     table.add_row("  [magenta]lineage stats[/magenta]", "Artifact summary (nodes, edges, generated_at)")
     table.add_row("", "")
 
-    # Integration (blue)
-    table.add_row("[bold blue]Integration:[/bold blue]", "")
-    table.add_row("  [blue]powerbi[/blue]", "Power BI dashboards → BigQuery tables (scan, build, find, show)")
+    # Integration — Power BI (blue)
+    table.add_row("[bold blue]Power BI:[/bold blue]", "")
+    table.add_row("  [blue]powerbi artifacts[/blue]", "Scan workspaces + build compact index → ~/dbt-state/")
+    table.add_row("  [blue]powerbi list[/blue]", "List all reports (workspace | report | dataset)")
+    table.add_row("  [blue]powerbi find <q>[/blue]", "Find reports / metrics behind a dashboard")
+    table.add_row("  [blue]powerbi show <report>[/blue]", "Report breakdown: tables + SQL analysis")
+    table.add_row("  [blue]powerbi reports <model>[/blue]", "Reverse lookup: dbt model → PBI reports")
+    table.add_row("  [blue]powerbi cost <report>[/blue]", "Per-table query cost metrics (7-day, live BQ)")
+    table.add_row("  [blue]powerbi lineage <report>[/blue]", "Column-level upstream lineage for report SQL filters")
+    table.add_row("  [blue]powerbi measures <report>[/blue]", "DAX measures + expressions (from raw)")
+    table.add_row("  [blue]powerbi source <report>[/blue]", "Power Query M-expressions (from raw)")
+    table.add_row("  [blue]powerbi owners <report>[/blue]", "Report owners + last modified (from raw)")
     table.add_row("", "")
 
     # Settings management (magenta)
@@ -192,6 +202,12 @@ def _build_commands_panel() -> Panel:
     table.add_row("  [magenta]settings show[/magenta]", "Display current configuration")
     table.add_row("  [magenta]settings validate[/magenta]", "Validate config file")
     table.add_row("  [magenta]settings path[/magenta]", "Show path to active config file")
+    table.add_row("", "")
+
+    # Help on demand (dim)
+    table.add_row("[bold]Help:[/bold]", "")
+    table.add_row("  examples", "Show usage examples for all commands")
+    table.add_row("  config-help", "Show env vars and TOML configuration reference")
 
     return Panel(table, title="[bold white]🚀 Commands[/bold white]", title_align="left", border_style="white", padding=(0, 1))
 
@@ -225,12 +241,6 @@ def _build_flags_panel() -> Panel:
     table.add_row("[bold cyan]hotspots flags:[/bold cyan]", "")
     table.add_row("-n, --limit N", "Number of hotspots to show (default: 10)")
     table.add_row("--min-gb GB", "Minimum table size in GB (default: 1.0)")
-    table.add_row("", "")
-    table.add_row("[bold cyan]powerbi subcommands:[/bold cyan]", "")
-    table.add_row("powerbi scan", "Scan workspaces → raw scanResult JSON")
-    table.add_row("powerbi build", "Build compact agent index (raw + manifest)")
-    table.add_row("powerbi find <q>", "Find reports / metrics behind a dashboard")
-    table.add_row("powerbi show <report>", "Report breakdown: tables + SQL analysis")
     table.add_row("", "")
     table.add_row("[bold cyan]settings init flags:[/bold cyan]", "")
     table.add_row("-f, --force", "Overwrite existing config file")
@@ -287,13 +297,12 @@ def _build_examples_panel() -> Panel:
     table.add_row("", "")
     table.add_row("[bold]Column-level lineage:[/bold]", "")
     table.add_row("  meta lineage build", "Build prod artifact from manifest+catalog")
-    table.add_row("  meta lineage build --dev", "Build dev artifact (./target/lineage.json)")
     table.add_row("  meta lineage column model.col", "Upstream lineage (where does column come from)")
     table.add_row("  meta lineage downstream model.col", "Impact analysis (what breaks if column changes)")
     table.add_row("  meta lineage stats -j", "Artifact stats as JSON")
     table.add_row("", "")
     table.add_row("[bold]Power BI integration:[/bold]", "")
-    table.add_row("  meta powerbi build", "Build agent index from scan + manifest")
+    table.add_row("  meta powerbi artifacts", "Scan + build agent index → ~/dbt-state/")
     table.add_row("  meta powerbi find leads", "Reports/metrics matching 'leads'")
     table.add_row("  meta powerbi show 'Organic Leads'", "Full report breakdown")
     table.add_row("", "")
@@ -392,17 +401,18 @@ def show_help_with_examples(ctx: typer.Context) -> None:
     console.print(Panel(usage_table, border_style="white", padding=(0, 0)))
     rprint()
 
-    # Print all sections (Commands first, then Flags)
+    # Print Commands and Flags panels only
     console.print(_build_commands_panel())
     console.print(_build_flags_panel())
-    console.print(_build_examples_panel())
-    console.print(_build_configuration_panel())
 
     # Footer with links
     console.print()
     console.print("─" * 80)
-    console.print("📚 Docs:   https://github.com/Filianin/dbt-meta")
-    console.print("🐛 Issues: https://github.com/Filianin/dbt-meta/issues")
+    console.print("  Run [cyan]meta examples[/cyan] for usage examples")
+    console.print("  Run [cyan]meta config-help[/cyan] for env vars and TOML configuration")
+    console.print()
+    console.print("  📚 Docs:   https://github.com/Filianin/dbt-meta")
+    console.print("  🐛 Issues: https://github.com/Filianin/dbt-meta/issues")
     console.print()
 
 
@@ -449,6 +459,22 @@ def main(
     if ctx.invoked_subcommand is None and not version and not help_flag:
         # Show help with examples when no command specified
         show_help_with_examples(ctx)
+
+
+# ============================================================================
+# On-demand help commands
+# ============================================================================
+
+@app.command("examples")
+def examples_cmd() -> None:
+    """Show usage examples for all commands."""
+    console.print(_build_examples_panel())
+
+
+@app.command("config-help")
+def config_help_cmd() -> None:
+    """Show env vars and TOML configuration reference."""
+    console.print(_build_configuration_panel())
 
 
 # ============================================================================
@@ -1057,7 +1083,7 @@ def search(
 
 @app.command("list")
 def list_cmd(
-    selectors: Optional[list[str]] = typer.Argument(None, help="Selectors: tag:name config.key:val path:dir package:name"),  # noqa: B008
+    selectors: Optional[list[str]] = typer.Argument(None, help="Selectors: tag:name config.key:val path:dir package:name"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     modified: bool = typer.Option(False, "-m", "--modified", help="Show only modified/new models (git-aware)"),
     and_logic: bool = typer.Option(False, "--and", help="Require ALL tags (default: OR - at least one)"),
@@ -1317,7 +1343,7 @@ def context(
         # Dedup preserving order.
         ordered_names = list(dict.fromkeys(model_names))
 
-        results: dict[str, Optional[dict]] = {}
+        results: dict[str, Optional[dict[str, Any]]] = {}
         for name in ordered_names:
             bundle = ContextCommand(
                 Config.from_config_or_env(), manifest_path, name, effective_use_dev, json_output
@@ -1338,7 +1364,7 @@ def context(
         handle_error(e, json_output)
 
 
-def _render_context_bundle(bundle: dict) -> None:
+def _render_context_bundle(bundle: dict[str, Any]) -> None:
     """Render a single context bundle as Rich tables (header + columns)."""
     print()
     header = Table(
@@ -1412,7 +1438,7 @@ def analyze(
         handle_error(e, json_output)
 
 
-def _print_analyze_result(result: dict) -> None:
+def _print_analyze_result(result: dict[str, Any]) -> None:
     """Pretty print analyze command result."""
     print()
     console.print(f"[bold green]Model:[/bold green] {result['model']}")
@@ -1509,7 +1535,7 @@ def hotspots(
         handle_error(e, json_output)
 
 
-def _print_hotspots_result(result: dict, limit: int) -> None:
+def _print_hotspots_result(result: dict[str, Any], limit: int) -> None:
     """Pretty print hotspots command result."""
     print()
     summary = result.get('summary', {})
@@ -1663,7 +1689,7 @@ def branch(
         handle_error(e, json_output)
 
 
-def _print_branch_result(result: dict) -> None:
+def _print_branch_result(result: dict[str, Any]) -> None:
     """Pretty print branch command result."""
     print()
     console.print(f"[bold green]Branch Analysis:[/bold green] {result['root']}")
@@ -1761,54 +1787,43 @@ def _print_branch_result(result: dict) -> None:
 # ============================================================================
 
 powerbi_app = typer.Typer(
-    help="Power BI dashboard metadata — scan, build index, find/show reports.",
+    help="Power BI dashboard metadata — build artifacts, list/find/show reports.",
     no_args_is_help=True,
 )
 app.add_typer(powerbi_app, name="powerbi")
 
 
-@powerbi_app.command("scan")
-def powerbi_scan(
-    output: str = typer.Option(
-        "target/powerbi_raw.json", "-o", "--output", help="Raw scanResult output path"
+@powerbi_app.command("artifacts")
+def powerbi_artifacts(
+    raw: Optional[str] = typer.Option(
+        None, "--raw",
+        help="Raw scanResult output path (default: <prod-manifest-dir>/powerbi_raw.json)",
     ),
-    json_output: bool = typer.Option(False, "-j", "--json", help="Output summary as JSON"),
-) -> None:
-    """Scan configured workspaces via the Admin Scanner API into a raw JSON dump."""
-    from dbt_meta.command_impl import powerbi as pbi
-
-    try:
-        result = pbi.scan_command(Config.from_config_or_env(), output)
-    except DbtMetaError as e:
-        handle_error(e, json_output)
-        return
-    if json_output:
-        print(json.dumps(result, indent=2))
-    else:
-        console.print(
-            f"[green]Scanned[/green] {result['workspaces']} workspaces, "
-            f"{result['datasets']} datasets, {result['reports']} reports, "
-            f"{result['tables']} tables → {result['output']}"
-        )
-
-
-@powerbi_app.command("build")
-def powerbi_build(
-    raw: str = typer.Option(
-        "target/powerbi_raw.json", "--raw", help="Raw scanResult path"
+    output: Optional[str] = typer.Option(
+        None, "-o", "--output",
+        help="Compact index output path (default: <prod-manifest-dir>/powerbi_index.json)",
     ),
     manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
-    output: str = typer.Option(
-        "target/powerbi_index.json", "-o", "--output", help="Compact index output path"
-    ),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output summary as JSON"),
 ) -> None:
-    """Build the compact agent index from a raw scanResult + dbt manifest."""
+    """Scan workspaces and build the compact agent index in one shot.
+
+    Writes powerbi_raw.json (raw scanResult) and powerbi_index.json (compact
+    index) — both default to the prod-manifest directory (~/dbt-state/).
+    Running this manually overwrites the files managed by the cron job.
+    """
+    import os
+
     from dbt_meta.command_impl import powerbi as pbi
 
     try:
         manifest_path, _ = get_manifest_path(manifest, False)
-        result = pbi.build_index_artifact(raw, manifest_path, output)
+        manifest_dir = os.path.dirname(manifest_path)
+        raw_path = raw or os.path.join(manifest_dir, "powerbi_raw.json")
+        index_path = output or os.path.join(manifest_dir, "powerbi_index.json")
+        result = pbi.artifacts_cmd(
+            Config.from_config_or_env(), manifest_path, raw_path, index_path
+        )
     except DbtMetaError as e:
         handle_error(e, json_output)
         return
@@ -1816,8 +1831,10 @@ def powerbi_build(
         print(json.dumps(result, indent=2))
     else:
         console.print(
-            f"[green]Indexed[/green] {result['reports']} reports, "
-            f"{result['tables']} tables, {result['metrics']} metrics → {result['output']}"
+            f"[green]Scanned & indexed[/green] {result['workspaces']} workspaces, "
+            f"{result['reports']} reports, {result['metrics']} metrics\n"
+            f"  raw   → {result['raw_path']}\n"
+            f"  index → {result['index_path']}"
         )
 
 
@@ -1848,6 +1865,52 @@ def powerbi_find(
         _print_powerbi_find(result)
 
 
+@powerbi_app.command("list")
+def powerbi_list(
+    artifact: Optional[str] = typer.Option(
+        None, "--artifact", help="Explicit powerbi_index.json path"
+    ),
+    json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
+) -> None:
+    """List all reports (workspace | report | dataset | tables) for discovery."""
+    from dbt_meta.command_impl import powerbi as pbi
+    from dbt_meta.powerbi.artifact import find_powerbi_artifact
+
+    try:
+        path = find_powerbi_artifact(explicit_path=artifact)
+        result = pbi.list_cmd(path)
+    except FileNotFoundError as e:
+        handle_error(DbtMetaError(str(e)), json_output)
+        return
+    except DbtMetaError as e:
+        handle_error(e, json_output)
+        return
+    if json_output:
+        print(json.dumps(result, indent=2))
+    else:
+        _print_powerbi_list(result)
+
+
+def _print_powerbi_list(result: dict[str, Any]) -> None:
+    """Render `meta powerbi list` results."""
+    from rich.table import Table
+
+    reports = result.get("reports", [])
+    if not reports:
+        console.print(f"[{STYLE_DIM}]No reports in index[/{STYLE_DIM}]")
+        return
+    table = Table(show_header=True, header_style="bold cyan")
+    table.add_column("Workspace", style="cyan")
+    table.add_column("Report", style="white")
+    table.add_column("Dataset", style="white")
+    table.add_column("Tables", justify="right", style="green")
+    for r in reports:
+        dataset = "" if r["dataset"] == r["report"] else r["dataset"]
+        table.add_row(r["workspace"], r["report"], dataset, str(len(r["tables"])))
+    console.print(table)
+    console.print(f"[{STYLE_DIM}]{result.get('count', len(reports))} reports[/{STYLE_DIM}]")
+
+
 @powerbi_app.command("show")
 def powerbi_show(
     report: str = typer.Argument(..., help="Report name (exact or substring)"),
@@ -1875,7 +1938,7 @@ def powerbi_show(
         _print_powerbi_show(result)
 
 
-def _print_powerbi_find(result: dict) -> None:
+def _print_powerbi_find(result: dict[str, Any]) -> None:
     """Render `meta powerbi find` results."""
     from rich.table import Table
 
@@ -1905,7 +1968,7 @@ def _print_powerbi_find(result: dict) -> None:
             console.print(f"  [white]{name}[/white] → {joined}")
 
 
-def _print_powerbi_show(result: dict) -> None:
+def _print_powerbi_show(result: dict[str, Any]) -> None:
     """Render `meta powerbi show` results."""
     from rich.table import Table
 
@@ -1944,16 +2007,290 @@ def _print_powerbi_show(result: dict) -> None:
                 console.print(f"    joins:   {', '.join(s['joins'])}")
             if s.get("group_by"):
                 console.print(f"    group:   {', '.join(s['group_by'])}")
+
+
+@powerbi_app.command("reports")
+def powerbi_reports(
+    model: str = typer.Argument(..., help="dbt model name or substring"),
+    artifact: Optional[str] = typer.Option(
+        None, "--artifact", help="Explicit powerbi_index.json path"
+    ),
+    json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
+) -> None:
+    """Reverse lookup: find all Power BI reports that use a given dbt model."""
+    from dbt_meta.command_impl import powerbi as pbi
+    from dbt_meta.powerbi.artifact import find_powerbi_artifact
+
+    try:
+        path = find_powerbi_artifact(explicit_path=artifact)
+        result = pbi.reports_for_model_cmd(path, model)
+    except FileNotFoundError as e:
+        handle_error(DbtMetaError(str(e)), json_output)
+        return
+    except DbtMetaError as e:
+        handle_error(e, json_output)
+        return
+    if json_output:
+        print(json.dumps(result, indent=2))
+    else:
+        _print_powerbi_reports(result)
+
+
+@powerbi_app.command("measures")
+def powerbi_measures(
+    report: str = typer.Argument(..., help="Report name (exact or substring)"),
+    raw: Optional[str] = typer.Option(
+        None, "--raw", help="Explicit powerbi_raw.json path"
+    ),
+    json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
+) -> None:
+    """Show all DAX measures (+ expressions) for the dataset behind a report."""
+    from dbt_meta.command_impl import powerbi as pbi
+    from dbt_meta.powerbi.artifact import find_powerbi_raw
+
+    try:
+        raw_path = find_powerbi_raw(explicit_path=raw)
+        result = pbi.measures_cmd(raw_path, report)
+    except FileNotFoundError as e:
+        handle_error(DbtMetaError(str(e)), json_output)
+        return
+    except DbtMetaError as e:
+        handle_error(e, json_output)
+        return
+    if json_output:
+        print(json.dumps(result, indent=2))
+    else:
+        _print_powerbi_measures(result)
+
+
+@powerbi_app.command("source")
+def powerbi_source(
+    report: str = typer.Argument(..., help="Report name (exact or substring)"),
+    raw: Optional[str] = typer.Option(
+        None, "--raw", help="Explicit powerbi_raw.json path"
+    ),
+    json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
+) -> None:
+    """Show Power Query M-expressions for each table in a report's dataset."""
+    from dbt_meta.command_impl import powerbi as pbi
+    from dbt_meta.powerbi.artifact import find_powerbi_raw
+
+    try:
+        raw_path = find_powerbi_raw(explicit_path=raw)
+        result = pbi.source_cmd(raw_path, report)
+    except FileNotFoundError as e:
+        handle_error(DbtMetaError(str(e)), json_output)
+        return
+    except DbtMetaError as e:
+        handle_error(e, json_output)
+        return
+    if json_output:
+        print(json.dumps(result, indent=2))
+    else:
+        _print_powerbi_source(result)
+
+
+@powerbi_app.command("owners")
+def powerbi_owners(
+    report: str = typer.Argument(..., help="Report name (exact or substring)"),
+    raw: Optional[str] = typer.Option(
+        None, "--raw", help="Explicit powerbi_raw.json path"
+    ),
+    json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
+) -> None:
+    """Show Owner-level users and last-modified info for a report."""
+    from dbt_meta.command_impl import powerbi as pbi
+    from dbt_meta.powerbi.artifact import find_powerbi_raw
+
+    try:
+        raw_path = find_powerbi_raw(explicit_path=raw)
+        result = pbi.owners_cmd(raw_path, report)
+    except FileNotFoundError as e:
+        handle_error(DbtMetaError(str(e)), json_output)
+        return
+    except DbtMetaError as e:
+        handle_error(e, json_output)
+        return
+    if json_output:
+        print(json.dumps(result, indent=2))
+    else:
+        _print_powerbi_owners(result)
+
+
+@powerbi_app.command("cost")
+def powerbi_cost(
+    report: str = typer.Argument(..., help="Report name (exact or substring)"),
+    artifact: Optional[str] = typer.Option(
+        None, "--artifact", help="Explicit powerbi_index.json path"
+    ),
+    json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
+) -> None:
+    """Show per-table query cost metrics (7-day) for the tables behind a report."""
+    from dbt_meta.command_impl import powerbi as pbi
+    from dbt_meta.powerbi.artifact import find_powerbi_artifact
+
+    try:
+        artifact_path = find_powerbi_artifact(explicit_path=artifact)
+        result = pbi.cost_cmd(artifact_path, report)
+    except DbtMetaError as e:
+        handle_error(e, json_output)
+        return
+    if json_output:
+        print(json.dumps(result, indent=2))
+    else:
+        _print_powerbi_cost(result)
+
+
+def _print_powerbi_reports(result: dict[str, Any]) -> None:
+    """Render `meta powerbi reports` results."""
+    from rich.table import Table
+
+    model = result.get("model", "")
+    reports = result.get("reports", [])
+    if not reports:
+        console.print(
+            f"[{STYLE_DIM}]No Power BI reports use model '{model}'[/{STYLE_DIM}]"
+        )
+        return
+    console.print(f"[bold cyan]Power BI reports using[/bold cyan] [green]{model}[/green]")
+    table = Table(show_header=True, header_style="bold cyan")
+    table.add_column("Workspace", style="cyan")
+    table.add_column("Report", style="white")
+    table.add_column("Dataset", style="white")
+    table.add_column("Matched Tables", style="green")
+    for r in reports:
+        table.add_row(
+            r["workspace"],
+            r["report"],
+            r["dataset"],
+            "\n".join(r.get("matched_tables", [])),
+        )
+    console.print(table)
+
+
+def _print_powerbi_measures(result: dict[str, Any]) -> None:
+    """Render `meta powerbi measures` results."""
+    from rich.table import Table
+
+    measures = result.get("measures", [])
+    console.print(
+        f"[bold green]{result['report']}[/bold green] — "
+        f"[cyan]{len(measures)} measures[/cyan]"
+    )
+    if not measures:
+        return
+    table = Table(show_header=True, header_style="bold cyan")
+    table.add_column("Table", style="cyan", width=20)
+    table.add_column("Measure", style="white", width=25)
+    table.add_column("Hidden", justify="center", width=7)
+    table.add_column("Expression", style="dim")
+    for m in measures:
+        hidden_marker = "✗" if m.get("hidden") else ""
+        table.add_row(m["table"], m["name"], hidden_marker, m["expression"])
+    console.print(table)
+
+
+def _print_powerbi_source(result: dict[str, Any]) -> None:
+    """Render `meta powerbi source` results."""
+    sources = result.get("sources", [])
+    console.print(
+        f"[bold green]{result['report']}[/bold green] — "
+        f"[cyan]{len(sources)} tables with source[/cyan]"
+    )
+    for s in sources:
+        console.print(f"\n[bold cyan]{s['table']}[/bold cyan]")
+        console.print(s["expression"])
+
+
+def _print_powerbi_owners(result: dict[str, Any]) -> None:
+    """Render `meta powerbi owners` results."""
+    console.print(f"[bold green]{result['report']}[/bold green]")
+    owners = result.get("owners", [])
+    if owners:
+        console.print(f"  [cyan]Owners:[/cyan]  {', '.join(owners)}")
+    modified_by = result.get("modified_by")
+    modified_at = result.get("modified_at")
+    if modified_by:
+        console.print(f"  [cyan]Modified by:[/cyan] {modified_by}")
+    if modified_at:
+        console.print(f"  [cyan]Modified at:[/cyan] {modified_at}")
+
+
+@powerbi_app.command("lineage")
+def powerbi_lineage(
+    report: str = typer.Argument(..., help="Report name (exact or substring)"),
+    artifact: Optional[str] = typer.Option(
+        None, "--artifact", help="Explicit powerbi_index.json path"
+    ),
+    lineage: Optional[str] = typer.Option(
+        None, "--lineage", help="Explicit lineage.json path"
+    ),
+    json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
+) -> None:
+    """Show column-level upstream lineage for filter/join columns in a report's SQL."""
+    from dbt_meta.command_impl import powerbi as pbi
+    from dbt_meta.lineage.finder import find_lineage_artifact
+    from dbt_meta.powerbi.artifact import find_powerbi_artifact
+
+    try:
+        artifact_path = find_powerbi_artifact(explicit_path=artifact)
+        lineage_path = lineage or find_lineage_artifact()
+        result = pbi.lineage_cmd(artifact_path, lineage_path, report)
+    except DbtMetaError as e:
+        handle_error(e, json_output)
+        return
+    if json_output:
+        print(json.dumps(result, indent=2))
+    else:
+        _print_powerbi_lineage(result)
+
+
+def _print_powerbi_lineage(result: dict[str, Any]) -> None:
+    """Render `meta powerbi lineage` results."""
+    cols = result.get("columns", [])
+    console.print(
+        f"[bold cyan]Column lineage:[/bold cyan] [green]{result['report']}[/green]"
+    )
+    if not cols:
+        console.print(f"  [{STYLE_DIM}]No lineage found for filter/join columns[/{STYLE_DIM}]")
+        return
+    for col in cols:
+        console.print(
+            f"\n  [cyan]{col['dbt_model']}[/cyan].[white]{col['bq_column']}[/white]"
+        )
+        for ancestor in col["ancestors"]:
+            console.print(f"    ← {ancestor}")
+
+
+def _print_powerbi_cost(result: dict[str, Any]) -> None:
+    """Render `meta powerbi cost` results."""
+    from rich.table import Table
+
+    console.print(f"[bold cyan]Query cost (7d):[/bold cyan] [green]{result['report']}[/green]")
+    table = Table(show_header=True, header_style="bold cyan")
+    table.add_column("BQ Table", style="white")
+    table.add_column("Status", style="cyan")
+    table.add_column("Cost USD", style="yellow", justify="right")
+    table.add_column("Queries", style="white", justify="right")
+    table.add_column("Cache Hit", style="green", justify="right")
+    for t in result.get("tables", []):
+        cost = f"${t['query_cost_usd']:.4f}" if t["query_cost_usd"] is not None else "—"
+        queries = str(t["query_count"]) if t["query_count"] is not None else "—"
+        cache = f"{t['cache_hit_ratio']:.0%}" if t["cache_hit_ratio"] is not None else "—"
+        table.add_row(t["bq"], t["status"], cost, queries, cache)
+    console.print(table)
+
+
 # ============================================================================
 # Column-Level Lineage Commands
 # ============================================================================
 
-def _lineage_artifact_path(explicit: Optional[str], use_dev: bool) -> str:
+def _lineage_artifact_path(explicit: Optional[str]) -> str:
     """Locate lineage.json or exit with a clear error."""
     from dbt_meta.command_impl import lineage as lineage_impl
 
     try:
-        return lineage_impl.find_artifact(use_dev=use_dev, explicit=explicit)
+        return lineage_impl.find_artifact(explicit=explicit)
     except FileNotFoundError as e:
         Console(stderr=True).print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] {e!s}")
         raise typer.Exit(code=1) from None
@@ -1990,7 +2327,6 @@ def _validate_column_ref(column_ref: str, json_output: bool) -> None:
 
 @lineage_app.command("build")
 def lineage_build(
-    use_dev: bool = typer.Option(False, "-d", "--dev", help="Build dev artifact (./target/lineage.json)"),
     output: Optional[str] = typer.Option(None, "-o", "--output", help="Custom output path"),
     manifest_path: Optional[str] = typer.Option(None, "--manifest", help="Explicit manifest.json path"),
     catalog_path: Optional[str] = typer.Option(None, "--catalog", help="Explicit catalog.json path"),
@@ -2004,14 +2340,12 @@ def lineage_build(
     Reads compiled SQL from manifest.json, parses with SQLGlot, resolves
     column-to-column dependencies and writes lineage.json.
 
-    Defaults:
-        prod: writes to ~/dbt-state/lineage.json (or ./target/lineage.json
-              if simple-mode manifest is in target/)
-        dev:  writes to ./target/lineage.json
+    Lineage is a prod-only concept (column-level lineage of the deployed
+    state). The artifact is written next to the production manifest
+    (default ~/dbt-state/lineage.json), mirroring its location.
 
     Examples:
         meta lineage build              # build prod artifact
-        meta lineage build --dev        # build dev artifact from local target/
         meta lineage build -o my.json   # custom output
     """
     import os
@@ -2022,18 +2356,18 @@ def lineage_build(
     from dbt_meta.lineage import LineageBuilder, save_artifact
 
     # Resolve manifest path (reuse existing finder)
-    manifest_file, _ = get_manifest_path(manifest_path, use_dev=use_dev)
+    manifest_file, _ = get_manifest_path(manifest_path, use_dev=False)
 
     # Resolve catalog path
     if catalog_path:
         catalog_file: Optional[str] = catalog_path
     else:
         config = Config.from_config_or_env()
-        catalog_file = config.dev_catalog_path if use_dev else config.prod_catalog_path
+        catalog_file = config.prod_catalog_path
 
     # Load manifest + catalog
     try:
-        manifest = orjson.loads(open(manifest_file, "rb").read())
+        manifest = orjson.loads(Path(manifest_file).read_bytes())
     except Exception as e:
         Console(stderr=True).print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] failed to read manifest: {e!s}")
         raise typer.Exit(code=1) from None
@@ -2054,15 +2388,13 @@ def lineage_build(
     catalog: dict[str, Any] = {}
     if catalog_file and os.path.exists(catalog_file):
         try:
-            catalog = orjson.loads(open(catalog_file, "rb").read())
+            catalog = orjson.loads(Path(catalog_file).read_bytes())
         except Exception as e:
             Console(stderr=True).print(f"[yellow]Warning:[/yellow] failed to read catalog ({e!s}); continuing without column types")
 
     # Resolve output path
     if output:
         out_path = output
-    elif use_dev:
-        out_path = os.path.join(os.path.dirname(manifest_file), "lineage.json")
     else:
         # Mirror manifest location: same dir as the production manifest
         out_path = os.path.join(os.path.dirname(manifest_file), "lineage.json")
@@ -2076,7 +2408,7 @@ def lineage_build(
 
     progress_callback = None
     if verbose and not json_output:
-        def progress_callback(idx, total, name, model_elapsed):
+        def progress_callback(idx: int, total: int, name: str, model_elapsed: float) -> None:
             tag = "[yellow]slow[/yellow]" if model_elapsed >= 3.0 else "[dim]ok[/dim]"
             console.print(f"  [{idx}/{total}] {name} ({model_elapsed:.2f}s) {tag}")
 
@@ -2119,7 +2451,7 @@ def lineage_build(
     console.print(f"   Graph: {graph.node_count} columns, {graph.edge_count} edges")
     console.print(f"   Artifact: {artifact}")
     if stats.slow_models:
-        console.print(f"   [yellow]Slowest models (top 5):[/yellow]")
+        console.print("   [yellow]Slowest models (top 5):[/yellow]")
         for name, sec in sorted(stats.slow_models, key=lambda x: -x[1])[:5]:
             console.print(f"     · {name}: {sec:.1f}s")
 
@@ -2127,7 +2459,6 @@ def lineage_build(
 @lineage_app.command("column")
 def lineage_column(
     column_ref: str = typer.Argument(..., help="Column reference: 'model.column' or 'model:column'"),
-    use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev lineage artifact"),
     json_output: bool = typer.Option(False, "-j", "--json", help="JSON output"),
     artifact: Optional[str] = typer.Option(None, "--artifact", help="Explicit lineage.json path"),
 ) -> None:
@@ -2136,12 +2467,11 @@ def lineage_column(
     Examples:
         meta lineage column core_clients.client_id
         meta lineage column -j core_clients:client_id
-        meta lineage column -d staging_clients.id
     """
     from dbt_meta.command_impl import lineage as lineage_impl
 
     _validate_column_ref(column_ref, json_output)
-    artifact_path = _lineage_artifact_path(artifact, use_dev)
+    artifact_path = _lineage_artifact_path(artifact)
     result = lineage_impl.column_lineage(artifact_path, column_ref, direction="upstream")
 
     if result is None:
@@ -2149,7 +2479,7 @@ def lineage_column(
             print(json.dumps({"error": f"Column '{column_ref}' not found in lineage graph"}))
         else:
             Console(stderr=True).print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] Column '{column_ref}' not found in lineage graph")
-            Console(stderr=True).print(f"[yellow]Hint:[/yellow] try `meta lineage build{' --dev' if use_dev else ''}` to refresh the artifact")
+            Console(stderr=True).print("[yellow]Hint:[/yellow] try `meta lineage build` to refresh the artifact")
         raise typer.Exit(code=1)
 
     if json_output:
@@ -2170,7 +2500,6 @@ def lineage_column(
 @lineage_app.command("downstream")
 def lineage_downstream(
     column_ref: str = typer.Argument(..., help="Column reference: 'model.column' or 'model:column'"),
-    use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev lineage artifact"),
     json_output: bool = typer.Option(False, "-j", "--json", help="JSON output"),
     artifact: Optional[str] = typer.Option(None, "--artifact", help="Explicit lineage.json path"),
 ) -> None:
@@ -2183,7 +2512,7 @@ def lineage_downstream(
     from dbt_meta.command_impl import lineage as lineage_impl
 
     _validate_column_ref(column_ref, json_output)
-    artifact_path = _lineage_artifact_path(artifact, use_dev)
+    artifact_path = _lineage_artifact_path(artifact)
     result = lineage_impl.column_lineage(artifact_path, column_ref, direction="downstream")
 
     if result is None:
@@ -2210,7 +2539,6 @@ def lineage_downstream(
 
 @lineage_app.command("stats")
 def lineage_stats_cmd(
-    use_dev: bool = typer.Option(False, "-d", "--dev", help="Use dev lineage artifact"),
     json_output: bool = typer.Option(False, "-j", "--json", help="JSON output"),
     artifact: Optional[str] = typer.Option(None, "--artifact", help="Explicit lineage.json path"),
 ) -> None:
@@ -2222,7 +2550,7 @@ def lineage_stats_cmd(
     """
     from dbt_meta.command_impl import lineage as lineage_impl
 
-    artifact_path = _lineage_artifact_path(artifact, use_dev)
+    artifact_path = _lineage_artifact_path(artifact)
     info = lineage_impl.lineage_stats(artifact_path)
 
     if json_output:
@@ -2259,7 +2587,7 @@ def _load_manifest_and_catalog(
 
     manifest_file, _ = get_manifest_path(manifest_path, use_dev=use_dev)
     try:
-        manifest = orjson.loads(open(manifest_file, "rb").read())
+        manifest = orjson.loads(Path(manifest_file).read_bytes())
     except (OSError, ValueError) as e:
         Console(stderr=True).print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] failed to read manifest: {e!s}")
         raise typer.Exit(code=1) from None
@@ -2271,7 +2599,7 @@ def _load_manifest_and_catalog(
     catalog: dict[str, Any] = {}
     if catalog_path and os.path.exists(catalog_path):
         try:
-            catalog = orjson.loads(open(catalog_path, "rb").read())
+            catalog = orjson.loads(Path(catalog_path).read_bytes())
         except (OSError, ValueError) as e:
             Console(stderr=True).print(
                 f"[yellow]Warning:[/yellow] failed to read catalog ({e!s}); proceeding without column types"
@@ -2297,7 +2625,7 @@ def _preflight_compiled_sql_by_path(
     import orjson
 
     try:
-        manifest = orjson.loads(open(manifest_file, "rb").read())
+        manifest = orjson.loads(Path(manifest_file).read_bytes())
     except (OSError, ValueError):
         # Let the downstream layer surface the load error; preflight is
         # advisory.
@@ -2357,7 +2685,7 @@ def _ensure_manifest_compiled(
     using_prod = manifest_file == home_state
     is_explicit = explicit_manifest_path is not None
 
-    def _fail(extra: Optional[str] = None) -> None:
+    def _fail(extra: Optional[str] = None) -> NoReturn:
         coverage = f"{with_sql}/{total} models"
         if using_prod:
             msg = (
@@ -2424,7 +2752,7 @@ def _ensure_manifest_compiled(
     import os
     import subprocess as _subprocess
 
-    compile_argv: list[str] = [dbt_cmd, "compile"]  # type: ignore[list-item]
+    compile_argv: list[str] = [dbt_cmd, "compile"]
     # Use the project-local profiles.yml when present; otherwise let dbt fall
     # back to ~/.dbt/profiles.yml. Without this, projects that ship their own
     # profiles.yml at root produce 0/N compiled because dbt can't find any
@@ -2448,7 +2776,7 @@ def _ensure_manifest_compiled(
         _fail(f"`dbt compile` exited with code {result.returncode}:\n      {tail}")
 
     try:
-        manifest = orjson.loads(open(manifest_file, "rb").read())
+        manifest = orjson.loads(Path(manifest_file).read_bytes())
     except (OSError, ValueError) as e:
         Console(stderr=True).print(
             f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] failed to reload manifest after compile: {e!s}"
@@ -2554,7 +2882,7 @@ def optimize_cluster(
         for line in rec.reasoning:
             console.print(f"        · {line}")
     if result.excluded:
-        console.print(f"\n   [dim]Excluded:[/dim]")
+        console.print("\n   [dim]Excluded:[/dim]")
         for e in result.excluded:
             console.print(f"     · {e['column']} — {e['reason']}")
 
@@ -2633,18 +2961,18 @@ def optimize_partition(
             "optimal — no changes needed.[/bold green]"
         )
     else:
-        console.print(f"\n   [cyan]Recommended:[/cyan]")
+        console.print("\n   [cyan]Recommended:[/cyan]")
         console.print(f"     Column:      {rec.column} ({rec.data_type or '?'})")
         console.print(f"     Granularity: {rec.granularity}")
         console.print(f"     Score:       {rec.score}")
-        console.print(f"     Reasoning:")
+        console.print("     Reasoning:")
         for line in rec.reasoning:
             console.print(f"       · {line}")
 
     _print_partition_breakdown(rec)
 
     if not result.matches_current and result.alternatives:
-        console.print(f"\n   [dim]Alternatives:[/dim]")
+        console.print("\n   [dim]Alternatives:[/dim]")
         for alt in result.alternatives:
             console.print(f"     · {alt.column} ({alt.data_type or '?'}) score={alt.score} pruning=~{alt.pruning_impact_pct}%")
 
@@ -2741,7 +3069,11 @@ def optimize_refresh(
         meta optimize refresh -m --no-compile             # use whatever manifest is on disk as-is
     """
     from dbt_meta.usage import RefreshAdvisor, changed_models_from_git
-    from dbt_meta.usage.advisor_refresh import _find_dbt_executable, _infer_project_root
+    from dbt_meta.usage.advisor_refresh import (
+        _find_dbt_executable,
+        _infer_project_root,
+        _RefreshDecision,
+    )
 
     manifest, catalog, manifest_file = _load_manifest_and_catalog(True, manifest_path, catalog_path)
 
@@ -2817,10 +3149,9 @@ def optimize_refresh(
         # models) AND populates compiled_code for every changed model plus
         # its full downstream chain — exactly what SQLGlot needs. We derive
         # the model short name from the file basename (dbt's convention).
-        cli_compile_attempted = False
         if modified_files and not no_compile:
-            from pathlib import Path as _Path
             import subprocess as _subprocess
+            from pathlib import Path as _Path
 
             project_root = _infer_project_root(manifest_file)
             selectors = sorted({
@@ -2830,7 +3161,6 @@ def optimize_refresh(
             })
             dbt_cmd = _find_dbt_executable(project_root) if project_root else None
             if project_root and dbt_cmd and selectors:
-                cli_compile_attempted = True
                 Console(stderr=True).print(
                     f"[dim]ℹ️  Running `dbt compile --select {' '.join(selectors)}` "
                     f"in {project_root} to refresh manifest + compiled SQL of the impacted chain "
@@ -2964,7 +3294,7 @@ def optimize_refresh(
         return
 
     s = plan.to_dict()["summary"]
-    console.print(f"[bold green]Refresh plan[/bold green]")
+    console.print("[bold green]Refresh plan[/bold green]")
     if use_modified:
         console.print(f"   Git base: [cyan]{used_base or '(unknown)'}[/cyan]")
     formatted_changes = ", ".join(
@@ -2973,7 +3303,12 @@ def optimize_refresh(
     console.print(f"   Changed models: {len(changes)} — {formatted_changes}")
     console.print(f"   Summary: full_refresh={s['full_refresh']}  incremental={s['incremental']}  skip={s['skip']}")
 
-    def _print_bucket(label, color, bucket, limit=30):
+    def _print_bucket(
+        label: str,
+        color: str,
+        bucket: list["_RefreshDecision"],
+        limit: int = 30,
+    ) -> None:
         if not bucket:
             return
         console.print(f"\n   [{color}]{label} ({len(bucket)}):[/{color}]")

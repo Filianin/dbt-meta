@@ -9,7 +9,8 @@ Admin API. The higher-level Scanner flow lives in
 import json
 import shutil
 import subprocess
-from typing import Optional
+import urllib.parse
+from typing import Any, Optional
 
 
 def get_powerbi_token(
@@ -19,6 +20,10 @@ def get_powerbi_token(
     timeout: int = 30
 ) -> Optional[str]:
     """Get OAuth token via client_credentials flow.
+
+    The request body (including ``client_secret``) is piped to curl over stdin
+    via ``--data @-`` so the secret never appears in the process argv — argv is
+    world-readable through ``ps``.
 
     Args:
         tenant_id: Azure AD tenant ID
@@ -34,6 +39,14 @@ def get_powerbi_token(
         return None
 
     token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+    body = urllib.parse.urlencode(
+        {
+            'client_id': client_id,
+            'client_secret': client_secret,
+            'scope': 'https://analysis.windows.net/powerbi/api/.default',
+            'grant_type': 'client_credentials',
+        }
+    )
 
     try:
         result = subprocess.run(
@@ -42,11 +55,9 @@ def get_powerbi_token(
                 '-s',
                 '-X', 'POST',
                 token_url,
-                '-d', f'client_id={client_id}',
-                '-d', f'client_secret={client_secret}',
-                '-d', 'scope=https://analysis.windows.net/powerbi/api/.default',
-                '-d', 'grant_type=client_credentials',
+                '--data', '@-',
             ],
+            input=body,
             capture_output=True,
             text=True,
             timeout=timeout
@@ -55,8 +66,9 @@ def get_powerbi_token(
         if result.returncode != 0:
             return None
 
-        data = json.loads(result.stdout)
-        return data.get('access_token')
+        data: dict[str, Any] = json.loads(result.stdout)
+        token: Optional[str] = data.get('access_token')
+        return token
 
     except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError):
         return None
@@ -66,9 +78,9 @@ def _call_powerbi_api(
     token: str,
     endpoint: str,
     method: str = 'GET',
-    data: Optional[dict] = None,
+    data: Optional[dict[str, Any]] = None,
     timeout: int = 30
-) -> Optional[dict]:
+) -> Optional[dict[str, Any]]:
     """Call Power BI Admin API endpoint.
 
     Args:
@@ -88,12 +100,19 @@ def _call_powerbi_api(
     base_url = "https://api.powerbi.com/v1.0/myorg"
     url = f"{base_url}{endpoint}"
 
+    # The bearer token is the sensitive bit — feed it to curl through a config
+    # read from stdin (``-K -``) so it stays out of the process argv (visible via
+    # ``ps``). Backslashes and quotes are escaped for the curl config syntax;
+    # JWTs don't contain them, but the escaping keeps this safe regardless.
+    safe_token = token.replace('\\', '\\\\').replace('"', '\\"')
+    curl_config = f'header = "Authorization: Bearer {safe_token}"\n'
+
     cmd = [
         curl_cmd,
         '-s',
         '-X', method,
-        '-H', f'Authorization: Bearer {token}',
         '-H', 'Content-Type: application/json',
+        '-K', '-',
         url,
     ]
 
@@ -103,6 +122,7 @@ def _call_powerbi_api(
     try:
         result = subprocess.run(
             cmd,
+            input=curl_config,
             capture_output=True,
             text=True,
             timeout=timeout
@@ -114,7 +134,8 @@ def _call_powerbi_api(
         if not result.stdout.strip():
             return {}
 
-        return json.loads(result.stdout)
+        parsed: dict[str, Any] = json.loads(result.stdout)
+        return parsed
 
     except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError):
         return None

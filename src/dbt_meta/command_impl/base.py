@@ -93,7 +93,7 @@ class BaseCommand(ABC):
         pass
 
     @abstractmethod
-    def process_model(self, model: dict, level: Optional[FallbackLevel] = None) -> Any:
+    def process_model(self, model: dict[str, Any], level: Optional[FallbackLevel] = None) -> Any:
         """Process model data and return formatted result.
 
         Args:
@@ -244,7 +244,7 @@ class BaseCommand(ABC):
         """
         return None
 
-    def emit_warnings(self, warnings: list[dict[str, str]]):
+    def emit_warnings(self, warnings: list[dict[str, str]]) -> None:
         """Emit warnings to user.
 
         Args:

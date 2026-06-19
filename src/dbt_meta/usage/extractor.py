@@ -16,8 +16,8 @@ resolve which scope-local alias corresponds to the upstream model (via
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable, Optional
 
 from sqlglot import exp, parse_one
 from sqlglot.errors import SqlglotError
@@ -230,7 +230,7 @@ class ColumnUsageExtractor:
         """
         hits: set[str] = set()
         for alias, value in scope.selected_sources.items():
-            table_expr: Optional[exp.Table] = None
+            table_expr: exp.Table | None = None
             # Modern sqlglot: tuple (node, source); older: bare value
             if isinstance(value, tuple):
                 # Find the Table in the tuple
@@ -295,7 +295,7 @@ class ColumnUsageExtractor:
     @staticmethod
     def _inside_window(col: exp.Column, clause_node: exp.Expression) -> bool:
         """True if ``col`` has an ``exp.Window`` ancestor up to ``clause_node``."""
-        node: Optional[exp.Expression] = col.parent
+        node: exp.Expr | None = col.parent
         while node is not None and node is not clause_node:
             if isinstance(node, exp.Window):
                 return True
@@ -316,8 +316,8 @@ class ColumnUsageExtractor:
         when no comparison was found and the column is wrapped, so
         existing back-compat code paths keep working.
         """
-        node: Optional[exp.Expression] = col.parent
-        op_tag: Optional[str] = None
+        node: exp.Expr | None = col.parent
+        op_tag: str | None = None
         # ``wrapping_fn``: closest function ancestor between the column
         # and the eventual comparison operator. We record the first one
         # we encounter — that's the one BigQuery actually evaluates the
@@ -359,7 +359,7 @@ class ColumnUsageExtractor:
                 selectivity = "range"
             elif any(
                 isinstance(c, (exp.Literal, exp.Null, exp.Boolean))
-                for c in op_node.find_all((exp.Literal, exp.Null, exp.Boolean))
+                for c in op_node.find_all(exp.Literal, exp.Null, exp.Boolean)
             ):
                 selectivity = "literal"
         return (op_tag, selectivity, wrapping_fn)
