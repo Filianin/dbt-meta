@@ -2,7 +2,7 @@
 
 import subprocess
 import sys
-from typing import Optional
+from typing import Any, Optional
 
 from dbt_meta.command_impl.base import BaseCommand
 from dbt_meta.errors import ModelNotFoundError
@@ -55,10 +55,10 @@ class SchemaCommand(BaseCommand):
     SUPPORTS_BIGQUERY = True
     SUPPORTS_DEV = True
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Initialize schema command."""
         super().__init__(*args, **kwargs)
-        self._fallback_level = None  # Track which level found the model
+        self._fallback_level: Optional[FallbackLevel] = None  # Track which level found the model
 
     def execute(self) -> Optional[dict[str, str]]:
         """Execute schema command.
@@ -72,7 +72,7 @@ class SchemaCommand(BaseCommand):
 
         return self.process_model(model, self._fallback_level)
 
-    def _get_model_prod_mode(self) -> Optional[dict]:
+    def _get_model_prod_mode(self) -> Optional[dict[str, Any]]:
         """Override to track fallback level for special dev manifest handling.
 
         When model found in dev manifest (LEVEL 2), schema command returns
@@ -117,7 +117,7 @@ class SchemaCommand(BaseCommand):
             # Model not found in any fallback level - expected error
             return None
 
-    def process_model(self, model: dict, level: Optional[FallbackLevel] = None) -> dict[str, str]:
+    def process_model(self, model: dict[str, Any], level: Optional[FallbackLevel] = None) -> dict[str, str]:
         """Process model data and return schema location.
 
         Args:
@@ -173,7 +173,7 @@ class SchemaCommand(BaseCommand):
             'full_name': f"{database}.{schema_name}.{table_name}"
         }
 
-    def _get_model_bigquery_dev(self) -> Optional[dict]:
+    def _get_model_bigquery_dev(self) -> Optional[dict[str, Any]]:
         """Get model from BigQuery in dev mode.
 
         For dev mode, uses full model name as table name (no splitting by __).

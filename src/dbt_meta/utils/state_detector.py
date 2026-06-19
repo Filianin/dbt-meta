@@ -8,9 +8,10 @@ duplicating the detection logic inline.
 import contextlib
 import os
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 from dbt_meta.config import Config
+from dbt_meta.manifest.parser import ManifestParser
 from dbt_meta.utils import get_cached_parser as _get_cached_parser
 from dbt_meta.utils.dev import calculate_dev_schema as _calculate_dev_schema
 from dbt_meta.utils.git import check_manifest_git_mismatch, get_model_git_status
@@ -22,10 +23,10 @@ class DetectedState:
     """Result of ModelStateDetector.detect()."""
 
     state: ModelState
-    model: Optional[dict] = None
-    prod_model: Optional[dict] = None
+    model: Optional[dict[str, Any]] = None
+    prod_model: Optional[dict[str, Any]] = None
     file_path: Optional[str] = None
-    warnings: list[dict] = field(default_factory=list)
+    warnings: list[dict[str, Any]] = field(default_factory=list)
 
 
 class ModelStateDetector:
@@ -112,7 +113,7 @@ class ModelStateDetector:
         )
 
     @staticmethod
-    def _load_parser(manifest_path: Optional[str]):
+    def _load_parser(manifest_path: Optional[str]) -> Optional[ManifestParser]:
         """Load manifest parser, returning None on any error."""
         if not manifest_path or not os.path.exists(manifest_path):
             return None

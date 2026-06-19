@@ -76,11 +76,11 @@ class TestLineageStats:
 
 class TestFindArtifact:
     def test_explicit_path(self, chain_artifact):
-        assert find_artifact(use_dev=False, explicit=chain_artifact) == chain_artifact
+        assert find_artifact(explicit=chain_artifact) == chain_artifact
 
     def test_missing_explicit_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
-            find_artifact(use_dev=False, explicit=str(tmp_path / "no.json"))
+            find_artifact(explicit=str(tmp_path / "no.json"))
 
 
 class TestInvalidColumnRefValidation:
@@ -142,3 +142,96 @@ class TestInvalidColumnRefValidation:
         )
         assert result.exit_code == 1
         assert "Invalid column reference" in result.output
+
+
+# ============================================================================
+# lineage_utils — count_tree_nodes / flatten_tree_to_compact / build_relation_tree
+# ============================================================================
+
+
+class TestLineageUtils:
+    from dbt_meta.command_impl.lineage_utils import (
+        build_relation_tree,
+        count_tree_nodes,
+        flatten_tree_to_compact,
+    )
+
+    def test_count_tree_nodes_with_nested_children(self):
+        from dbt_meta.command_impl.lineage_utils import count_tree_nodes
+
+        # 1 root with 2 children → 3 nodes total
+        tree = [{"children": [{"children": []}, {"children": []}]}]
+        assert count_tree_nodes(tree) == 3
+
+    def test_count_tree_nodes_empty(self):
+        from dbt_meta.command_impl.lineage_utils import count_tree_nodes
+
+        assert count_tree_nodes([]) == 0
+
+    def test_flatten_tree_to_compact_with_nested(self):
+        from dbt_meta.command_impl.lineage_utils import flatten_tree_to_compact
+
+        tree = [
+            {
+                "path": "a",
+                "table": "t",
+                "level": 0,
+                "children": [
+                    {"path": "b", "table": "u", "level": 1, "children": []}
+                ],
+            }
+        ]
+        result = flatten_tree_to_compact(tree)
+        assert len(result) == 2
+        assert result[0]["path"] == "a"
+        assert result[1]["path"] == "b"
+        assert "children" not in result[0]
+        assert "children" not in result[1]
+
+    def test_build_relation_tree_json_mode(self):
+        from dbt_meta.command_impl.lineage_utils import build_relation_tree
+
+        manifest_nodes = {
+            "model.proj.a": {
+                "resource_type": "model",
+                "name": "a",
+                "schema": "s",
+                "alias": "a",
+                "original_file_path": "models/a.sql",
+            },
+            "model.proj.b": {
+                "resource_type": "model",
+                "name": "b",
+                "schema": "s",
+                "alias": "b",
+                "original_file_path": "models/b.sql",
+            },
+        }
+        child_map = {"model.proj.a": ["model.proj.b"]}
+        result = build_relation_tree(
+            child_map,
+            "model.proj.a",
+            manifest_nodes,
+            {},
+            json_mode=True,
+        )
+        assert len(result) == 1
+        assert result[0]["path"] == "b.sql"
+        assert result[0]["table"] == "s.b"
+
+    def test_build_relation_tree_cycle_guard(self):
+        from dbt_meta.command_impl.lineage_utils import build_relation_tree
+
+        manifest_nodes = {
+            "model.proj.a": {
+                "resource_type": "model",
+                "name": "a",
+                "schema": "s",
+                "alias": "a",
+                "original_file_path": "models/a.sql",
+            }
+        }
+        child_map = {"model.proj.a": ["model.proj.a"]}
+        # Should not crash — cycle guard prevents infinite recursion
+        result = build_relation_tree(child_map, "model.proj.a", manifest_nodes, {})
+        assert isinstance(result, list)

@@ -16,7 +16,7 @@ def count_tree_nodes(tree: list[dict[str, Any]]) -> int:
         Total count of nodes including all nested children
     """
     count = len(tree)
-    for node in tree:  # pragma: no cover
+    for node in tree:
         if node.get('children'):
             count += count_tree_nodes(node['children'])
     return count
@@ -32,7 +32,7 @@ def flatten_tree_to_compact(tree: list[dict[str, Any]]) -> list[dict[str, Any]]:
         Flat array [{"path": "...", "table": "...", "level": 0}, ...]
     """
     result = []
-    for node in tree:  # pragma: no cover
+    for node in tree:
         # Add current node without children
         result.append({
             'path': node['path'],
@@ -88,7 +88,7 @@ def build_relation_tree(
     if visited is None:
         visited = set()
 
-    if node_id in visited:  # pragma: no cover
+    if node_id in visited:
         return []
 
     visited.add(node_id)

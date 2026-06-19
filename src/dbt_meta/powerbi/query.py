@@ -50,3 +50,24 @@ def show(index: PowerBiIndex, report_name: str) -> ReportEntry | None:
         if needle in report.report.lower():
             return report
     return None
+
+
+def reports_for_model(
+    index: PowerBiIndex, model_query: str
+) -> list[tuple[ReportEntry, list[str]]]:
+    """Find all reports using dbt models matching model_query (substring, case-insensitive).
+
+    Returns list of (report, matched_bq_tables). Only tables with a non-null dbt_model
+    are considered. External tables are excluded.
+    """
+    needle = model_query.lower()
+    result: list[tuple[ReportEntry, list[str]]] = []
+    for report in index.reports:
+        matched = [
+            t.bq
+            for t in report.tables
+            if t.dbt_model and needle in t.dbt_model.lower()
+        ]
+        if matched:
+            result.append((report, matched))
+    return result

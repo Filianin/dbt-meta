@@ -1,7 +1,7 @@
 """Path command - Get relative file path."""
 
 import os
-from typing import Optional
+from typing import Any, Optional
 
 from dbt_meta.command_impl.base import BaseCommand
 from dbt_meta.errors import ManifestNotFoundError, ManifestParseError
@@ -51,7 +51,7 @@ class PathCommand(BaseCommand):
 
         return self.process_model(model)
 
-    def process_model(self, model: dict, level: Optional[FallbackLevel] = None) -> Optional[str]:
+    def process_model(self, model: dict[str, Any], level: Optional[FallbackLevel] = None) -> Optional[str]:
         """Process model data and return file path.
 
         Args:
@@ -61,9 +61,10 @@ class PathCommand(BaseCommand):
         Returns:
             File path string
         """
-        return model.get('original_file_path', '')
+        file_path: str = model.get('original_file_path', '')
+        return file_path
 
-    def _search_by_bigquery_format_dev(self) -> Optional[dict]:
+    def _search_by_bigquery_format_dev(self) -> Optional[dict[str, Any]]:
         """Search for model using BigQuery format (schema.table) in dev manifest.
 
         This is used when model_name contains dots and direct lookup fails.
@@ -125,11 +126,12 @@ class PathCommand(BaseCommand):
                 expected_table = node_name
 
             if expected_table == bq_table:
-                return node_data
+                found_node: dict[str, Any] = node_data
+                return found_node
 
         return None
 
-    def _search_by_bigquery_format_prod(self) -> Optional[dict]:
+    def _search_by_bigquery_format_prod(self) -> Optional[dict[str, Any]]:
         """Search for model using BigQuery format (schema.table) in production manifest.
 
         This is used when model_name contains dots and direct lookup fails.
@@ -171,6 +173,7 @@ class PathCommand(BaseCommand):
             node_name = node_data.get('name', '')
 
             if node_alias == bq_table or node_name == bq_table:
-                return node_data
+                found_node: dict[str, Any] = node_data
+                return found_node
 
         return None

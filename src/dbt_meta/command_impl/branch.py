@@ -37,7 +37,7 @@ class BranchCommand(BaseCommand):
     ):
         super().__init__(config, manifest_path, model_name, use_dev, json_output)
 
-    def execute(self) -> Optional[dict]:
+    def execute(self) -> Optional[dict[str, Any]]:
         """Execute branch analysis."""
         model = self.get_model_with_fallback()
         if not model:
@@ -45,7 +45,7 @@ class BranchCommand(BaseCommand):
 
         return self.process_model(model)
 
-    def process_model(self, model: dict, level: Optional[FallbackLevel] = None) -> dict:
+    def process_model(self, model: dict[str, Any], level: Optional[FallbackLevel] = None) -> dict[str, Any]:
         """Process model and generate branch analysis."""
         from dbt_meta.command_impl.children import ChildrenCommand
         from dbt_meta.command_impl.parents import ParentsCommand
@@ -112,10 +112,10 @@ class BranchCommand(BaseCommand):
 
     def _analyze_upstream(
         self,
-        parents: list[dict],
+        parents: list[dict[str, Any]],
         root_filters: list[str],
         root_partition: Optional[str]
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """Analyze upstream models for optimization alignment."""
         from dbt_meta.command_impl.config import ConfigCommand
 
@@ -178,10 +178,10 @@ class BranchCommand(BaseCommand):
 
     def _analyze_downstream(
         self,
-        children: list[dict],
+        children: list[dict[str, Any]],
         root_partition: Optional[str],
         root_cluster: list[str]
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """Analyze downstream models for filter pattern alignment."""
         from dbt_meta.command_impl.sql import SqlCommand
 
@@ -237,9 +237,9 @@ class BranchCommand(BaseCommand):
         self,
         root_partition: Optional[str],
         root_cluster: list[str],
-        upstream: list[dict],
-        downstream: list[dict],
-    ) -> list[dict]:
+        upstream: list[dict[str, Any]],
+        downstream: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         """Generate branch-level optimization recommendations."""
         recs = []
 
@@ -281,7 +281,7 @@ class BranchCommand(BaseCommand):
 
         # If no partitioning and many downstream filters
         if not root_partition and downstream:
-            common_filters = {}
+            common_filters: dict[str, int] = {}
             for d in downstream:
                 for f in d.get('filters_used', []):
                     common_filters[f] = common_filters.get(f, 0) + 1

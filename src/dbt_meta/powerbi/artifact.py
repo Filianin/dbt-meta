@@ -39,6 +39,7 @@ def _sql_entry_to_dict(s: SqlAnalysisEntry) -> dict[str, Any]:
         "joins": list(s.joins),
         "group_by": list(s.group_by),
         "parse_status": s.parse_status,
+        "sql": s.sql,
     }
 
 
@@ -83,6 +84,7 @@ def index_from_dict(data: dict[str, Any]) -> PowerBiIndex:
                     joins=tuple(s.get("joins", [])),
                     group_by=tuple(s.get("group_by", [])),
                     parse_status=s.get("parse_status", "ok"),
+                    sql=s.get("sql"),
                 )
                 for s in r.get("sql_analysis", [])
             ],
@@ -118,11 +120,47 @@ def artifact_age_hours(path: str) -> float | None:
     return (time.time() - os.path.getmtime(path)) / 3600.0
 
 
+def find_powerbi_raw(explicit_path: str | None = None) -> str:
+    """Locate ``powerbi_raw.json`` (mirrors ``find_powerbi_artifact`` priority).
+
+    Priority: explicit path → ``DBT_PROD_POWERBI_RAW_PATH`` →
+    ``~/dbt-state/powerbi_raw.json``.
+    """
+    if explicit_path:
+        path = Path(explicit_path).expanduser()
+        if path.exists():
+            return str(path.absolute())
+        raise FileNotFoundError(f"Power BI raw artifact not found at: {explicit_path}")
+
+    env = os.getenv("DBT_PROD_POWERBI_RAW_PATH")
+    if env:
+        env_path = Path(env).expanduser()
+        if env_path.exists():
+            return str(env_path.absolute())
+        raise FileNotFoundError(
+            f"Power BI raw artifact not found at: {env}\n"
+            f"DBT_PROD_POWERBI_RAW_PATH is set but file doesn't exist."
+        )
+
+    default_prod = Path.home() / "dbt-state" / "powerbi_raw.json"
+    if default_prod.exists():
+        return str(default_prod.absolute())
+
+    raise FileNotFoundError(
+        "No powerbi_raw.json found. Tried:\n"
+        "  1. DBT_PROD_POWERBI_RAW_PATH (env)\n"
+        "  2. ~/dbt-state/powerbi_raw.json\n"
+        "\n"
+        "BUILD ARTIFACT:\n"
+        "  meta powerbi scan      # writes ~/dbt-state/powerbi_raw.json\n"
+    )
+
+
 def find_powerbi_artifact(explicit_path: str | None = None) -> str:
     """Locate ``powerbi_index.json`` (mirrors the lineage-artifact priority).
 
-    Priority: explicit path → ``DBT_PROD_POWERBI_PATH`` → ``./target/powerbi_index.json``
-    → ``~/dbt-state/powerbi_index.json``.
+    The Power BI index is a prod-only artifact. Priority: explicit path →
+    ``DBT_PROD_POWERBI_PATH`` → ``~/dbt-state/powerbi_index.json``.
     """
     if explicit_path:
         path = Path(explicit_path).expanduser()
@@ -140,10 +178,6 @@ def find_powerbi_artifact(explicit_path: str | None = None) -> str:
             f"DBT_PROD_POWERBI_PATH is set but file doesn't exist."
         )
 
-    simple = Path.cwd() / "target" / "powerbi_index.json"
-    if simple.exists():
-        return str(simple.absolute())
-
     default_prod = Path.home() / "dbt-state" / "powerbi_index.json"
     if default_prod.exists():
         return str(default_prod.absolute())
@@ -151,10 +185,9 @@ def find_powerbi_artifact(explicit_path: str | None = None) -> str:
     raise FileNotFoundError(
         "No powerbi_index.json found. Tried:\n"
         "  1. DBT_PROD_POWERBI_PATH (env)\n"
-        "  2. ./target/powerbi_index.json\n"
-        "  3. ~/dbt-state/powerbi_index.json\n"
+        "  2. ~/dbt-state/powerbi_index.json\n"
         "\n"
         "BUILD ARTIFACT:\n"
-        "  meta powerbi scan -o target/powerbi_raw.json\n"
-        "  meta powerbi build --raw target/powerbi_raw.json -o target/powerbi_index.json\n"
+        "  meta powerbi scan      # writes ~/dbt-state/powerbi_raw.json\n"
+        "  meta powerbi build     # writes ~/dbt-state/powerbi_index.json\n"
     )

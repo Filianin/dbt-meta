@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from dbt_meta.lineage import LineageBuilder
-from dbt_meta.lineage.builder import _ModelTimeout, _per_model_timeout
+from dbt_meta.lineage.builder import _ModelTimeoutError, _per_model_timeout
 
 
 def _make_manifest(model_name: str, schema: str, alias: str, sql: str, depends_on=None, database="testdb") -> dict[str, Any]:
@@ -436,7 +436,7 @@ class TestPerModelTimeout:
         # Use a tiny timeout (1s) and a busy loop that exceeds it
         import time as _time
 
-        with pytest.raises(_ModelTimeout):
+        with pytest.raises(_ModelTimeoutError):
             with _per_model_timeout(1):
                 # Burn ~2s of CPU so SIGALRM fires
                 start = _time.time()

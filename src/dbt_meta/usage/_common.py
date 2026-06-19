@@ -11,12 +11,13 @@ Centralises the boilerplate of resolving a target dbt model to:
 from __future__ import annotations
 
 from collections import deque
-from typing import Any, Iterable, Optional
+from collections.abc import Iterable
+from typing import Any
 
 from dbt_meta.usage.extractor import ColumnUsageExtractor, UsageEvent
 
 
-def find_target_node(manifest: dict[str, Any], short_name: str) -> Optional[tuple[str, dict[str, Any]]]:
+def find_target_node(manifest: dict[str, Any], short_name: str) -> tuple[str, dict[str, Any]] | None:
     """Find ``(unique_id, model_dict)`` for a model by short name."""
     for unique_id, node in manifest.get("nodes", {}).items():
         if not unique_id.startswith("model."):
@@ -226,7 +227,7 @@ def downstream_short_to_materialized(
 def diagnose_no_extraction(
     manifest: dict[str, Any],
     downstream_ids: Iterable[str],
-) -> Optional[str]:
+) -> str | None:
     """Explain why an advisor saw ``downstream_count > 0`` but ``parsed = 0``.
 
     Both `cluster` and `partition` advisors derive their summary from two

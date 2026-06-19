@@ -6,7 +6,7 @@ Manifest columns are unreliable (64.2% missing, 35.8% stale).
 Always fetches fresh, accurate data from BigQuery.
 """
 
-from typing import Optional
+from typing import Any, Optional
 
 from dbt_meta.command_impl.base import BaseCommand
 from dbt_meta.command_impl.column_source import ColumnSourceFactory
@@ -55,6 +55,6 @@ class ColumnsCommand(BaseCommand):
             prod_model=detected.prod_model,
         )
 
-    def process_model(self, model: dict, level: Optional[FallbackLevel] = None) -> Optional[list[dict[str, str]]]:
+    def process_model(self, model: dict[str, Any], level: Optional[FallbackLevel] = None) -> Optional[list[dict[str, str]]]:
         """Not used — all logic is in execute()."""
         return None

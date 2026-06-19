@@ -1,7 +1,7 @@
 """SQL command - Extract SQL code."""
 
 import sys
-from typing import Optional
+from typing import Any, Optional
 
 from dbt_meta.command_impl.base import BaseCommand
 from dbt_meta.fallback import FallbackLevel
@@ -28,7 +28,7 @@ class SqlCommand(BaseCommand):
     SUPPORTS_BIGQUERY = False  # SQL is manifest-only
     SUPPORTS_DEV = True
 
-    def __init__(self, *args, raw: bool = False, **kwargs):
+    def __init__(self, *args: Any, raw: bool = False, **kwargs: Any) -> None:
         """Initialize SQL command.
 
         Args:
@@ -56,7 +56,7 @@ class SqlCommand(BaseCommand):
 
         return self.process_model(model)
 
-    def process_model(self, model: dict, level: Optional[FallbackLevel] = None) -> Optional[str]:
+    def process_model(self, model: dict[str, Any], level: Optional[FallbackLevel] = None) -> Optional[str]:
         """Process model data and return SQL code.
 
         Args:
@@ -70,6 +70,8 @@ class SqlCommand(BaseCommand):
         # Note: Git warnings are automatically shown by BaseCommand.get_model_with_fallback()
         # if model is modified/new/deleted, so no additional warnings needed here
         if self.raw:
-            return model.get('raw_code', '')
+            raw_code: str = model.get('raw_code', '')
+            return raw_code
         else:
-            return model.get('compiled_code', '')
+            compiled_code: str = model.get('compiled_code', '')
+            return compiled_code

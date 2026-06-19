@@ -33,12 +33,22 @@ __all__ = ["SCAN_FLAGS", "get_powerbi_token", "scan_workspaces"]
 # so users stay trackable without storing emails.
 _PII_USER_FIELDS = ("emailAddress", "identifier")
 
+# Scalar UPN/email fields attached to artifacts (reports, dashboards, datasets,
+# dataflows). These are full user emails — dropped entirely from the scanResult
+# so no PII reaches disk. Downstream readers (e.g. ``powerbi owners``) surface
+# them as ``null``.
+_PII_SCALAR_FIELDS = ("modifiedBy", "createdBy", "configuredBy")
+
 
 def _scrub_pii(node: Any) -> None:
     """Recursively strip user emails from a scanResult, in place.
 
-    Every ``users`` array (at workspace / dashboard / dataset / report level)
-    holds user objects; drop the email fields from each, keep names.
+    Two PII shapes are removed:
+
+    * ``users`` arrays (workspace / dashboard / dataset / report level) — drop
+      the email fields from each user object, keep names.
+    * Scalar ``modifiedBy`` / ``createdBy`` / ``configuredBy`` on any artifact —
+      these are full UPN/email strings; remove the key entirely.
     """
     if isinstance(node, dict):
         users = node.get("users")
@@ -47,6 +57,8 @@ def _scrub_pii(node: Any) -> None:
                 if isinstance(user, dict):
                     for field in _PII_USER_FIELDS:
                         user.pop(field, None)
+        for field in _PII_SCALAR_FIELDS:
+            node.pop(field, None)
         for value in node.values():
             _scrub_pii(value)
     elif isinstance(node, list):

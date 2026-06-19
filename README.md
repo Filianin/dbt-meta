@@ -210,15 +210,17 @@ Backed by SQLGlot 30.7+ (`sqlglot.lineage`, all-columns mode) and rustworkx for 
 
 | Command | Description | Key flags | Example |
 |---------|-------------|-----------|---------|
-| `lineage build` | Build the lineage artifact from manifest + catalog | `-d`, `-j`, `-v`, `--timeout N`, `-o PATH`, `--manifest`, `--catalog` | `meta lineage build -v` |
-| `lineage column <model>.<col>` | Direct + transitive upstream lineage for a column | `-d`, `-j`, `--artifact` | `meta lineage column core_clients.client_id` |
-| `lineage downstream <model>.<col>` | Direct + transitive downstream impact for a column | `-d`, `-j`, `--artifact` | `meta lineage downstream raw.events.user_id` |
-| `lineage stats` | Print artifact summary (nodes, edges, generated_at, warnings) | `-d`, `-j`, `--artifact` | `meta lineage stats -j` |
+| `lineage build` | Build the lineage artifact from manifest + catalog | `-j`, `-v`, `--timeout N`, `-o PATH`, `--manifest`, `--catalog` | `meta lineage build -v` |
+| `lineage column <model>.<col>` | Direct + transitive upstream lineage for a column | `-j`, `--artifact` | `meta lineage column core_clients.client_id` |
+| `lineage downstream <model>.<col>` | Direct + transitive downstream impact for a column | `-j`, `--artifact` | `meta lineage downstream raw.events.user_id` |
+| `lineage stats` | Print artifact summary (nodes, edges, generated_at, warnings) | `-j`, `--artifact` | `meta lineage stats -j` |
+
+Lineage is a **prod-only** concept (column-level lineage of the deployed state); there is no `--dev` variant. Artifact resolution: `--artifact` → `DBT_PROD_LINEAGE_PATH` → `~/dbt-state/lineage.json`.
 
 **`build` flags:**
 - `-v, --verbose` — print per-model progress (`[123/934] model_name (0.42s) ok`)
 - `--timeout N` — per-model SIGALRM budget in seconds (default 30, 0 disables)
-- `-o PATH` — explicit output path (default: `~/dbt-state/lineage.json` for prod, `./target/lineage.json` for `--dev`)
+- `-o PATH` — explicit output path (default: next to the prod manifest, i.e. `~/dbt-state/lineage.json`)
 
 For best performance install the mypyc-compiled SQLGlot: `pip install 'sqlglot[c]'` — gives 2-4× speedup on large projects (~470 s → ~150 s for 934 models).
 
@@ -300,10 +302,9 @@ Uses BigQuery dry run (no rows processed, no charge for dry run itself). Both co
 
 ### Integration — Power BI
 
-Requires Azure AD Service Principal with Power BI Admin API access. The flow is
-two-phase: `scan` pulls a raw scanResult from the Admin Scanner API, `build`
-compiles it against the dbt manifest into a compact, queryable index, then
-`find` / `show` answer "which BigQuery tables/models sit behind this dashboard?".
+Requires Azure AD Service Principal with Power BI Admin API access. `artifacts`
+scans workspaces and builds a compact queryable index in one shot; `find` / `show`
+answer "which BigQuery tables/models sit behind this dashboard?".
 
 Both 1:1 navigation imports **and** custom Native SQL queries are parsed (via
 SQLGlot) to recover the full list of imported BigQuery tables. Native SQL is also
@@ -312,13 +313,27 @@ outside the dbt project.
 
 | Command | Description | Key flags | Example |
 |---------|-------------|-----------|---------|
-| `powerbi scan` | Scan workspaces → raw scanResult JSON | `-o/--output`, `-j` | `meta powerbi scan` |
-| `powerbi build` | Build compact index (scanResult + manifest) | `--raw`, `--manifest`, `-o/--output`, `-j` | `meta powerbi build` |
+| `powerbi artifacts` | Scan workspaces + build compact index in one shot | `--raw`, `-o/--output`, `--manifest`, `-j` | `meta powerbi artifacts` |
+| `powerbi list` | List all reports (workspace \| report \| dataset \| tables) | `--artifact`, `-j` | `meta powerbi list` |
 | `powerbi find` | Find reports / metrics behind a name | `--artifact`, `-j` | `meta powerbi find "organic leads"` |
-| `powerbi show` | Full breakdown of one report | `--artifact`, `-j` | `meta powerbi show "Organic Leads"` |
+| `powerbi show` | Full breakdown of one report (tables, SQL analysis) | `--artifact`, `-j` | `meta powerbi show "Organic Leads"` |
+| `powerbi reports` | Reverse: dbt model → PBI reports using it | `--artifact`, `-j` | `meta powerbi reports core_amas_accounts` |
+| `powerbi cost` | Per-table query cost (7-day) for a report | `--artifact`, `-j` | `meta powerbi cost "Organic Leads"` |
+| `powerbi lineage` | Column-level upstream paths for a report's filter/join columns | `--artifact`, `--lineage`, `-j` | `meta powerbi lineage "Organic Leads"` |
+| `powerbi measures` | DAX measures + expressions + `dax_refs` for a report | `--raw`, `-j` | `meta powerbi measures "Retain"` |
+| `powerbi source` | Power Query M-expressions for a report | `--raw`, `-j` | `meta powerbi source "Retain"` |
+| `powerbi owners` | Report owners + last modified | `--raw`, `-j` | `meta powerbi owners "Organic Leads"` |
 
-Index artifact discovery (for `find` / `show`): `--artifact` → `DBT_PROD_POWERBI_PATH`
-→ `./target/powerbi_index.json` → `~/dbt-state/powerbi_index.json`.
+Power BI artifacts are **prod-only**. `artifacts` writes to the same paths the
+cron-managed sync uses by default (`~/dbt-state/powerbi_raw.json`,
+`~/dbt-state/powerbi_index.json`), so a manual run overwrites them in place.
+Override with `--raw` (raw output) and `-o` (index output).
+
+Index artifact discovery (for `find` / `show` / `reports` / `cost` / `lineage`):
+`--artifact` → `DBT_PROD_POWERBI_PATH` → `~/dbt-state/powerbi_index.json`.
+
+`cost` requires `dbt_bigquery_monitoring` (the same dataset used by `meta hotspots`).
+`lineage` requires a built lineage artifact (`meta lineage build`).
 
 ### Artifacts & Settings
 
@@ -329,6 +344,8 @@ Index artifact discovery (for `find` / `show`): `--artifact` → `DBT_PROD_POWER
 | `settings show` | Display merged configuration (TOML + env) | `-j` | `meta settings show -j` |
 | `settings validate` | Validate active config file | — | `meta settings validate` |
 | `settings path` | Show active config file path | — | `meta settings path` |
+| `examples` | Show usage examples for all commands | — | `meta examples` |
+| `config-help` | Show env vars and TOML configuration reference | — | `meta config-help` |
 
 ### Global Flags
 
@@ -529,13 +546,10 @@ meta optimize cluster core_sessions -j | jq '.recommendations[].column'
 ### Power BI Integration
 
 ```bash
-# 1. Scan configured workspaces → raw scanResult dump
-meta powerbi scan
-# → target/powerbi_raw.json (navigation imports + native SQL expressions)
-
-# 2. Build the compact, queryable index against the dbt manifest
-meta powerbi build
-# → target/powerbi_index.json (reports → BQ tables → dbt model/source/external)
+# 1. Scan configured workspaces + build the compact index in one shot
+meta powerbi artifacts
+# → ~/dbt-state/powerbi_raw.json   (navigation imports + native SQL expressions)
+# → ~/dbt-state/powerbi_index.json (reports → BQ tables → dbt model/source/external)
 
 # 3a. Find reports / metrics behind a dashboard name
 meta powerbi find "organic leads"
@@ -551,8 +565,32 @@ meta powerbi find "leads" -j | jq '.reports[].tables[] | select(.status == "exte
 # → BigQuery tables used in Power BI but not tracked in dbt
 
 # Explicit index artifact path (otherwise: DBT_PROD_POWERBI_PATH →
-# ./target/powerbi_index.json → ~/dbt-state/powerbi_index.json)
+# ~/dbt-state/powerbi_index.json)
 meta powerbi show "Organic Leads" --artifact ~/dbt-state/powerbi_index.json
+
+# 4. Reverse lookup: which reports use a given dbt model?
+meta powerbi reports core_amas_accounts
+# → workspace / report / dataset / matched BQ tables
+
+# 5. DAX measures + expressions for a report (reads powerbi_raw.json)
+meta powerbi measures "Retain"
+# → table | measure name | hidden | DAX expression
+
+# 6. Power Query M-expressions — how tables are loaded / transformed
+meta powerbi source "Retain"
+# → table name + full M-expression text
+
+# 7. Report owners and last-modified metadata
+meta powerbi owners "Organic Leads"
+# → owners (Owner access) + modified_by + modified_at
+
+# 8. Per-table query cost (7-day, live BigQuery) for a report's tables
+meta powerbi cost "Organic Leads"
+# → BQ table | dbt model | query_cost_usd | query_count | cache_hit_ratio
+
+# 9. Column-level upstream lineage for a report's filter/join columns
+meta powerbi lineage "Organic Leads"
+# → dbt model | bq column | upstream ancestors (requires `meta lineage build`)
 
 # Configuration (in ~/.config/dbt-meta/config.toml)
 [powerbi]
@@ -695,7 +733,7 @@ All TOML settings can be set via environment variables. **CLI flags > TOML > env
 | `powerbi.workspaces` | `POWERBI_WORKSPACES` (comma-separated) |
 
 Index artifact path for `powerbi find` / `powerbi show`: `DBT_PROD_POWERBI_PATH`
-(default discovery: `./target/powerbi_index.json` → `~/dbt-state/powerbi_index.json`).
+(default discovery: `~/dbt-state/powerbi_index.json`).
 
 ## 🧪 Development
 

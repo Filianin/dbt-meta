@@ -20,9 +20,10 @@ from __future__ import annotations
 import signal
 import sys
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 import sqlglot
 from sqlglot import exp
@@ -31,12 +32,12 @@ from sqlglot.lineage import Node, lineage
 from dbt_meta.lineage.graph import LineageGraph, make_node_id
 
 
-class _ModelTimeout(Exception):
+class _ModelTimeoutError(Exception):
     """Raised when a single model exceeds the per-model parse budget."""
 
 
 @contextmanager
-def _per_model_timeout(seconds: int):
+def _per_model_timeout(seconds: int) -> Iterator[None]:
     """SIGALRM-based timeout for a single sqlglot.lineage call.
 
     Only used on POSIX main threads (signal.SIGALRM is unavailable on
@@ -59,8 +60,8 @@ def _per_model_timeout(seconds: int):
         signal.signal(signal.SIGALRM, previous)
 
 
-def _raise_timeout(signum, frame):  # pragma: no cover — signal handler
-    raise _ModelTimeout("sqlglot.lineage exceeded per-model budget")
+def _raise_timeout(signum: int, frame: Any) -> None:  # pragma: no cover — signal handler
+    raise _ModelTimeoutError("sqlglot.lineage exceeded per-model budget")
 
 
 @dataclass
@@ -99,11 +100,11 @@ class LineageBuilder:
     def __init__(
         self,
         manifest: dict[str, Any],
-        catalog: Optional[dict[str, Any]] = None,
+        catalog: dict[str, Any] | None = None,
         dialect: str = "bigquery",
         per_model_timeout: int = 30,
         slow_threshold_seconds: float = 3.0,
-        progress_callback: Optional[Callable[[int, int, str, float], None]] = None,
+        progress_callback: Callable[[int, int, str, float], None] | None = None,
     ) -> None:
         """Initialize builder.
 
@@ -186,7 +187,7 @@ class LineageBuilder:
                     schema=self._sqlglot_schema,
                     dialect=self.dialect,
                 )
-        except _ModelTimeout:
+        except _ModelTimeoutError:
             stats.models_skipped_timeout += 1
             stats.warnings.append(
                 f"{model_name}: timeout after {self.per_model_timeout}s "
@@ -350,7 +351,7 @@ class LineageBuilder:
                 stack.extend(cur.downstream)
         return leaves
 
-    def _resolve_leaf_to_node_id(self, leaf: Node) -> Optional[str]:
+    def _resolve_leaf_to_node_id(self, leaf: Node) -> str | None:
         """Map a SQLGlot leaf node to the upstream dbt model's column node id.
 
         Returns None when the leaf cannot be resolved (e.g., references a
@@ -367,7 +368,7 @@ class LineageBuilder:
         # Recover the physical table from the leaf's expression AST.
         # sqlglot wraps the source in an Alias(this=Table(...)) node.
         source = getattr(leaf, "source", None)
-        table_expr: Optional[exp.Table] = None
+        table_expr: exp.Table | None = None
         if isinstance(source, exp.Table):
             table_expr = source
         elif isinstance(source, exp.Alias) and isinstance(source.this, exp.Table):
@@ -380,8 +381,10 @@ class LineageBuilder:
         if table_expr is None:
             return None
 
-        db = (table_expr.args.get("catalog").name if table_expr.args.get("catalog") else "").lower()
-        schema = (table_expr.args.get("db").name if table_expr.args.get("db") else "").lower()
+        catalog_arg = table_expr.args.get("catalog")
+        db = (catalog_arg.name if catalog_arg else "").lower()
+        schema_arg = table_expr.args.get("db")
+        schema = (schema_arg.name if schema_arg else "").lower()
         table = (table_expr.name or "").lower()
 
         upstream_model = self._lookup_table(db, schema, table)
@@ -389,7 +392,7 @@ class LineageBuilder:
             return None
         return make_node_id(upstream_model, column)
 
-    def _lookup_table(self, db: str, schema: str, table: str) -> Optional[str]:
+    def _lookup_table(self, db: str, schema: str, table: str) -> str | None:
         """Resolve (db, schema, table) → dbt short name via the table index."""
         if db and schema:
             hit = self._table_index.get(f"{db}.{schema}.{table}")

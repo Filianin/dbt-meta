@@ -5,6 +5,90 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.4] - 2026-06-19
+
+Lineage and Power BI artifacts are now consistently prod-only and self-locating.
+Power BI gains four new query commands, a merged `artifacts` command, per-table
+cost visibility, column-level lineage tracing, and DAX measure reference parsing.
+
+### Added
+- **`meta powerbi list`** — flat enumeration of every report in the index
+  (workspace | report | dataset | tables), sorted by workspace then report.
+  Discovery command so `show` / `cost` / `lineage` / `owners` have a name to
+  target without guessing. Source: index. `--artifact`, `-j`.
+- **`meta powerbi artifacts`** — scan workspaces and build the compact index in
+  one shot, replacing the separate `scan` + `build` two-step flow. Writes
+  `~/dbt-state/powerbi_raw.json` (raw scanResult) and
+  `~/dbt-state/powerbi_index.json` (compact index) by default — the same paths
+  the cron-managed sync uses, so a manual run overwrites them in place. Override
+  via `--raw` (raw output path) and `-o/--output` (index path).
+- **`meta powerbi cost <report>`** — per-table query cost metrics for the last
+  7 days for all BigQuery tables behind a report. Tables classified as `model`
+  are matched by dbt model name against `dbt_bigquery_monitoring`; source /
+  external tables return `null` cost fields. Requires `dbt_bigquery_monitoring`.
+- **`meta powerbi lineage <report>`** — column-level upstream paths for every
+  column appearing in WHERE / JOIN conditions of the report's native SQL queries.
+  Loads the lineage graph artifact (`--lineage` → `DBT_PROD_LINEAGE_PATH` →
+  `~/dbt-state/lineage.json`) and returns `ancestors` per column. Columns absent
+  from the graph are silently skipped.
+- **`meta powerbi reports <model>`** — reverse lookup: given a dbt model name
+  (substring, case-insensitive), returns all Power BI reports that use it.
+  Raises on ambiguous query (multiple distinct model names match). Source: index.
+- **`meta powerbi measures <report>`** — DAX measure expressions for the dataset
+  behind a report (all measures, hidden ones flagged). Now includes `dax_refs`:
+  a deduplicated list of `{table, column}` references extracted from each
+  measure expression via regex (quoted `'Table'[Col]` and bare `Table[Col]`
+  forms). Source: `powerbi_raw.json`.
+- **`meta powerbi source <report>`** — Power Query M-expressions for each table
+  in the report's dataset (only tables with a non-empty source). Source: raw.
+- **`meta powerbi owners <report>`** — Owner-level users + `modifiedBy` /
+  `modifiedDateTime` for a report. Source: raw.
+- **`sql` field in the index artifact** — `SqlAnalysisEntry` (and the JSON it
+  serializes to) now carries the original native SQL string alongside the parsed
+  `tables`, `filters`, `joins`, `group_by` lists. Useful for round-trip debugging
+  and display in `show` output.
+- **`find_powerbi_raw()`** — raw-artifact path resolution following the same
+  priority as `find_powerbi_artifact`: explicit → `DBT_PROD_POWERBI_RAW_PATH` →
+  `~/dbt-state/powerbi_raw.json`.
+- `--raw` flag on `measures`, `source`, `owners` for explicit raw path override.
+
+### Changed
+- **Lineage is prod-only** (breaking) — `--dev` / `-d` removed from
+  `meta lineage build`, `column`, `downstream`, and `stats`. Lineage describes
+  the deployed (production) state; there is no dev variant. Artifact resolution
+  is now `--artifact` → `DBT_PROD_LINEAGE_PATH` → `~/dbt-state/lineage.json`
+  (the fragile cwd-relative `./target/lineage.json` auto-discovery step was
+  dropped; a manual build to `./target` is reachable only via `--artifact`).
+- **`meta powerbi scan` and `meta powerbi build` removed** (breaking) — replaced
+  by `meta powerbi artifacts` which does both steps in one invocation and writes
+  directly to `~/dbt-state/` (matching the cron-managed sync paths). If you have
+  scripts that call `scan` or `build` separately, replace them with a single
+  `artifacts` call. The underlying `scan_command` / `build_index_artifact`
+  functions remain in `command_impl/powerbi.py` for programmatic use.
+- **Power BI index discovery** — `find` / `show` / `reports` / `cost` /
+  `lineage`: `--artifact` → `DBT_PROD_POWERBI_PATH` →
+  `~/dbt-state/powerbi_index.json` (the `./target/powerbi_index.json` fallback
+  step was dropped in line with the prod-only stance).
+
+### Security
+- **Power BI PII scrub extended** — the scanResult scrub now also drops the
+  scalar `modifiedBy` / `createdBy` / `configuredBy` fields (full UPN/email
+  strings) from every artifact, in addition to the `users[].emailAddress` /
+  `identifier` arrays already stripped. No employee email reaches
+  `powerbi_raw.json` on disk. Consequence: `meta powerbi owners` now returns
+  `modified_by: null` for freshly scanned artifacts.
+- **Power BI credentials kept out of process argv** — `client_secret` (token
+  request) and the bearer token (Admin API calls) are now piped to `curl` over
+  stdin (`--data @-` / `-K -`) instead of being passed as `-d` / `-H` arguments,
+  so they no longer appear in `ps aux` output.
+
+### Internal
+- **Lint + type baseline cleaned to zero** — `ruff check` and `mypy --strict`
+  now pass with no findings across `src/dbt_meta` (previously ~97 ruff + 154
+  mypy pre-existing warnings). Mostly mechanical: `Optional[X]` → `X | None`,
+  bare `dict`/`list` generics parameterised, Typer sentinels whitelisted via
+  `flake8-bugbear` `extend-immutable-calls`. No runtime behavior changed.
+
 ## [0.3.3] - 2026-06-17
 
 Complete rework of the Power BI integration around a scan → build → query flow.

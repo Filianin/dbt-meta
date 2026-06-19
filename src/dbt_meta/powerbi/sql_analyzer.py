@@ -28,6 +28,7 @@ class SqlAnalysis:
     joins: tuple[str, ...] = ()  # columns referenced in JOIN ... ON
     group_by: tuple[str, ...] = ()  # columns in GROUP BY
     parse_status: str = "ok"  # ok | partial
+    sql: str | None = None  # decoded SQL text (None for non-native sources)
 
 
 # Backtick-quoted or bare 3-part BigQuery name, project id may contain hyphens.
@@ -63,7 +64,7 @@ def analyze_sql(sql: str) -> SqlAnalysis:
     try:
         tree = parse_one(sql, dialect="bigquery")
     except (SqlglotError, RecursionError):
-        return SqlAnalysis(tables=_regex_tables(sql), parse_status="partial")
+        return SqlAnalysis(tables=_regex_tables(sql), parse_status="partial", sql=sql)
 
     # Keep only qualified names (>= schema.table); bare single-part names are CTE
     # references / derived-table aliases, not physical BigQuery tables.
@@ -94,4 +95,5 @@ def analyze_sql(sql: str) -> SqlAnalysis:
         joins=tuple(dict.fromkeys(joins)),
         group_by=tuple(dict.fromkeys(group_by)),
         parse_status="ok",
+        sql=sql,
     )

@@ -4,7 +4,7 @@ Provides deep analysis of model partitioning/clustering effectiveness
 by combining manifest metadata with BigQuery monitoring data.
 """
 
-from typing import Optional
+from typing import Any, Optional
 
 from dbt_meta.command_impl.base import BaseCommand
 from dbt_meta.config import Config
@@ -44,9 +44,9 @@ class AnalyzeCommand(BaseCommand):
         json_output: bool = False
     ):
         super().__init__(config, manifest_path, model_name, use_dev, json_output)
-        self._children_cache: Optional[list] = None
+        self._children_cache: Optional[list[Any]] = None
 
-    def execute(self) -> Optional[dict]:
+    def execute(self) -> Optional[dict[str, Any]]:
         """Execute analyze command."""
         model = self.get_model_with_fallback()
         if not model:
@@ -54,7 +54,7 @@ class AnalyzeCommand(BaseCommand):
 
         return self.process_model(model)
 
-    def process_model(self, model: dict, level: Optional[FallbackLevel] = None) -> dict:
+    def process_model(self, model: dict[str, Any], level: Optional[FallbackLevel] = None) -> dict[str, Any]:
         """Process model and generate analysis."""
         # Extract schema and table from model
         schema = model.get('schema', '')
@@ -115,7 +115,7 @@ class AnalyzeCommand(BaseCommand):
             'recommendations': recommendations,
         }
 
-    def _analyze_downstream_filters(self, model: dict) -> list[str]:
+    def _analyze_downstream_filters(self, model: dict[str, Any]) -> list[str]:
         """Analyze filter patterns in downstream models.
 
         Returns list of column names commonly used in WHERE clauses
@@ -166,16 +166,16 @@ class AnalyzeCommand(BaseCommand):
 
     def _generate_recommendations(
         self,
-        config: dict,
-        storage: Optional[dict],
-        partitions: Optional[dict],
-        usage: Optional[dict],
-        bq_columns: Optional[dict],
+        config: dict[str, Any],
+        storage: Optional[dict[str, Any]],
+        partitions: Optional[dict[str, Any]],
+        usage: Optional[dict[str, Any]],
+        bq_columns: Optional[dict[str, Any]],
         downstream_filters: list[str],
         materialized: str,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """Generate optimization recommendations."""
-        recs = []
+        recs: list[dict[str, Any]] = []
 
         # Skip recommendations for views
         if materialized == 'view':

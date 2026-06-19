@@ -28,15 +28,15 @@ from dbt_meta.usage.advisor_refresh import (
 from dbt_meta.usage.extractor import ColumnUsageExtractor, UsageEvent
 
 __all__ = [
-    "ColumnUsageExtractor",
-    "UsageEvent",
     "ClusterAdvisor",
     "ClusterAdvisorResult",
     "ClusterRecommendation",
+    "ColumnUsageExtractor",
     "PartitionAdvisor",
     "PartitionAdvisorResult",
     "PartitionRecommendation",
     "RefreshAdvisor",
     "RefreshPlan",
+    "UsageEvent",
     "changed_models_from_git",
 ]

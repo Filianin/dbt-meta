@@ -49,7 +49,7 @@ class ConfigCommand(BaseCommand):
 
         return self.process_model(model)
 
-    def process_model(self, model: dict, level: Optional[FallbackLevel] = None) -> Optional[dict[str, Any]]:
+    def process_model(self, model: dict[str, Any], level: Optional[FallbackLevel] = None) -> Optional[dict[str, Any]]:
         """Process model data and return config.
 
         Args:
@@ -59,9 +59,10 @@ class ConfigCommand(BaseCommand):
         Returns:
             Config dictionary
         """
-        return model.get('config', {})
+        config: dict[str, Any] = model.get('config', {})
+        return config
 
-    def _get_model_bigquery_dev(self) -> Optional[dict]:
+    def _get_model_bigquery_dev(self) -> Optional[dict[str, Any]]:
         """Get model from BigQuery in dev mode.
 
         For dev mode, uses full model name as table name (no splitting by __).
@@ -84,7 +85,7 @@ class ConfigCommand(BaseCommand):
 
         # Map BigQuery → dbt config
         table_type = bq_metadata.get('type', 'TABLE')
-        config_result = {
+        config_result: dict[str, Any] = {
             'materialized': 'table' if table_type == 'TABLE' else 'view',
             'partition_by': None,
             'cluster_by': None,
