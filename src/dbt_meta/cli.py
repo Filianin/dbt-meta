@@ -1804,6 +1804,10 @@ def powerbi_artifacts(
         help="Compact index output path (default: <prod-manifest-dir>/powerbi_index.json)",
     ),
     manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    no_layouts: bool = typer.Option(
+        False, "--no-layouts",
+        help="Skip the Fabric getDefinition pass (no per-page visual layout)",
+    ),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output summary as JSON"),
 ) -> None:
     """Scan workspaces and build the compact agent index in one shot.
@@ -1811,6 +1815,10 @@ def powerbi_artifacts(
     Writes powerbi_raw.json (raw scanResult) and powerbi_index.json (compact
     index) — both default to the prod-manifest directory (~/dbt-state/).
     Running this manually overwrites the files managed by the cron job.
+
+    By default a second pass calls Fabric getDefinition per report to attach
+    per-page visual layout (needs a Fabric-scoped SP that is a member of the
+    workspaces). Use --no-layouts to skip it.
     """
     import os
 
@@ -1822,7 +1830,8 @@ def powerbi_artifacts(
         raw_path = raw or os.path.join(manifest_dir, "powerbi_raw.json")
         index_path = output or os.path.join(manifest_dir, "powerbi_index.json")
         result = pbi.artifacts_cmd(
-            Config.from_config_or_env(), manifest_path, raw_path, index_path
+            Config.from_config_or_env(), manifest_path, raw_path, index_path,
+            with_layouts=not no_layouts,
         )
     except DbtMetaError as e:
         handle_error(e, json_output)
@@ -1830,9 +1839,16 @@ def powerbi_artifacts(
     if json_output:
         print(json.dumps(result, indent=2))
     else:
+        layouts = result.get("layouts") or {}
+        layout_line = ""
+        if layouts:
+            layout_line = (
+                f"  layouts → {layouts['with_layout']}/{layouts['total']} reports\n"
+            )
         console.print(
             f"[green]Scanned & indexed[/green] {result['workspaces']} workspaces, "
             f"{result['reports']} reports, {result['metrics']} metrics\n"
+            f"{layout_line}"
             f"  raw   → {result['raw_path']}\n"
             f"  index → {result['index_path']}"
         )

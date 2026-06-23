@@ -313,7 +313,7 @@ outside the dbt project.
 
 | Command | Description | Key flags | Example |
 |---------|-------------|-----------|---------|
-| `powerbi artifacts` | Scan workspaces + build compact index in one shot | `--raw`, `-o/--output`, `--manifest`, `-j` | `meta powerbi artifacts` |
+| `powerbi artifacts` | Scan workspaces + build compact index (incl. per-page visual layout) in one shot | `--raw`, `-o/--output`, `--manifest`, `--no-layouts`, `-j` | `meta powerbi artifacts` |
 | `powerbi list` | List all reports (workspace \| report \| dataset \| tables) | `--artifact`, `-j` | `meta powerbi list` |
 | `powerbi find` | Find reports / metrics behind a name | `--artifact`, `-j` | `meta powerbi find "organic leads"` |
 | `powerbi show` | Full breakdown of one report (tables, SQL analysis) | `--artifact`, `-j` | `meta powerbi show "Organic Leads"` |
@@ -549,7 +549,14 @@ meta optimize cluster core_sessions -j | jq '.recommendations[].column'
 # 1. Scan configured workspaces + build the compact index in one shot
 meta powerbi artifacts
 # → ~/dbt-state/powerbi_raw.json   (navigation imports + native SQL expressions)
-# → ~/dbt-state/powerbi_index.json (reports → BQ tables → dbt model/source/external)
+# → ~/dbt-state/powerbi_index.json (reports → BQ tables → dbt model/source/external,
+#                                   + per-page visual layout under `pages`)
+
+# By default a second pass calls Fabric getDefinition per report to attach
+# per-page visual layout: pages[].visuals[].{type, fields{role: [{table,column,kind}]}}.
+# Needs a Fabric-scoped service principal that is a *member* of the workspaces.
+# Skip it for the fast path:
+meta powerbi artifacts --no-layouts
 
 # 3a. Find reports / metrics behind a dashboard name
 meta powerbi find "organic leads"

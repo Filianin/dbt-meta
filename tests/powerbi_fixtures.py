@@ -5,6 +5,8 @@ table / column names were replaced with fictitious values. Each constant covers 
 real variant the parser must handle.
 """
 
+import json as _json
+
 # 1:1 navigation import (GoogleBigQuery.Database navigation through Schema -> Table)
 NAV_TABLE = '''let
     Source = GoogleBigQuery.Database(),
@@ -70,3 +72,90 @@ DAX_CALCULATED = '''SELECTCOLUMNS(
     CALENDAR(TODAY() - 365, TODAY()),
     "Date", [Date]
 )'''
+
+# ---------------------------------------------------------------------------
+# PBIR-Legacy report.json (classic single-file layout from Fabric
+# getDefinition?format=PBIR-Legacy). Shape copied from a live dump; all names
+# are fictitious. `config` is a JSON-encoded string exactly as PBIR stores it.
+# ---------------------------------------------------------------------------
+
+
+def _config(visual_type, projections):
+    """Build the JSON-string `config` of a visualContainer."""
+    return _json.dumps(
+        {"singleVisual": {"visualType": visual_type, "projections": projections}}
+    )
+
+
+# A funnel + a slicer + a chart with a legend breakdown — the canonical
+# "Stage funnel, Device slicer, no OS split" example from the plan.
+PBIR_LEGACY_REPORT = {
+    "sections": [
+        {
+            "name": "ReportSection1",
+            "displayName": "PPC Reg Cohorts",
+            "visualContainers": [
+                {
+                    "config": _config(
+                        "funnel",
+                        {
+                            "Values": [{"queryRef": "Sum(events.stage_count)"}],
+                            "Category": [{"queryRef": "events.stage"}],
+                        },
+                    )
+                },
+                {
+                    "config": _config(
+                        "slicer",
+                        {"Values": [{"queryRef": "Device.device_type"}]},
+                    )
+                },
+                {
+                    "config": _config(
+                        "stackedAreaChart",
+                        {
+                            "Y": [{"queryRef": "Count(events.client_id)"}],
+                            "Category": [{"queryRef": "d_calendar.day_iso"}],
+                            "Series": [{"queryRef": "Device.device_type"}],
+                            "Tooltips": [{"queryRef": "events.deposits"}],
+                        },
+                    )
+                },
+            ],
+        },
+        {
+            "name": "ReportSection2",
+            "displayName": "Detail",
+            "visualContainers": [
+                {
+                    "config": _config(
+                        "customCardVisual",
+                        {"Custom Role": [{"queryRef": "metrics.total_revenue"}]},
+                    )
+                }
+            ],
+        },
+    ]
+}
+
+# Malformed containers the parser must survive: bad JSON config, missing
+# singleVisual, an empty section.
+PBIR_LEGACY_MESSY = {
+    "sections": [
+        {
+            "name": "S1",
+            "displayName": "Messy",
+            "visualContainers": [
+                {"config": "not valid json{{"},
+                {"config": _json.dumps({"noSingleVisual": True})},
+                {},
+                {
+                    "config": _config(
+                        "card", {"Values": [{"queryRef": "events.ok"}]}
+                    )
+                },
+            ],
+        },
+        {"name": "S2", "displayName": "Empty", "visualContainers": []},
+    ]
+}

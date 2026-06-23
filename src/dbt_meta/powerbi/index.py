@@ -25,7 +25,7 @@ from .mapper import DbtTableIndex, TableMapping
 from .resolver import QueryNode, resolve_query_tables
 from .sql_analyzer import analyze_sql
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 
 
 @dataclass(frozen=True)
@@ -36,6 +36,36 @@ class TableRef:
     status: str  # model | source | external
     dbt_model: str | None = None
     parse_status: str = "ok"
+
+
+@dataclass(frozen=True)
+class FieldRef:
+    """One field/measure bound to a visual, named as the dataset model names it.
+
+    ``table`` / ``column`` are raw model names (not dbt/BigQuery physical names);
+    ``kind`` is ``measure`` (aggregation-wrapped or a defined DAX measure) or
+    ``column`` (a bare dimension).
+    """
+
+    table: str
+    column: str
+    kind: str  # measure | column
+
+
+@dataclass(frozen=True)
+class VisualEntry:
+    """One visual on a page: its type and its fields grouped by canonical role."""
+
+    type: str
+    fields: dict[str, list[FieldRef]]
+
+
+@dataclass(frozen=True)
+class PageEntry:
+    """One report page (section) and the visuals on it."""
+
+    name: str
+    visuals: list[VisualEntry]
 
 
 @dataclass(frozen=True)
@@ -58,6 +88,8 @@ class ReportEntry:
     dataset: str
     tables: list[TableRef] = field(default_factory=list)
     sql_analysis: list[SqlAnalysisEntry] = field(default_factory=list)
+    # Sparse: only set when the report's PBIR layout was retrieved + parsed.
+    pages: list[PageEntry] = field(default_factory=list)
 
 
 @dataclass
