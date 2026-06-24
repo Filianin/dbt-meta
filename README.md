@@ -317,6 +317,7 @@ outside the dbt project.
 | `powerbi list` | List all reports (workspace \| report \| dataset \| tables) | `--artifact`, `-j` | `meta powerbi list` |
 | `powerbi find` | Find reports / metrics behind a name | `--artifact`, `-j` | `meta powerbi find "organic leads"` |
 | `powerbi show` | Full breakdown of one report (tables, SQL analysis) | `--artifact`, `-j` | `meta powerbi show "Organic Leads"` |
+| `powerbi layout` | Visual semantics: pages → visuals → fields, titles, filters | `--artifact`, `-j` | `meta powerbi layout "Organic Leads"` |
 | `powerbi reports` | Reverse: dbt model → PBI reports using it | `--artifact`, `-j` | `meta powerbi reports core_amas_accounts` |
 | `powerbi cost` | Per-table query cost (7-day) for a report | `--artifact`, `-j` | `meta powerbi cost "Organic Leads"` |
 | `powerbi lineage` | Column-level upstream paths for a report's filter/join columns | `--artifact`, `--lineage`, `-j` | `meta powerbi lineage "Organic Leads"` |
@@ -566,6 +567,11 @@ meta powerbi find "organic leads"
 meta powerbi show "Organic Leads"
 # → BigQuery Table | Status (model/source/external) | dbt Model
 #   + SQL analysis (filters / joins / group-by — logic living outside dbt)
+
+# 3c. Visual semantics of one report: pages, visuals, titles, filters
+meta powerbi layout "Organic Leads"
+# → pages → visuals (type, fields by role, explicit title)
+#   + filters at report / page / visual scope (op + values + summary)
 
 # JSON output for automation
 meta powerbi find "leads" -j | jq '.reports[].tables[] | select(.status == "external") | .bq'

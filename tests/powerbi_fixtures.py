@@ -138,6 +138,209 @@ PBIR_LEGACY_REPORT = {
     ]
 }
 
+# ---------------------------------------------------------------------------
+# PBIR-Legacy filter + title fixtures (v0.3.6 visual semantics). `filters` at
+# every scope is a JSON-string array exactly as PBIR stores it; titles live in
+# `singleVisual.vcObjects.title`. All names fictitious.
+# ---------------------------------------------------------------------------
+
+
+def _col_expr(entity, prop, source_alias="t"):
+    """A Column field expression as it appears in a filter's `expression`."""
+    return {
+        "Column": {
+            "Expression": {"SourceRef": {"Entity": entity, "Source": source_alias}},
+            "Property": prop,
+        }
+    }
+
+
+def _filter_in(entity, prop, values, ftype="Categorical"):
+    return {
+        "name": f"f_{prop}",
+        "expression": _col_expr(entity, prop),
+        "type": ftype,
+        "filter": {
+            "Where": [
+                {
+                    "Condition": {
+                        "In": {
+                            "Expressions": [_col_expr(entity, prop)],
+                            "Values": [
+                                [{"Literal": {"Value": f"'{v}'"}}] for v in values
+                            ],
+                        }
+                    }
+                }
+            ]
+        },
+    }
+
+
+def _filter_cmp(entity, prop, kind_num, bound, ftype="Advanced"):
+    return {
+        "name": f"f_{prop}",
+        "expression": _col_expr(entity, prop),
+        "type": ftype,
+        "filter": {
+            "Where": [
+                {
+                    "Condition": {
+                        "Comparison": {
+                            "ComparisonKind": kind_num,
+                            "Left": _col_expr(entity, prop),
+                            "Right": {"Literal": {"Value": bound}},
+                        }
+                    }
+                }
+            ]
+        },
+    }
+
+
+def _filter_relative(entity, prop, count, time_unit=0):
+    return {
+        "name": f"f_{prop}",
+        "expression": _col_expr(entity, prop),
+        "type": "RelativeDate",
+        "filter": {
+            "Where": [
+                {
+                    "Condition": {
+                        "Comparison": {
+                            "ComparisonKind": 2,
+                            "Left": _col_expr(entity, prop),
+                            "Right": {
+                                "DateSpan": {
+                                    "Expression": {"Literal": {"Value": f"{count}L"}},
+                                    "TimeUnit": time_unit,
+                                }
+                            },
+                        }
+                    }
+                }
+            ]
+        },
+    }
+
+
+def _filter_topn(entity, prop, n, by_entity, by_prop, func=0):
+    return {
+        "name": f"f_{prop}",
+        "expression": _col_expr(entity, prop),
+        "type": "TopN",
+        "filter": {
+            "Where": [
+                {
+                    "Condition": {
+                        "Comparison": {
+                            "ComparisonKind": 3,
+                            "Left": _col_expr(entity, prop),
+                            "Right": {"Literal": {"Value": f"{n}L"}},
+                        }
+                    }
+                }
+            ],
+            "OrderBy": [
+                {
+                    "Direction": 2,
+                    "Expression": {
+                        "Aggregation": {
+                            "Function": func,
+                            "Expression": _col_expr(by_entity, by_prop),
+                        }
+                    },
+                }
+            ],
+        },
+    }
+
+
+def _filter_advanced(entity, prop):
+    return {
+        "name": "f_adv",
+        "expression": _col_expr(entity, prop),
+        "type": "Advanced",
+        "filter": {
+            "Where": [
+                {
+                    "Condition": {
+                        "And": {
+                            "Left": {
+                                "Comparison": {
+                                    "ComparisonKind": 0,
+                                    "Left": _col_expr(entity, "status"),
+                                    "Right": {"Literal": {"Value": "'active'"}},
+                                }
+                            },
+                            "Right": {
+                                "Comparison": {
+                                    "ComparisonKind": 1,
+                                    "Left": _col_expr(entity, "amount"),
+                                    "Right": {"Literal": {"Value": "0L"}},
+                                }
+                            },
+                        }
+                    }
+                }
+            ]
+        },
+    }
+
+
+def _visual_container(visual_type, projections, title=None, filters=None):
+    """Build a visualContainer with optional explicit title + visual-level filters."""
+    single = {"singleVisual": {"visualType": visual_type, "projections": projections}}
+    if title is not None:
+        single["singleVisual"]["vcObjects"] = {
+            "title": [
+                {"properties": {"text": {"expr": {"Literal": {"Value": f"'{title}'"}}}}}
+            ]
+        }
+    container = {"config": _json.dumps(single)}
+    if filters is not None:
+        container["filters"] = _json.dumps(filters)
+    return container
+
+
+# One report exercising every filter scope + op + an explicit title.
+PBIR_LEGACY_SEMANTICS = {
+    "filters": _json.dumps(
+        [
+            _filter_in("Device", "device_type", ["desktop", "mobile"]),
+            _filter_advanced("events", "flags"),
+        ]
+    ),
+    "sections": [
+        {
+            "name": "S1",
+            "displayName": "Overview",
+            "filters": _json.dumps([_filter_relative("d_calendar", "day_iso", 30, 0)]),
+            "visualContainers": [
+                _visual_container(
+                    "barChart",
+                    {
+                        "Y": [{"queryRef": "Sum(events.revenue)"}],
+                        "Category": [{"queryRef": "events.stage"}],
+                    },
+                    title="Revenue by stage",
+                    filters=[_filter_cmp("events", "amount", 1, "100L")],
+                ),
+                _visual_container(
+                    "table",
+                    {"Values": [{"queryRef": "events.client_id"}]},
+                    filters=[_filter_topn("events", "client_id", 10, "events", "revenue", 0)],
+                ),
+                _visual_container(
+                    "card",
+                    {"Values": [{"queryRef": "Count(events.client_id)"}]},
+                ),
+            ],
+        }
+    ],
+}
+
+
 # Malformed containers the parser must survive: bad JSON config, missing
 # singleVisual, an empty section.
 PBIR_LEGACY_MESSY = {

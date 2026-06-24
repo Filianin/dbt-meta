@@ -16,9 +16,15 @@ from ..config import Config
 from ..errors import DbtMetaError
 from ..lineage.artifact import load_artifact as _load_lineage_artifact
 from ..lineage.graph import LineageGraph, make_node_id
-from ..powerbi.artifact import index_to_dict, load_index, save_index
+from ..powerbi.artifact import (
+    _filter_ref_to_dict,
+    _page_to_dict,
+    index_to_dict,
+    load_index,
+    save_index,
+)
 from ..powerbi.index import PowerBiIndex, ReportEntry, build_index
-from ..powerbi.pbir_parser import parse_pbir_legacy
+from ..powerbi.pbir_parser import parse_pbir_legacy, parse_report_filters
 from ..powerbi.query import find, reports_for_model, show
 from ..powerbi.raw_reader import measures_for_report, owners_for_report, source_for_report
 from ..powerbi.scanner import get_powerbi_token, scan_workspaces
@@ -32,6 +38,7 @@ __all__ = [
     "cost_cmd",
     "enrich_with_layouts",
     "find_in_index",
+    "layout_cmd",
     "lineage_cmd",
     "list_cmd",
     "measures_cmd",
@@ -164,9 +171,12 @@ def enrich_with_layouts(
         report_json = get_report_definition(token, ws_id, report_id, timeout=timeout)
         if not report_json:
             continue
-        pages = parse_pbir_legacy(report_json, measures_by_ds.get(ds_id, set()))
-        if pages:
+        measures = measures_by_ds.get(ds_id, set())
+        pages = parse_pbir_legacy(report_json, measures)
+        report_filters = parse_report_filters(report_json, measures)
+        if pages or report_filters:
             entry.pages = pages
+            entry.filters = report_filters
             got += 1
     return got, len(index.reports)
 
@@ -287,6 +297,29 @@ def show_report(artifact_path: str, report_name: str) -> dict[str, Any]:
             suggestion="Use `meta powerbi find <query>` to list matching reports.",
         )
     return _report_to_dict(report)
+
+
+def layout_cmd(artifact_path: str, report_name: str) -> dict[str, Any]:
+    """Return the visual semantics of one report — pages, visuals, titles, filters.
+
+    Complements ``show`` (data-lineage: tables / SQL / dbt models): ``layout``
+    answers "what does the dashboard look like" from the PBIR layout. Reports
+    scanned without ``--no-layouts`` carry ``pages``; ``filters`` is report-level.
+    """
+    index = load_index(artifact_path)
+    report = show(index, report_name)
+    if report is None:
+        raise DbtMetaError(
+            f"Report not found: {report_name!r}",
+            suggestion="Use `meta powerbi find <query>` to list matching reports.",
+        )
+    return {
+        "report": report.report,
+        "workspace": report.workspace,
+        "dataset": report.dataset,
+        "filters": [_filter_ref_to_dict(f) for f in report.filters],
+        "pages": [_page_to_dict(p) for p in report.pages],
+    }
 
 
 def cost_cmd(artifact_path: str, report_name: str) -> dict[str, Any]:

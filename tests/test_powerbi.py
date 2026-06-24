@@ -502,7 +502,7 @@ class TestArtifact:
         assert loaded.reports[0].tables[0].status == "model"
         assert loaded.reports[0].sql_analysis[0].group_by == ("country",)
         assert loaded.metric_index["Total"] == ["p.s.t"]
-        assert loaded.schema_version == "1.1"
+        assert loaded.schema_version == "1.2"
 
     def test_age_reflects_recent_write(self, tmp_path):
         path = tmp_path / "powerbi_index.json"
@@ -2334,7 +2334,7 @@ class TestLayoutPersistence:
 
         data = orjson.loads(out.read_bytes())
         assert "pages" not in data["reports"][0]
-        assert data["schema_version"] == "1.1"
+        assert data["schema_version"] == "1.2"
 
 
 # ============================================================================
@@ -2693,3 +2693,521 @@ class TestArtifactsCliContract:
 
         assert result.exit_code == 0
         assert captured["with_layouts"] is True
+
+
+# ============================================================================
+# TestPbirFilters — title + filter parsing (visual semantics, v0.3.6)
+# ============================================================================
+
+
+class TestPbirFilters:
+    def test_report_level_in_filter(self):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        filters = parse_report_filters(fx.PBIR_LEGACY_SEMANTICS)
+        device = next(f for f in filters if f.column == "device_type")
+
+        assert device.table == "Device"
+        assert device.kind == "column"
+        assert device.op == "in"
+        assert device.values == ["desktop", "mobile"]
+        assert device.summary == "device_type in (desktop, mobile)"
+
+    def test_report_level_advanced_filter(self):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        adv = next(
+            f for f in parse_report_filters(fx.PBIR_LEGACY_SEMANTICS) if f.op == "advanced"
+        )
+        assert adv.summary == "status = active and amount > 0"
+        assert adv.values == ["active", "0"]
+
+    def test_page_level_relative_date_filter(self):
+        from dbt_meta.powerbi.pbir_parser import parse_pbir_legacy
+
+        page = parse_pbir_legacy(fx.PBIR_LEGACY_SEMANTICS)[0]
+        rd = page.filters[0]
+
+        assert rd.op == "relative_date"
+        assert rd.column == "day_iso"
+        assert rd.values == ["30", "days"]
+        assert rd.summary == "day_iso — last 30 days"
+
+    def test_visual_title_and_cmp_filter(self):
+        from dbt_meta.powerbi.pbir_parser import parse_pbir_legacy
+
+        bar = parse_pbir_legacy(fx.PBIR_LEGACY_SEMANTICS)[0].visuals[0]
+
+        assert bar.title == "Revenue by stage"
+        assert len(bar.filters) == 1
+        cmp = bar.filters[0]
+        assert cmp.op == "cmp"
+        assert cmp.values == [">", "100"]
+        assert cmp.summary == "amount > 100"
+
+    def test_visual_top_n_filter(self):
+        from dbt_meta.powerbi.pbir_parser import parse_pbir_legacy
+
+        table = parse_pbir_legacy(fx.PBIR_LEGACY_SEMANTICS)[0].visuals[1]
+        top = table.filters[0]
+
+        assert top.op == "top_n"
+        assert top.values == ["10"]
+        assert top.summary == "top 10 by Sum(revenue)"
+
+    def test_visual_without_title_or_filter_is_sparse(self):
+        from dbt_meta.powerbi.pbir_parser import parse_pbir_legacy
+
+        card = parse_pbir_legacy(fx.PBIR_LEGACY_SEMANTICS)[0].visuals[2]
+
+        assert card.title is None
+        assert card.filters == []
+
+    def test_measure_filter_kind_via_measure_set(self):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        report = {
+            "filters": json.dumps(
+                [fx._filter_in("metrics", "total_revenue", ["x"])]
+            )
+        }
+        f = parse_report_filters(report, measures=["total_revenue"])[0]
+        assert f.kind == "measure"
+
+    def test_measure_expression_filter(self):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        report = {
+            "filters": json.dumps(
+                [
+                    {
+                        "expression": {
+                            "Measure": {
+                                "Expression": {"SourceRef": {"Entity": "metrics"}},
+                                "Property": "revenue",
+                            }
+                        },
+                        "type": "Advanced",
+                        "filter": {
+                            "Where": [
+                                {
+                                    "Condition": {
+                                        "Comparison": {
+                                            "ComparisonKind": 2,
+                                            "Left": {},
+                                            "Right": {"Literal": {"Value": "5D"}},
+                                        }
+                                    }
+                                }
+                            ]
+                        },
+                    }
+                ]
+            )
+        }
+        f = parse_report_filters(report)[0]
+        assert f.table == "metrics"
+        assert f.column == "revenue"
+        assert f.kind == "measure"
+        assert f.op == "cmp"
+        assert f.values == [">=", "5"]
+
+    def test_aggregation_expression_filter_is_measure(self):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        report = {
+            "filters": json.dumps(
+                [
+                    {
+                        "expression": {
+                            "Aggregation": {
+                                "Function": 0,
+                                "Expression": fx._col_expr("events", "amount"),
+                            }
+                        },
+                        "type": "Advanced",
+                        "filter": {"Where": []},
+                    }
+                ]
+            )
+        }
+        f = parse_report_filters(report)[0]
+        assert f.column == "amount"
+        assert f.kind == "measure"
+
+    def test_hierarchy_level_expression_filter(self):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        report = {
+            "filters": json.dumps(
+                [
+                    {
+                        "expression": {
+                            "HierarchyLevel": {
+                                "Level": "Month",
+                                "Expression": {
+                                    "Hierarchy": {
+                                        "Expression": {
+                                            "SourceRef": {"Entity": "d_calendar"}
+                                        }
+                                    }
+                                },
+                            }
+                        },
+                        "type": "Advanced",
+                        "filter": {"Where": []},
+                    }
+                ]
+            )
+        }
+        f = parse_report_filters(report)[0]
+        assert f.table == "d_calendar"
+        assert f.column == "Month"
+
+    def test_relative_date_without_datespan_degrades(self):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        report = {
+            "filters": json.dumps(
+                [
+                    {
+                        "expression": fx._col_expr("d_calendar", "day_iso"),
+                        "type": "RelativeDate",
+                        "filter": {"Where": []},
+                    }
+                ]
+            )
+        }
+        f = parse_report_filters(report)[0]
+        assert f.op == "relative_date"
+        assert f.values == []
+        assert f.summary == "day_iso — relative date"
+
+    def test_top_n_without_count_or_orderby_degrades(self):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        report = {
+            "filters": json.dumps(
+                [
+                    {
+                        "expression": fx._col_expr("events", "client_id"),
+                        "type": "TopN",
+                        "filter": {"Where": []},
+                    }
+                ]
+            )
+        }
+        f = parse_report_filters(report)[0]
+        assert f.op == "top_n"
+        assert f.values == []
+        assert f.summary == "top N on client_id"
+
+    def test_top_n_count_without_orderby(self):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        report = {
+            "filters": json.dumps(
+                [
+                    {
+                        "expression": fx._col_expr("events", "client_id"),
+                        "type": "TopN",
+                        "filter": {
+                            "Where": [
+                                {
+                                    "Condition": {
+                                        "Comparison": {
+                                            "ComparisonKind": 3,
+                                            "Left": {},
+                                            "Right": {"Literal": {"Value": "5L"}},
+                                        }
+                                    }
+                                }
+                            ]
+                        },
+                    }
+                ]
+            )
+        }
+        f = parse_report_filters(report)[0]
+        assert f.values == ["5"]
+        assert f.summary == "top 5"
+
+    def test_comparison_without_literal_bound(self):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        report = {
+            "filters": json.dumps(
+                [
+                    {
+                        "expression": fx._col_expr("events", "amount"),
+                        "type": "Advanced",
+                        "filter": {
+                            "Where": [
+                                {
+                                    "Condition": {
+                                        "Comparison": {
+                                            "ComparisonKind": 0,
+                                            "Left": {},
+                                            "Right": {"Column": {}},
+                                        }
+                                    }
+                                }
+                            ]
+                        },
+                    }
+                ]
+            )
+        }
+        f = parse_report_filters(report)[0]
+        assert f.op == "cmp"
+        assert f.values == ["="]
+        assert f.summary == "amount ="
+
+    def test_malformed_filters_are_isolated(self):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        report = {
+            "filters": json.dumps(
+                [
+                    "not a dict",
+                    {"no_expression": True},
+                    {"expression": {"Unknown": {}}, "type": "X"},
+                    fx._filter_in("Device", "device_type", ["a"]),
+                ]
+            )
+        }
+        filters = parse_report_filters(report)
+        assert len(filters) == 1
+        assert filters[0].column == "device_type"
+
+    def test_filters_bad_json_string_returns_empty(self):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        assert parse_report_filters({"filters": "not json{{"}) == []
+
+    def test_filters_non_string_non_list_returns_empty(self):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        assert parse_report_filters({"filters": 42}) == []
+
+    def test_filters_accepts_list_directly(self):
+        from dbt_meta.powerbi.pbir_parser import _parse_filters
+
+        out = _parse_filters([fx._filter_in("D", "c", ["x"])], frozenset())
+        assert out[0].column == "c"
+
+    def test_no_filters_key(self):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        assert parse_report_filters({"sections": []}) == []
+
+    def test_title_missing_variants_return_none(self):
+        from dbt_meta.powerbi.pbir_parser import _extract_title
+
+        assert _extract_title({}) is None
+        assert _extract_title({"vcObjects": 5}) is None
+        assert _extract_title({"vcObjects": {"title": []}}) is None
+        assert _extract_title({"vcObjects": {"title": [5]}}) is None
+        assert _extract_title({"vcObjects": {"title": [{"properties": {}}]}}) is None
+
+    def test_clean_literal_forms(self):
+        from dbt_meta.powerbi.pbir_parser import _clean_literal
+
+        assert _clean_literal("'hello'") == "hello"
+        assert _clean_literal("100L") == "100"
+        assert _clean_literal("3.14D") == "3.14"
+        assert _clean_literal("bare") == "bare"
+        assert _clean_literal(True) == "True"
+
+
+# ============================================================================
+# TestLayoutCmd — layout_cmd + artifact round-trip of semantics
+# ============================================================================
+
+
+class TestLayoutCmd:
+    def _index_with_semantics(self):
+        from dbt_meta.powerbi.pbir_parser import (
+            parse_pbir_legacy,
+            parse_report_filters,
+        )
+
+        report = ReportEntry(workspace="W", report="Sales", dataset="DS")
+        report.pages = parse_pbir_legacy(fx.PBIR_LEGACY_SEMANTICS)
+        report.filters = parse_report_filters(fx.PBIR_LEGACY_SEMANTICS)
+        return PowerBiIndex(reports=[report])
+
+    def test_layout_returns_pages_and_filters(self, tmp_path):
+        out = tmp_path / "idx.json"
+        save_index(self._index_with_semantics(), str(out))
+
+        result = cmd.layout_cmd(str(out), "Sales")
+
+        assert result["report"] == "Sales"
+        assert {f["column"] for f in result["filters"]} == {"device_type", "flags"}
+        page = result["pages"][0]
+        assert page["name"] == "Overview"
+        assert page["filters"][0]["op"] == "relative_date"
+        bar = page["visuals"][0]
+        assert bar["title"] == "Revenue by stage"
+        assert bar["filters"][0]["op"] == "cmp"
+
+    def test_layout_unknown_report_raises(self, tmp_path):
+        out = tmp_path / "idx.json"
+        save_index(self._index_with_semantics(), str(out))
+
+        with pytest.raises(DbtMetaError):
+            cmd.layout_cmd(str(out), "Nonexistent")
+
+    def test_semantics_roundtrip_through_artifact(self, tmp_path):
+        out = tmp_path / "idx.json"
+        save_index(self._index_with_semantics(), str(out))
+
+        loaded = load_index(str(out))
+        report = loaded.reports[0]
+        assert len(report.filters) == 2
+        bar = report.pages[0].visuals[0]
+        assert bar.title == "Revenue by stage"
+        assert bar.filters[0].summary == "amount > 100"
+        assert report.pages[0].filters[0].values == ["30", "days"]
+
+    def test_enrich_attaches_report_filters(self, monkeypatch):
+        from dbt_meta.powerbi.index import PowerBiIndex as Idx
+
+        index = Idx(reports=[ReportEntry("W", "R", "D")])
+        scan = {
+            "workspaces": [
+                {
+                    "id": "ws1",
+                    "name": "W",
+                    "datasets": [],
+                    "reports": [{"id": "r1", "name": "R", "datasetId": "d1"}],
+                }
+            ]
+        }
+        monkeypatch.setattr(
+            cmd, "get_report_definition", lambda *a, **k: fx.PBIR_LEGACY_SEMANTICS
+        )
+
+        got, _total = cmd.enrich_with_layouts(index, scan, "fabtok")
+
+        assert got == 1
+        assert len(index.reports[0].filters) == 2
+        assert index.reports[0].pages[0].name == "Overview"
+
+
+class TestPbirAdvancedRender:
+    def _advanced(self, condition):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        report = {
+            "filters": json.dumps(
+                [
+                    {
+                        "expression": fx._col_expr("events", "x"),
+                        "type": "Advanced",
+                        "filter": {"Where": [{"Condition": condition}]},
+                    }
+                ]
+            )
+        }
+        return parse_report_filters(report)[0]
+
+    def test_advanced_or_with_in_and_comparison(self):
+        cond = {
+            "Or": {
+                "Left": {
+                    "In": {
+                        "Expressions": [fx._col_expr("events", "country")],
+                        "Values": [
+                            [{"Literal": {"Value": "'EE'"}}],
+                            "not-a-list",
+                        ],
+                    }
+                },
+                "Right": {
+                    "Comparison": {
+                        "ComparisonKind": 1,
+                        "Left": fx._col_expr("events", "amount"),
+                        "Right": {"Literal": {"Value": "0L"}},
+                    }
+                },
+            }
+        }
+        f = self._advanced(cond)
+        assert f.op == "advanced"
+        assert f.summary == "country in (EE) or amount > 0"
+
+    def test_advanced_not_condition(self):
+        cond = {
+            "Not": {
+                "Expression": {
+                    "Comparison": {
+                        "ComparisonKind": 0,
+                        "Left": fx._col_expr("events", "status"),
+                        "Right": {"Literal": {"Value": "'x'"}},
+                    }
+                }
+            }
+        }
+        f = self._advanced(cond)
+        assert f.summary == "not status = x"
+
+    def test_advanced_unknown_condition_renders_empty(self):
+        f = self._advanced({"Weird": {}})
+        # No renderable conditions → fallback summary.
+        assert f.summary == "x (advanced)"
+
+    def test_expr_label_aggregation_without_inner(self):
+        from dbt_meta.powerbi.pbir_parser import _expr_label
+
+        assert _expr_label({"Aggregation": {"Function": 0}}) == "Sum(?)"
+        assert _expr_label({"Aggregation": {"Function": 99, "Expression": {}}}) == "Agg(?)"
+
+    def test_expr_label_none_for_unknown(self):
+        from dbt_meta.powerbi.pbir_parser import _expr_label
+
+        assert _expr_label({}) is None
+        assert _expr_label("not a dict") is None
+
+    def test_entity_prop_requires_property(self):
+        from dbt_meta.powerbi.pbir_parser import _unwrap_column_like
+
+        assert _unwrap_column_like({"Column": {"Expression": {}}}) is None
+
+    def test_unwrap_non_dict(self):
+        from dbt_meta.powerbi.pbir_parser import _unwrap_column_like
+
+        assert _unwrap_column_like("x") is None
+        assert _unwrap_column_like({"Nope": {}}) is None
+
+    def test_render_condition_non_dict(self):
+        from dbt_meta.powerbi.pbir_parser import _render_condition
+
+        assert _render_condition("x") == ""
+
+    def test_find_int_literal_in_list(self):
+        from dbt_meta.powerbi.pbir_parser import _find_int_literal
+
+        assert _find_int_literal([{"Literal": {"Value": "7L"}}]) == "7"
+        assert _find_int_literal([{"Literal": {"Value": "3.5D"}}]) is None
+        assert _find_int_literal("scalar") is None
+
+
+class TestPbirUnwrapEdges:
+    def test_aggregation_without_inner_is_skipped(self):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        report = {
+            "filters": json.dumps(
+                [
+                    {
+                        "expression": {"Aggregation": {"Function": 0, "Expression": {}}},
+                        "type": "Advanced",
+                        "filter": {"Where": []},
+                    }
+                ]
+            )
+        }
+        # Unresolvable aggregation field → filter dropped, never raised.
+        assert parse_report_filters(report) == []
