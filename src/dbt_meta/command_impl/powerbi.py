@@ -16,19 +16,29 @@ from ..config import Config
 from ..errors import DbtMetaError
 from ..lineage.artifact import load_artifact as _load_lineage_artifact
 from ..lineage.graph import LineageGraph, make_node_id
-from ..powerbi.artifact import index_to_dict, load_index, save_index
+from ..powerbi.artifact import (
+    _filter_ref_to_dict,
+    _page_to_dict,
+    index_to_dict,
+    load_index,
+    save_index,
+)
 from ..powerbi.index import PowerBiIndex, ReportEntry, build_index
+from ..powerbi.pbir_parser import parse_pbir_legacy, parse_report_filters
 from ..powerbi.query import find, reports_for_model, show
 from ..powerbi.raw_reader import measures_for_report, owners_for_report, source_for_report
 from ..powerbi.scanner import get_powerbi_token, scan_workspaces
 from ..utils.monitoring import fetch_model_query_costs
+from ..utils.powerbi import get_fabric_token, get_report_definition
 
 __all__ = [
     "_load_lineage_graph",
     "artifacts_cmd",
     "build_index_artifact",
     "cost_cmd",
+    "enrich_with_layouts",
     "find_in_index",
+    "layout_cmd",
     "lineage_cmd",
     "list_cmd",
     "measures_cmd",
@@ -105,26 +115,121 @@ def scan_command(config: Config, out_path: str) -> dict[str, Any]:
     return summary
 
 
+def _dataset_measures(scan_result: dict[str, Any]) -> dict[str, set[str]]:
+    """Map dataset id → set of its defined measure names (for the kind heuristic)."""
+    out: dict[str, set[str]] = {}
+    for ws in scan_result.get("workspaces") or []:
+        for ds in ws.get("datasets") or []:
+            names: set[str] = set()
+            for tbl in ds.get("tables") or []:
+                for measure in tbl.get("measures") or []:
+                    name = measure.get("name")
+                    if name:
+                        names.add(str(name))
+            out[ds.get("id", "")] = names
+    return out
+
+
+def _report_coordinates(
+    scan_result: dict[str, Any],
+) -> list[tuple[str, str, str]]:
+    """(workspace_id, report_id, dataset_id) per report, in build_index order.
+
+    ``build_index`` appends one entry per ``ws.reports`` in workspace/report
+    order, so this list lines up 1:1 with ``index.reports``.
+    """
+    coords: list[tuple[str, str, str]] = []
+    for ws in scan_result.get("workspaces") or []:
+        ws_id = ws.get("id", "")
+        for report in ws.get("reports") or []:
+            coords.append((ws_id, report.get("id", ""), report.get("datasetId", "")))
+    return coords
+
+
+def enrich_with_layouts(
+    index: PowerBiIndex,
+    scan_result: dict[str, Any],
+    token: str,
+    timeout: int = 90,
+) -> tuple[int, int]:
+    """Attach per-page visual layout to each report via Fabric getDefinition.
+
+    Returns ``(reports_with_layout, reports_total)``. Each report is fetched in
+    isolation: any failure (no PBIR, HTTP error, LRO timeout) leaves that
+    report's ``pages`` empty and never aborts the pass — the already-built
+    table/measure index is preserved regardless.
+    """
+    measures_by_ds = _dataset_measures(scan_result)
+    coords = _report_coordinates(scan_result)
+    got = 0
+    for entry, (ws_id, report_id, ds_id) in zip(index.reports, coords):
+        if not (ws_id and report_id):
+            continue
+        # get_report_definition isolates every failure internally (returns None
+        # on HTTP error / LRO failure / timeout), so one bad report never aborts
+        # the pass.
+        report_json = get_report_definition(token, ws_id, report_id, timeout=timeout)
+        if not report_json:
+            continue
+        measures = measures_by_ds.get(ds_id, set())
+        pages = parse_pbir_legacy(report_json, measures)
+        report_filters = parse_report_filters(report_json, measures)
+        if pages or report_filters:
+            entry.pages = pages
+            entry.filters = report_filters
+            got += 1
+    return got, len(index.reports)
+
+
 def artifacts_cmd(
     config: Config,
     manifest_path: str,
     raw_path: str,
     index_path: str,
+    with_layouts: bool = True,
 ) -> dict[str, Any]:
     """Scan workspaces and build the compact index in one shot.
 
     Writes ``raw_path`` (raw scanResult) and ``index_path`` (compact index).
     Both default to ``~/dbt-state/`` in the CLI; passing explicit paths
     overwrites whatever is there — including cron-managed files.
+
+    When ``with_layouts`` is set (default), a second pass calls Fabric
+    getDefinition per report to attach per-page visual layout. It needs a
+    Fabric-scoped token (acquired here, separate from the Scanner token) and the
+    SP to be a member of the target workspaces; reports it can't reach simply
+    keep an empty ``pages``. ``--no-layouts`` skips the whole pass.
     """
-    scan_summary = scan_command(config, raw_path)
-    build_summary = build_index_artifact(raw_path, manifest_path, index_path)
+    scan_command(config, raw_path)
+
+    scan_result = _load_json(raw_path)
+    manifest = _load_json(manifest_path)
+    index = build_index(scan_result, manifest)
+
+    layouts: dict[str, int] = {}
+    if with_layouts:
+        # scan_command already validated these are non-empty.
+        token = get_fabric_token(
+            config.powerbi_tenant_id or "",
+            config.powerbi_client_id or "",
+            config.powerbi_client_secret or "",
+        )
+        if token:
+            got, total = enrich_with_layouts(index, scan_result, token)
+            layouts = {"with_layout": got, "total": total}
+
+    save_index(index, index_path)
+
+    table_count = len({t.bq for r in index.reports for t in r.tables})
     return {
-        "workspaces": scan_summary["workspaces"],
-        "datasets": scan_summary["datasets"],
-        "reports": build_summary["reports"],
-        "tables": build_summary["tables"],
-        "metrics": build_summary["metrics"],
+        "workspaces": len(scan_result.get("workspaces") or []),
+        "datasets": sum(
+            len(ws.get("datasets") or []) for ws in scan_result.get("workspaces") or []
+        ),
+        "reports": len(index.reports),
+        "tables": table_count,
+        "metrics": len(index.metric_index),
+        "layouts": layouts,
         "raw_path": raw_path,
         "index_path": index_path,
     }
@@ -192,6 +297,29 @@ def show_report(artifact_path: str, report_name: str) -> dict[str, Any]:
             suggestion="Use `meta powerbi find <query>` to list matching reports.",
         )
     return _report_to_dict(report)
+
+
+def layout_cmd(artifact_path: str, report_name: str) -> dict[str, Any]:
+    """Return the visual semantics of one report — pages, visuals, titles, filters.
+
+    Complements ``show`` (data-lineage: tables / SQL / dbt models): ``layout``
+    answers "what does the dashboard look like" from the PBIR layout. Reports
+    scanned without ``--no-layouts`` carry ``pages``; ``filters`` is report-level.
+    """
+    index = load_index(artifact_path)
+    report = show(index, report_name)
+    if report is None:
+        raise DbtMetaError(
+            f"Report not found: {report_name!r}",
+            suggestion="Use `meta powerbi find <query>` to list matching reports.",
+        )
+    return {
+        "report": report.report,
+        "workspace": report.workspace,
+        "dataset": report.dataset,
+        "filters": [_filter_ref_to_dict(f) for f in report.filters],
+        "pages": [_page_to_dict(p) for p in report.pages],
+    }
 
 
 def cost_cmd(artifact_path: str, report_name: str) -> dict[str, Any]:

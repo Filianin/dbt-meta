@@ -188,6 +188,7 @@ def _build_commands_panel() -> Panel:
     table.add_row("  [blue]powerbi list[/blue]", "List all reports (workspace | report | dataset)")
     table.add_row("  [blue]powerbi find <q>[/blue]", "Find reports / metrics behind a dashboard")
     table.add_row("  [blue]powerbi show <report>[/blue]", "Report breakdown: tables + SQL analysis")
+    table.add_row("  [blue]powerbi layout <report>[/blue]", "Visual semantics: pages, visuals, titles, filters")
     table.add_row("  [blue]powerbi reports <model>[/blue]", "Reverse lookup: dbt model → PBI reports")
     table.add_row("  [blue]powerbi cost <report>[/blue]", "Per-table query cost metrics (7-day, live BQ)")
     table.add_row("  [blue]powerbi lineage <report>[/blue]", "Column-level upstream lineage for report SQL filters")
@@ -1804,6 +1805,10 @@ def powerbi_artifacts(
         help="Compact index output path (default: <prod-manifest-dir>/powerbi_index.json)",
     ),
     manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+    no_layouts: bool = typer.Option(
+        False, "--no-layouts",
+        help="Skip the Fabric getDefinition pass (no per-page visual layout)",
+    ),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output summary as JSON"),
 ) -> None:
     """Scan workspaces and build the compact agent index in one shot.
@@ -1811,6 +1816,10 @@ def powerbi_artifacts(
     Writes powerbi_raw.json (raw scanResult) and powerbi_index.json (compact
     index) — both default to the prod-manifest directory (~/dbt-state/).
     Running this manually overwrites the files managed by the cron job.
+
+    By default a second pass calls Fabric getDefinition per report to attach
+    per-page visual layout (needs a Fabric-scoped SP that is a member of the
+    workspaces). Use --no-layouts to skip it.
     """
     import os
 
@@ -1822,7 +1831,8 @@ def powerbi_artifacts(
         raw_path = raw or os.path.join(manifest_dir, "powerbi_raw.json")
         index_path = output or os.path.join(manifest_dir, "powerbi_index.json")
         result = pbi.artifacts_cmd(
-            Config.from_config_or_env(), manifest_path, raw_path, index_path
+            Config.from_config_or_env(), manifest_path, raw_path, index_path,
+            with_layouts=not no_layouts,
         )
     except DbtMetaError as e:
         handle_error(e, json_output)
@@ -1830,9 +1840,16 @@ def powerbi_artifacts(
     if json_output:
         print(json.dumps(result, indent=2))
     else:
+        layouts = result.get("layouts") or {}
+        layout_line = ""
+        if layouts:
+            layout_line = (
+                f"  layouts → {layouts['with_layout']}/{layouts['total']} reports\n"
+            )
         console.print(
             f"[green]Scanned & indexed[/green] {result['workspaces']} workspaces, "
             f"{result['reports']} reports, {result['metrics']} metrics\n"
+            f"{layout_line}"
             f"  raw   → {result['raw_path']}\n"
             f"  index → {result['index_path']}"
         )
@@ -1936,6 +1953,83 @@ def powerbi_show(
         print(json.dumps(result, indent=2))
     else:
         _print_powerbi_show(result)
+
+
+@powerbi_app.command("layout")
+def powerbi_layout(
+    report: str = typer.Argument(..., help="Report name (exact or substring)"),
+    artifact: Optional[str] = typer.Option(
+        None, "--artifact", help="Explicit powerbi_index.json path"
+    ),
+    json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
+) -> None:
+    """Show one report's visual semantics — pages, visuals, titles, filters."""
+    from dbt_meta.command_impl import powerbi as pbi
+    from dbt_meta.powerbi.artifact import find_powerbi_artifact
+
+    try:
+        path = find_powerbi_artifact(explicit_path=artifact)
+        result = pbi.layout_cmd(path, report)
+    except FileNotFoundError as e:
+        handle_error(DbtMetaError(str(e)), json_output)
+        return
+    except DbtMetaError as e:
+        handle_error(e, json_output)
+        return
+    if json_output:
+        print(json.dumps(result, indent=2))
+    else:
+        _print_powerbi_layout(result)
+
+
+def _format_filter(f: dict[str, Any]) -> str:
+    """One-line filter rendering, preferring the parser's summary."""
+    summary = f.get("summary") or ""
+    if summary:
+        return f"{summary} [{STYLE_DIM}]({f.get('op')})[/{STYLE_DIM}]"
+    col = f.get("column") or "?"
+    vals = ", ".join(f.get("values") or [])
+    return f"{col} {f.get('op')} {vals}".rstrip()
+
+
+def _print_powerbi_layout(result: dict[str, Any]) -> None:
+    """Render `meta powerbi layout` results."""
+    console.print(
+        f"[bold green]{result['report']}[/bold green] "
+        f"([cyan]{result['workspace']}[/cyan] / dataset "
+        f"[white]{result['dataset']}[/white])"
+    )
+    report_filters = result.get("filters", [])
+    if report_filters:
+        console.print()
+        console.print("[bold cyan]Report filters[/bold cyan]")
+        for f in report_filters:
+            console.print(f"  • {_format_filter(f)}")
+
+    pages = result.get("pages", [])
+    if not pages:
+        console.print(
+            f"[{STYLE_DIM}]No layout captured "
+            f"(report scanned with --no-layouts or no PBIR).[/{STYLE_DIM}]"
+        )
+        return
+
+    for page in pages:
+        console.print()
+        console.print(f"[bold white]▸ {page.get('name') or '(unnamed page)'}[/bold white]")
+        for f in page.get("filters", []):
+            console.print(f"    [dim]page filter:[/dim] {_format_filter(f)}")
+        for v in page.get("visuals", []):
+            title = v.get("title")
+            label = f"[cyan]{v.get('type')}[/cyan]"
+            if title:
+                label += f" — [white]{title}[/white]"
+            console.print(f"    {label}")
+            for role, refs in (v.get("fields") or {}).items():
+                cols = ", ".join(f"{r['column']}" for r in refs)
+                console.print(f"      [dim]{role}:[/dim] {cols}")
+            for f in v.get("filters", []):
+                console.print(f"      [dim]filter:[/dim] {_format_filter(f)}")
 
 
 def _print_powerbi_find(result: dict[str, Any]) -> None:

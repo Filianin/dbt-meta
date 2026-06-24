@@ -313,10 +313,11 @@ outside the dbt project.
 
 | Command | Description | Key flags | Example |
 |---------|-------------|-----------|---------|
-| `powerbi artifacts` | Scan workspaces + build compact index in one shot | `--raw`, `-o/--output`, `--manifest`, `-j` | `meta powerbi artifacts` |
+| `powerbi artifacts` | Scan workspaces + build compact index (incl. per-page visual layout) in one shot | `--raw`, `-o/--output`, `--manifest`, `--no-layouts`, `-j` | `meta powerbi artifacts` |
 | `powerbi list` | List all reports (workspace \| report \| dataset \| tables) | `--artifact`, `-j` | `meta powerbi list` |
 | `powerbi find` | Find reports / metrics behind a name | `--artifact`, `-j` | `meta powerbi find "organic leads"` |
 | `powerbi show` | Full breakdown of one report (tables, SQL analysis) | `--artifact`, `-j` | `meta powerbi show "Organic Leads"` |
+| `powerbi layout` | Visual semantics: pages → visuals → fields, titles, filters | `--artifact`, `-j` | `meta powerbi layout "Organic Leads"` |
 | `powerbi reports` | Reverse: dbt model → PBI reports using it | `--artifact`, `-j` | `meta powerbi reports core_amas_accounts` |
 | `powerbi cost` | Per-table query cost (7-day) for a report | `--artifact`, `-j` | `meta powerbi cost "Organic Leads"` |
 | `powerbi lineage` | Column-level upstream paths for a report's filter/join columns | `--artifact`, `--lineage`, `-j` | `meta powerbi lineage "Organic Leads"` |
@@ -549,7 +550,14 @@ meta optimize cluster core_sessions -j | jq '.recommendations[].column'
 # 1. Scan configured workspaces + build the compact index in one shot
 meta powerbi artifacts
 # → ~/dbt-state/powerbi_raw.json   (navigation imports + native SQL expressions)
-# → ~/dbt-state/powerbi_index.json (reports → BQ tables → dbt model/source/external)
+# → ~/dbt-state/powerbi_index.json (reports → BQ tables → dbt model/source/external,
+#                                   + per-page visual layout under `pages`)
+
+# By default a second pass calls Fabric getDefinition per report to attach
+# per-page visual layout: pages[].visuals[].{type, fields{role: [{table,column,kind}]}}.
+# Needs a Fabric-scoped service principal that is a *member* of the workspaces.
+# Skip it for the fast path:
+meta powerbi artifacts --no-layouts
 
 # 3a. Find reports / metrics behind a dashboard name
 meta powerbi find "organic leads"
@@ -559,6 +567,11 @@ meta powerbi find "organic leads"
 meta powerbi show "Organic Leads"
 # → BigQuery Table | Status (model/source/external) | dbt Model
 #   + SQL analysis (filters / joins / group-by — logic living outside dbt)
+
+# 3c. Visual semantics of one report: pages, visuals, titles, filters
+meta powerbi layout "Organic Leads"
+# → pages → visuals (type, fields by role, explicit title)
+#   + filters at report / page / visual scope (op + values + summary)
 
 # JSON output for automation
 meta powerbi find "leads" -j | jq '.reports[].tables[] | select(.status == "external") | .bq'

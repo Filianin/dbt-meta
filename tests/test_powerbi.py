@@ -6,6 +6,8 @@ the Scanner API client, and the command orchestration layer. All tests exercise
 public interfaces only.
 """
 
+import json
+
 import orjson
 import pytest
 
@@ -500,7 +502,7 @@ class TestArtifact:
         assert loaded.reports[0].tables[0].status == "model"
         assert loaded.reports[0].sql_analysis[0].group_by == ("country",)
         assert loaded.metric_index["Total"] == ["p.s.t"]
-        assert loaded.schema_version == "1.0"
+        assert loaded.schema_version == "1.2"
 
     def test_age_reflects_recent_write(self, tmp_path):
         path = tmp_path / "powerbi_index.json"
@@ -944,6 +946,7 @@ def _cmd_scan_result():
     return {
         "workspaces": [
             {
+                "id": "ws1",
                 "name": "BI Marketing",
                 "datasets": [
                     {
@@ -959,7 +962,9 @@ def _cmd_scan_result():
                         ],
                     }
                 ],
-                "reports": [{"name": "Clients Report", "datasetId": "ds1"}],
+                "reports": [
+                    {"id": "rpt1", "name": "Clients Report", "datasetId": "ds1"}
+                ],
             }
         ]
     }
@@ -978,13 +983,56 @@ class TestCommandArtifacts:
         config.powerbi_client_secret = "s"
         config.powerbi_workspaces = ["ws1"]
 
-        result = cmd.artifacts_cmd(config, man, str(raw_out), str(idx_out))
+        result = cmd.artifacts_cmd(
+            config, man, str(raw_out), str(idx_out), with_layouts=False
+        )
 
         assert raw_out.exists()
         assert idx_out.exists()
         assert result["reports"] == 1
         assert result["raw_path"] == str(raw_out)
         assert result["index_path"] == str(idx_out)
+        assert result["layouts"] == {}
+
+    def test_artifacts_with_layouts_attaches_pages(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cmd, "get_powerbi_token", lambda *a, **k: "tok")
+        monkeypatch.setattr(cmd, "get_fabric_token", lambda *a, **k: "fabtok")
+        monkeypatch.setattr(cmd, "scan_workspaces", lambda *a, **k: _cmd_scan_result())
+        monkeypatch.setattr(
+            cmd, "get_report_definition", lambda *a, **k: fx.PBIR_LEGACY_REPORT
+        )
+        man = _cmd_write(tmp_path / "manifest.json", CMD_MANIFEST)
+        raw_out = tmp_path / "powerbi_raw.json"
+        idx_out = tmp_path / "powerbi_index.json"
+        config = Config()
+        config.powerbi_tenant_id = "t"
+        config.powerbi_client_id = "c"
+        config.powerbi_client_secret = "s"
+        config.powerbi_workspaces = ["ws1"]
+
+        result = cmd.artifacts_cmd(config, man, str(raw_out), str(idx_out))
+
+        assert result["layouts"] == {"with_layout": 1, "total": 1}
+        saved = load_index(str(idx_out))
+        assert saved.reports[0].pages[0].name == "PPC Reg Cohorts"
+
+    def test_artifacts_layouts_skipped_when_no_fabric_token(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cmd, "get_powerbi_token", lambda *a, **k: "tok")
+        monkeypatch.setattr(cmd, "get_fabric_token", lambda *a, **k: None)
+        monkeypatch.setattr(cmd, "scan_workspaces", lambda *a, **k: _cmd_scan_result())
+        man = _cmd_write(tmp_path / "manifest.json", CMD_MANIFEST)
+        config = Config()
+        config.powerbi_tenant_id = "t"
+        config.powerbi_client_id = "c"
+        config.powerbi_client_secret = "s"
+        config.powerbi_workspaces = ["ws1"]
+
+        result = cmd.artifacts_cmd(
+            config, man,
+            str(tmp_path / "raw.json"), str(tmp_path / "idx.json"),
+        )
+
+        assert result["layouts"] == {}
 
     def test_artifacts_scan_failure_raises(self, tmp_path, monkeypatch):
         monkeypatch.setattr(cmd, "get_powerbi_token", lambda *a, **k: "tok")
@@ -1002,6 +1050,87 @@ class TestCommandArtifacts:
                 str(tmp_path / "raw.json"),
                 str(tmp_path / "idx.json"),
             )
+
+
+class TestDatasetMeasures:
+    def test_measure_without_name_is_skipped(self):
+        scan = {
+            "workspaces": [
+                {
+                    "id": "ws1",
+                    "datasets": [
+                        {
+                            "id": "ds1",
+                            "tables": [
+                                {
+                                    "name": "t",
+                                    "measures": [
+                                        {"expression": "x"},  # no name → skipped
+                                        {"name": "Revenue"},
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        assert cmd._dataset_measures(scan) == {"ds1": {"Revenue"}}
+
+
+class TestEnrichWithLayouts:
+    """Failure isolation of the layout pass — one bad report never aborts it."""
+
+    def test_none_definition_leaves_pages_empty(self, monkeypatch):
+        scan = _cmd_scan_result()
+        index = build_index(scan, CMD_MANIFEST)
+        monkeypatch.setattr(cmd, "get_report_definition", lambda *a, **k: None)
+
+        got, total = cmd.enrich_with_layouts(index, scan, "fabtok")
+
+        assert (got, total) == (0, 1)
+        assert index.reports[0].pages == []
+
+    def test_empty_report_id_is_skipped(self, monkeypatch):
+        scan = _cmd_scan_result()
+        scan["workspaces"][0]["reports"][0]["id"] = ""
+        index = build_index(scan, CMD_MANIFEST)
+        called = []
+        monkeypatch.setattr(
+            cmd,
+            "get_report_definition",
+            lambda *a, **k: called.append(a) or fx.PBIR_LEGACY_REPORT,
+        )
+
+        got, total = cmd.enrich_with_layouts(index, scan, "fabtok")
+
+        assert (got, total) == (0, 1)
+        assert called == []
+
+    def test_definition_with_no_pages_is_not_counted(self, monkeypatch):
+        scan = _cmd_scan_result()
+        index = build_index(scan, CMD_MANIFEST)
+        monkeypatch.setattr(
+            cmd, "get_report_definition", lambda *a, **k: {"sections": []}
+        )
+
+        got, total = cmd.enrich_with_layouts(index, scan, "fabtok")
+
+        assert (got, total) == (0, 1)
+        assert index.reports[0].pages == []
+
+    def test_successful_definition_attaches_and_counts(self, monkeypatch):
+        scan = _cmd_scan_result()
+        index = build_index(scan, CMD_MANIFEST)
+        monkeypatch.setattr(
+            cmd, "get_report_definition", lambda *a, **k: fx.PBIR_LEGACY_REPORT
+        )
+
+        got, total = cmd.enrich_with_layouts(index, scan, "fabtok")
+
+        assert (got, total) == (1, 1)
+        assert index.reports[0].pages[0].name == "PPC Reg Cohorts"
 
 
 class TestCommandBuild:
@@ -1926,3 +2055,1159 @@ class TestDaxParser:
         measure = result["measures"][0]
         assert measure["name"] == "Total Revenue"
         assert {"table": "Sales", "column": "Revenue"} in measure["dax_refs"]
+
+
+# ============================================================================
+# TestPbirParser — parse_pbir_legacy
+# ============================================================================
+
+
+class TestPbirParser:
+    def test_yields_one_page_per_section_with_display_name(self):
+        from dbt_meta.powerbi.pbir_parser import parse_pbir_legacy
+
+        pages = parse_pbir_legacy(fx.PBIR_LEGACY_REPORT)
+
+        assert [p.name for p in pages] == ["PPC Reg Cohorts", "Detail"]
+
+    def test_visual_type_and_role_grouped_fields(self):
+        from dbt_meta.powerbi.pbir_parser import parse_pbir_legacy
+
+        pages = parse_pbir_legacy(fx.PBIR_LEGACY_REPORT)
+        funnel = pages[0].visuals[0]
+
+        assert funnel.type == "funnel"
+        assert set(funnel.fields) == {"values", "axis"}
+        assert funnel.fields["axis"][0].column == "stage"
+
+    def test_canonical_roles_unify_across_visual_types(self):
+        from dbt_meta.powerbi.pbir_parser import parse_pbir_legacy
+
+        pages = parse_pbir_legacy(fx.PBIR_LEGACY_REPORT)
+        area = pages[0].visuals[2]
+
+        # Y -> values, Category -> axis, Series -> legend, Tooltips -> tooltip
+        assert set(area.fields) == {"values", "axis", "legend", "tooltip"}
+        assert area.fields["legend"][0].table == "Device"
+
+    def test_aggregation_wrapper_is_a_measure(self):
+        from dbt_meta.powerbi.pbir_parser import parse_pbir_legacy
+
+        pages = parse_pbir_legacy(fx.PBIR_LEGACY_REPORT)
+        funnel_value = pages[0].visuals[0].fields["values"][0]
+
+        assert funnel_value.table == "events"
+        assert funnel_value.column == "stage_count"
+        assert funnel_value.kind == "measure"
+
+    def test_bare_ref_is_a_column_by_default(self):
+        from dbt_meta.powerbi.pbir_parser import parse_pbir_legacy
+
+        pages = parse_pbir_legacy(fx.PBIR_LEGACY_REPORT)
+        slicer_field = pages[0].visuals[1].fields["values"][0]
+
+        assert slicer_field.kind == "column"
+
+    def test_bare_ref_named_as_dataset_measure_is_a_measure(self):
+        from dbt_meta.powerbi.pbir_parser import parse_pbir_legacy
+
+        pages = parse_pbir_legacy(
+            fx.PBIR_LEGACY_REPORT, measures=["total_revenue"]
+        )
+        card_field = pages[1].visuals[0].fields["Custom Role"][0]
+
+        assert card_field.column == "total_revenue"
+        assert card_field.kind == "measure"
+
+    def test_unknown_role_falls_back_to_raw_key(self):
+        from dbt_meta.powerbi.pbir_parser import parse_pbir_legacy
+
+        pages = parse_pbir_legacy(fx.PBIR_LEGACY_REPORT)
+
+        assert "Custom Role" in pages[1].visuals[0].fields
+
+    def test_malformed_containers_are_skipped_not_raised(self):
+        from dbt_meta.powerbi.pbir_parser import parse_pbir_legacy
+
+        pages = parse_pbir_legacy(fx.PBIR_LEGACY_MESSY)
+
+        # bad json + missing singleVisual + empty container dropped, one good kept
+        assert [v.type for v in pages[0].visuals] == ["card"]
+        # empty section preserved with zero visuals
+        assert pages[1].name == "Empty"
+        assert pages[1].visuals == []
+
+    def test_empty_report_yields_no_pages(self):
+        from dbt_meta.powerbi.pbir_parser import parse_pbir_legacy
+
+        assert parse_pbir_legacy({}) == []
+
+    def test_bare_query_ref_without_dot_keeps_empty_table(self):
+        from dbt_meta.powerbi.pbir_parser import parse_pbir_legacy
+
+        report = {
+            "sections": [
+                {
+                    "displayName": "P",
+                    "visualContainers": [
+                        {
+                            "config": fx._config(
+                                "card", {"Values": [{"queryRef": "barecolumn"}]}
+                            )
+                        }
+                    ],
+                }
+            ]
+        }
+        field = parse_pbir_legacy(report)[0].visuals[0].fields["values"][0]
+
+        assert field.table == ""
+        assert field.column == "barecolumn"
+
+    def test_empty_query_ref_is_dropped(self):
+        from dbt_meta.powerbi.pbir_parser import parse_pbir_legacy
+
+        report = {
+            "sections": [
+                {
+                    "displayName": "P",
+                    "visualContainers": [
+                        {
+                            "config": fx._config(
+                                "card",
+                                {"Values": [{"queryRef": "  "}, {"queryRef": "t.c"}]},
+                            )
+                        }
+                    ],
+                }
+            ]
+        }
+        fields = parse_pbir_legacy(report)[0].visuals[0].fields
+
+        # only the valid ref survives; the role still appears once
+        assert [f.column for f in fields["values"]] == ["c"]
+
+    def test_role_with_only_empty_refs_is_omitted(self):
+        from dbt_meta.powerbi.pbir_parser import parse_pbir_legacy
+
+        # First role yields no refs (looping on to the next role), second is valid.
+        report = {
+            "sections": [
+                {
+                    "displayName": "P",
+                    "visualContainers": [
+                        {
+                            "config": fx._config(
+                                "card",
+                                {
+                                    "Tooltips": [{"queryRef": ""}],
+                                    "Values": [{"queryRef": "t.c"}],
+                                },
+                            )
+                        }
+                    ],
+                }
+            ]
+        }
+        fields = parse_pbir_legacy(report)[0].visuals[0].fields
+
+        assert "tooltip" not in fields
+        assert [f.column for f in fields["values"]] == ["c"]
+
+    def test_projections_not_a_dict_yields_no_fields(self):
+        from dbt_meta.powerbi.pbir_parser import parse_pbir_legacy
+
+        config = json.dumps(
+            {"singleVisual": {"visualType": "card", "projections": ["bad"]}}
+        )
+        report = {
+            "sections": [
+                {"displayName": "P", "visualContainers": [{"config": config}]}
+            ]
+        }
+        visual = parse_pbir_legacy(report)[0].visuals[0]
+
+        assert visual.type == "card"
+        assert visual.fields == {}
+
+    def test_role_whose_items_are_not_a_list_are_skipped(self):
+        from dbt_meta.powerbi.pbir_parser import parse_pbir_legacy
+
+        config = json.dumps(
+            {
+                "singleVisual": {
+                    "visualType": "card",
+                    "projections": {
+                        "Bad": "notalist",
+                        "Values": [{"queryRef": "t.c"}],
+                    },
+                }
+            }
+        )
+        report = {
+            "sections": [
+                {"displayName": "P", "visualContainers": [{"config": config}]}
+            ]
+        }
+        fields = parse_pbir_legacy(report)[0].visuals[0].fields
+
+        assert set(fields) == {"values"}
+
+    def test_missing_visual_type_defaults_to_unknown(self):
+        from dbt_meta.powerbi.pbir_parser import parse_pbir_legacy
+
+        config = json.dumps({"singleVisual": {"projections": {}}})
+        report = {
+            "sections": [
+                {"displayName": "P", "visualContainers": [{"config": config}]}
+            ]
+        }
+
+        assert parse_pbir_legacy(report)[0].visuals[0].type == "unknown"
+
+    def test_non_dict_section_is_skipped(self):
+        from dbt_meta.powerbi.pbir_parser import parse_pbir_legacy
+
+        report = {"sections": ["not a dict", {"displayName": "Real"}]}
+        pages = parse_pbir_legacy(report)
+
+        assert [p.name for p in pages] == ["Real"]
+
+    def test_section_name_falls_back_to_name_then_empty(self):
+        from dbt_meta.powerbi.pbir_parser import parse_pbir_legacy
+
+        report = {"sections": [{"name": "S_internal"}, {}]}
+        pages = parse_pbir_legacy(report)
+
+        assert [p.name for p in pages] == ["S_internal", ""]
+
+
+# ============================================================================
+# TestLayoutPersistence — pages survive a save/load roundtrip, sparse emission
+# ============================================================================
+
+
+class TestLayoutPersistence:
+    def _index_with_pages(self):
+        from dbt_meta.powerbi.index import (
+            FieldRef,
+            PageEntry,
+            VisualEntry,
+        )
+
+        report = ReportEntry(workspace="W", report="R", dataset="D")
+        report.pages = [
+            PageEntry(
+                name="P1",
+                visuals=[
+                    VisualEntry(
+                        type="funnel",
+                        fields={
+                            "values": [
+                                FieldRef(table="events", column="cnt", kind="measure")
+                            ],
+                            "axis": [
+                                FieldRef(table="events", column="stage", kind="column")
+                            ],
+                        },
+                    )
+                ],
+            )
+        ]
+        return PowerBiIndex(reports=[report])
+
+    def test_pages_roundtrip_through_save_load(self, tmp_path):
+        out = tmp_path / "idx.json"
+        save_index(self._index_with_pages(), str(out))
+
+        loaded = load_index(str(out))
+        page = loaded.reports[0].pages[0]
+        assert page.name == "P1"
+        visual = page.visuals[0]
+        assert visual.type == "funnel"
+        assert visual.fields["values"][0].kind == "measure"
+        assert visual.fields["axis"][0].column == "stage"
+
+    def test_pages_omitted_when_empty(self, tmp_path):
+        out = tmp_path / "idx.json"
+        save_index(PowerBiIndex(reports=[ReportEntry("W", "R", "D")]), str(out))
+
+        data = orjson.loads(out.read_bytes())
+        assert "pages" not in data["reports"][0]
+        assert data["schema_version"] == "1.2"
+
+
+# ============================================================================
+# TestFabricDefinition — get_report_definition LRO + decode
+# ============================================================================
+
+
+class TestFabricDefinition:
+    def _report_json_part(self):
+        import base64
+
+        payload = base64.b64encode(orjson.dumps(fx.PBIR_LEGACY_REPORT)).decode()
+        return {"definition": {"parts": [{"path": "report.json", "payload": payload}]}}
+
+    def test_inline_200_decodes_report_json(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pb
+
+        body = orjson.dumps(self._report_json_part()).decode()
+        monkeypatch.setattr(pb, "_fabric_call", lambda *a, **k: (200, {}, body))
+
+        result = pb.get_report_definition("tok", "ws", "rpt")
+
+        assert result is not None
+        assert result["sections"][0]["displayName"] == "PPC Reg Cohorts"
+
+    def test_lro_202_polls_to_succeeded(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pb
+
+        result_body = orjson.dumps(self._report_json_part()).decode()
+        calls = {"n": 0}
+
+        def fake_call(token, url, method="GET", body=None, timeout=90):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return 202, {"location": "https://poll", "retry-after": "0"}, ""
+            if url.endswith("/result"):
+                return 200, {}, result_body
+            return 200, {}, orjson.dumps({"status": "Succeeded"}).decode()
+
+        monkeypatch.setattr(pb, "_fabric_call", fake_call)
+
+        result = pb.get_report_definition("tok", "ws", "rpt", poll_interval=0)
+
+        assert result is not None
+        assert result["sections"][0]["name"] == "ReportSection1"
+
+    def test_lro_failed_returns_none(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pb
+
+        def fake_call(token, url, method="GET", body=None, timeout=90):
+            if method == "POST":
+                return 202, {"location": "https://poll", "retry-after": "0"}, ""
+            return 200, {}, orjson.dumps({"status": "Failed"}).decode()
+
+        monkeypatch.setattr(pb, "_fabric_call", fake_call)
+
+        assert pb.get_report_definition("tok", "ws", "rpt", poll_interval=0) is None
+
+    def test_http_error_returns_none(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pb
+
+        monkeypatch.setattr(pb, "_fabric_call", lambda *a, **k: (403, {}, "denied"))
+
+        assert pb.get_report_definition("tok", "ws", "rpt") is None
+
+    def test_missing_report_json_part_returns_none(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pb
+
+        body = orjson.dumps({"definition": {"parts": []}}).decode()
+        monkeypatch.setattr(pb, "_fabric_call", lambda *a, **k: (200, {}, body))
+
+        assert pb.get_report_definition("tok", "ws", "rpt") is None
+
+    def test_200_with_malformed_json_returns_none(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pb
+
+        monkeypatch.setattr(pb, "_fabric_call", lambda *a, **k: (200, {}, "{bad"))
+
+        assert pb.get_report_definition("tok", "ws", "rpt") is None
+
+    def test_200_without_definition_returns_none(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pb
+
+        monkeypatch.setattr(pb, "_fabric_call", lambda *a, **k: (200, {}, "{}"))
+
+        assert pb.get_report_definition("tok", "ws", "rpt") is None
+
+    def test_202_without_location_returns_none(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pb
+
+        monkeypatch.setattr(pb, "_fabric_call", lambda *a, **k: (202, {}, ""))
+
+        assert pb.get_report_definition("tok", "ws", "rpt", poll_interval=0) is None
+
+    def test_202_invalid_retry_after_is_tolerated(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pb
+
+        result_body = orjson.dumps(self._report_json_part()).decode()
+
+        def fake_call(token, url, method="GET", body=None, timeout=90):
+            if method == "POST":
+                return 202, {"location": "https://poll", "retry-after": "soon"}, ""
+            if url.endswith("/result"):
+                return 200, {}, result_body
+            return 200, {}, orjson.dumps({"status": "Succeeded"}).decode()
+
+        monkeypatch.setattr(pb, "_fabric_call", fake_call)
+
+        assert pb.get_report_definition("tok", "ws", "rpt", poll_interval=0) is not None
+
+    def test_poll_body_malformed_returns_none(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pb
+
+        def fake_call(token, url, method="GET", body=None, timeout=90):
+            if method == "POST":
+                return 202, {"location": "https://poll", "retry-after": "0"}, ""
+            return 200, {}, "{bad"
+
+        monkeypatch.setattr(pb, "_fabric_call", fake_call)
+
+        assert pb.get_report_definition("tok", "ws", "rpt", poll_interval=0) is None
+
+    def test_result_body_malformed_returns_none(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pb
+
+        def fake_call(token, url, method="GET", body=None, timeout=90):
+            if method == "POST":
+                return 202, {"location": "https://poll", "retry-after": "0"}, ""
+            if url.endswith("/result"):
+                return 200, {}, "{bad"
+            return 200, {}, orjson.dumps({"status": "Succeeded"}).decode()
+
+        monkeypatch.setattr(pb, "_fabric_call", fake_call)
+
+        assert pb.get_report_definition("tok", "ws", "rpt", poll_interval=0) is None
+
+    def test_lro_running_then_timeout_returns_none(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pb
+
+        def fake_call(token, url, method="GET", body=None, timeout=90):
+            if method == "POST":
+                return 202, {"location": "https://poll", "retry-after": "0"}, ""
+            return 200, {}, orjson.dumps({"status": "Running"}).decode()
+
+        monkeypatch.setattr(pb, "_fabric_call", fake_call)
+
+        result = pb.get_report_definition(
+            "tok", "ws", "rpt", poll_interval=0, max_polls=2
+        )
+        assert result is None
+
+    def test_bad_base64_payload_returns_none(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pb
+
+        body = orjson.dumps(
+            {"definition": {"parts": [{"path": "report.json", "payload": "!!!"}]}}
+        ).decode()
+        monkeypatch.setattr(pb, "_fabric_call", lambda *a, **k: (200, {}, body))
+
+        assert pb.get_report_definition("tok", "ws", "rpt") is None
+
+
+# ============================================================================
+# TestFabricToken — get_fabric_token uses the Fabric audience, secret off argv
+# ============================================================================
+
+
+class TestFabricToken:
+    def test_fabric_token_uses_fabric_scope_and_hides_secret(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pb
+
+        run = _CapturedRun('{"access_token": "fab"}')
+        monkeypatch.setattr(pb.subprocess, "run", run)
+        monkeypatch.setattr(pb.shutil, "which", lambda _: "/usr/bin/curl")
+
+        token = pb.get_fabric_token("tenant", "client", "s3cret")
+
+        assert token == "fab"
+        assert "s3cret" not in " ".join(run.cmd)
+        assert "api.fabric.microsoft.com%2F.default" in run.input
+
+    def test_fabric_token_none_when_curl_missing(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pb
+
+        monkeypatch.setattr(pb.shutil, "which", lambda _: None)
+
+        assert pb.get_fabric_token("t", "c", "s") is None
+
+
+# ============================================================================
+# TestFabricCall — _fabric_call header/status parsing over the curl boundary
+# ============================================================================
+
+
+class TestFabricCall:
+    def _run_returning(self, stdout, returncode=0):
+        class _R:
+            pass
+
+        def run(cmd, *, input=None, capture_output=None, text=None, timeout=None):
+            r = _R()
+            r.returncode = returncode
+            r.stdout = stdout
+            r.cmd = cmd
+            r.input = input
+            run.captured = r
+            return r
+
+        return run
+
+    def test_parses_code_headers_and_body(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pb
+
+        stdout = (
+            "HTTP/1.1 202 Accepted\r\n"
+            "Location: https://poll/op\r\n"
+            "Retry-After: 5\r\n"
+            "\r\n"
+            "body-bytes"
+            "\n__HTTP_CODE__:202"
+        )
+        monkeypatch.setattr(pb.shutil, "which", lambda _: "/usr/bin/curl")
+        monkeypatch.setattr(pb.subprocess, "run", self._run_returning(stdout))
+
+        code, headers, body = pb._fabric_call("tok", "https://x", method="POST", body={})
+
+        assert code == 202
+        assert headers["location"] == "https://poll/op"
+        assert headers["retry-after"] == "5"
+        assert body == "body-bytes"
+
+    def test_curl_missing_returns_zero(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pb
+
+        monkeypatch.setattr(pb.shutil, "which", lambda _: None)
+
+        assert pb._fabric_call("tok", "https://x") == (0, {}, "")
+
+    def test_nonzero_returncode_returns_zero(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pb
+
+        monkeypatch.setattr(pb.shutil, "which", lambda _: "/usr/bin/curl")
+        monkeypatch.setattr(pb.subprocess, "run", self._run_returning("x", returncode=1))
+
+        assert pb._fabric_call("tok", "https://x") == (0, {}, "")
+
+    def test_timeout_returns_zero(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pb
+
+        def run(*a, **k):
+            raise pb.subprocess.TimeoutExpired(cmd="curl", timeout=1)
+
+        monkeypatch.setattr(pb.shutil, "which", lambda _: "/usr/bin/curl")
+        monkeypatch.setattr(pb.subprocess, "run", run)
+
+        assert pb._fabric_call("tok", "https://x") == (0, {}, "")
+
+    def test_lf_only_header_separator_is_handled(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pb
+
+        stdout = "HTTP/1.1 200 OK\nX-Test: v\n\nthebody\n__HTTP_CODE__:200"
+        monkeypatch.setattr(pb.shutil, "which", lambda _: "/usr/bin/curl")
+        monkeypatch.setattr(pb.subprocess, "run", self._run_returning(stdout))
+
+        code, headers, body = pb._fabric_call("tok", "https://x")
+
+        assert code == 200
+        assert headers["x-test"] == "v"
+        assert body == "thebody"
+
+    def test_missing_http_marker_yields_zero_code(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pb
+
+        # No -w marker in the output (e.g. curl wrote nothing measurable).
+        stdout = "HTTP/1.1 200 OK\r\nX-Test: v\r\n\r\nbody"
+        monkeypatch.setattr(pb.shutil, "which", lambda _: "/usr/bin/curl")
+        monkeypatch.setattr(pb.subprocess, "run", self._run_returning(stdout))
+
+        code, headers, body = pb._fabric_call("tok", "https://x")
+
+        assert code == 0
+        assert headers["x-test"] == "v"
+        assert body == "body"
+
+    def test_bearer_token_stays_off_argv(self, monkeypatch):
+        from dbt_meta.utils import powerbi as pb
+
+        run = self._run_returning("HTTP/1.1 200 OK\r\n\r\nok\n__HTTP_CODE__:200")
+        monkeypatch.setattr(pb.shutil, "which", lambda _: "/usr/bin/curl")
+        monkeypatch.setattr(pb.subprocess, "run", run)
+
+        pb._fabric_call("jwt-secret", "https://x", method="POST", body={"k": 1})
+
+        captured = run.captured
+        assert "jwt-secret" not in " ".join(captured.cmd)
+        assert "jwt-secret" in captured.input
+        assert "-d" in captured.cmd
+
+
+# ============================================================================
+# TestArtifactsCliContract — the --no-layouts flag wiring through the CLI layer
+# ============================================================================
+
+
+class TestArtifactsCliContract:
+    def _runner(self):
+        from typer.testing import CliRunner
+
+        from dbt_meta.cli import app
+
+        return CliRunner(), app
+
+    def test_help_exposes_no_layouts(self):
+        runner, app = self._runner()
+        result = runner.invoke(app, ["powerbi", "artifacts", "--help"])
+
+        assert result.exit_code == 0
+        assert "--no-layouts" in result.output
+
+    def test_no_layouts_flag_sets_with_layouts_false(self, tmp_path, monkeypatch):
+        import dbt_meta.command_impl.powerbi as pbi
+
+        man = _cmd_write(tmp_path / "manifest.json", CMD_MANIFEST)
+        captured = {}
+
+        def fake_artifacts_cmd(config, manifest_path, raw_path, index_path, **kwargs):
+            captured["with_layouts"] = kwargs.get("with_layouts")
+            return {"reports": 0, "raw_path": raw_path, "index_path": index_path}
+
+        monkeypatch.setattr(pbi, "artifacts_cmd", fake_artifacts_cmd)
+
+        runner, app = self._runner()
+        result = runner.invoke(
+            app, ["powerbi", "artifacts", "--manifest", man, "--no-layouts", "-j"]
+        )
+
+        assert result.exit_code == 0
+        assert captured["with_layouts"] is False
+
+    def test_default_keeps_layouts_on(self, tmp_path, monkeypatch):
+        import dbt_meta.command_impl.powerbi as pbi
+
+        man = _cmd_write(tmp_path / "manifest.json", CMD_MANIFEST)
+        captured = {}
+
+        def fake_artifacts_cmd(config, manifest_path, raw_path, index_path, **kwargs):
+            captured["with_layouts"] = kwargs.get("with_layouts")
+            return {"reports": 0, "raw_path": raw_path, "index_path": index_path}
+
+        monkeypatch.setattr(pbi, "artifacts_cmd", fake_artifacts_cmd)
+
+        runner, app = self._runner()
+        result = runner.invoke(
+            app, ["powerbi", "artifacts", "--manifest", man, "-j"]
+        )
+
+        assert result.exit_code == 0
+        assert captured["with_layouts"] is True
+
+
+# ============================================================================
+# TestPbirFilters — title + filter parsing (visual semantics, v0.3.6)
+# ============================================================================
+
+
+class TestPbirFilters:
+    def test_report_level_in_filter(self):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        filters = parse_report_filters(fx.PBIR_LEGACY_SEMANTICS)
+        device = next(f for f in filters if f.column == "device_type")
+
+        assert device.table == "Device"
+        assert device.kind == "column"
+        assert device.op == "in"
+        assert device.values == ["desktop", "mobile"]
+        assert device.summary == "device_type in (desktop, mobile)"
+
+    def test_report_level_advanced_filter(self):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        adv = next(
+            f for f in parse_report_filters(fx.PBIR_LEGACY_SEMANTICS) if f.op == "advanced"
+        )
+        assert adv.summary == "status = active and amount > 0"
+        assert adv.values == ["active", "0"]
+
+    def test_page_level_relative_date_filter(self):
+        from dbt_meta.powerbi.pbir_parser import parse_pbir_legacy
+
+        page = parse_pbir_legacy(fx.PBIR_LEGACY_SEMANTICS)[0]
+        rd = page.filters[0]
+
+        assert rd.op == "relative_date"
+        assert rd.column == "day_iso"
+        assert rd.values == ["30", "days"]
+        assert rd.summary == "day_iso — last 30 days"
+
+    def test_visual_title_and_cmp_filter(self):
+        from dbt_meta.powerbi.pbir_parser import parse_pbir_legacy
+
+        bar = parse_pbir_legacy(fx.PBIR_LEGACY_SEMANTICS)[0].visuals[0]
+
+        assert bar.title == "Revenue by stage"
+        assert len(bar.filters) == 1
+        cmp = bar.filters[0]
+        assert cmp.op == "cmp"
+        assert cmp.values == [">", "100"]
+        assert cmp.summary == "amount > 100"
+
+    def test_visual_top_n_filter(self):
+        from dbt_meta.powerbi.pbir_parser import parse_pbir_legacy
+
+        table = parse_pbir_legacy(fx.PBIR_LEGACY_SEMANTICS)[0].visuals[1]
+        top = table.filters[0]
+
+        assert top.op == "top_n"
+        assert top.values == ["10"]
+        assert top.summary == "top 10 by Sum(revenue)"
+
+    def test_visual_without_title_or_filter_is_sparse(self):
+        from dbt_meta.powerbi.pbir_parser import parse_pbir_legacy
+
+        card = parse_pbir_legacy(fx.PBIR_LEGACY_SEMANTICS)[0].visuals[2]
+
+        assert card.title is None
+        assert card.filters == []
+
+    def test_measure_filter_kind_via_measure_set(self):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        report = {
+            "filters": json.dumps(
+                [fx._filter_in("metrics", "total_revenue", ["x"])]
+            )
+        }
+        f = parse_report_filters(report, measures=["total_revenue"])[0]
+        assert f.kind == "measure"
+
+    def test_measure_expression_filter(self):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        report = {
+            "filters": json.dumps(
+                [
+                    {
+                        "expression": {
+                            "Measure": {
+                                "Expression": {"SourceRef": {"Entity": "metrics"}},
+                                "Property": "revenue",
+                            }
+                        },
+                        "type": "Advanced",
+                        "filter": {
+                            "Where": [
+                                {
+                                    "Condition": {
+                                        "Comparison": {
+                                            "ComparisonKind": 2,
+                                            "Left": {},
+                                            "Right": {"Literal": {"Value": "5D"}},
+                                        }
+                                    }
+                                }
+                            ]
+                        },
+                    }
+                ]
+            )
+        }
+        f = parse_report_filters(report)[0]
+        assert f.table == "metrics"
+        assert f.column == "revenue"
+        assert f.kind == "measure"
+        assert f.op == "cmp"
+        assert f.values == [">=", "5"]
+
+    def test_aggregation_expression_filter_is_measure(self):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        report = {
+            "filters": json.dumps(
+                [
+                    {
+                        "expression": {
+                            "Aggregation": {
+                                "Function": 0,
+                                "Expression": fx._col_expr("events", "amount"),
+                            }
+                        },
+                        "type": "Advanced",
+                        "filter": {"Where": []},
+                    }
+                ]
+            )
+        }
+        f = parse_report_filters(report)[0]
+        assert f.column == "amount"
+        assert f.kind == "measure"
+
+    def test_hierarchy_level_expression_filter(self):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        report = {
+            "filters": json.dumps(
+                [
+                    {
+                        "expression": {
+                            "HierarchyLevel": {
+                                "Level": "Month",
+                                "Expression": {
+                                    "Hierarchy": {
+                                        "Expression": {
+                                            "SourceRef": {"Entity": "d_calendar"}
+                                        }
+                                    }
+                                },
+                            }
+                        },
+                        "type": "Advanced",
+                        "filter": {"Where": []},
+                    }
+                ]
+            )
+        }
+        f = parse_report_filters(report)[0]
+        assert f.table == "d_calendar"
+        assert f.column == "Month"
+
+    def test_relative_date_without_datespan_degrades(self):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        report = {
+            "filters": json.dumps(
+                [
+                    {
+                        "expression": fx._col_expr("d_calendar", "day_iso"),
+                        "type": "RelativeDate",
+                        "filter": {"Where": []},
+                    }
+                ]
+            )
+        }
+        f = parse_report_filters(report)[0]
+        assert f.op == "relative_date"
+        assert f.values == []
+        assert f.summary == "day_iso — relative date"
+
+    def test_top_n_without_count_or_orderby_degrades(self):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        report = {
+            "filters": json.dumps(
+                [
+                    {
+                        "expression": fx._col_expr("events", "client_id"),
+                        "type": "TopN",
+                        "filter": {"Where": []},
+                    }
+                ]
+            )
+        }
+        f = parse_report_filters(report)[0]
+        assert f.op == "top_n"
+        assert f.values == []
+        assert f.summary == "top N on client_id"
+
+    def test_top_n_count_without_orderby(self):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        report = {
+            "filters": json.dumps(
+                [
+                    {
+                        "expression": fx._col_expr("events", "client_id"),
+                        "type": "TopN",
+                        "filter": {
+                            "Where": [
+                                {
+                                    "Condition": {
+                                        "Comparison": {
+                                            "ComparisonKind": 3,
+                                            "Left": {},
+                                            "Right": {"Literal": {"Value": "5L"}},
+                                        }
+                                    }
+                                }
+                            ]
+                        },
+                    }
+                ]
+            )
+        }
+        f = parse_report_filters(report)[0]
+        assert f.values == ["5"]
+        assert f.summary == "top 5"
+
+    def test_comparison_without_literal_bound(self):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        report = {
+            "filters": json.dumps(
+                [
+                    {
+                        "expression": fx._col_expr("events", "amount"),
+                        "type": "Advanced",
+                        "filter": {
+                            "Where": [
+                                {
+                                    "Condition": {
+                                        "Comparison": {
+                                            "ComparisonKind": 0,
+                                            "Left": {},
+                                            "Right": {"Column": {}},
+                                        }
+                                    }
+                                }
+                            ]
+                        },
+                    }
+                ]
+            )
+        }
+        f = parse_report_filters(report)[0]
+        assert f.op == "cmp"
+        assert f.values == ["="]
+        assert f.summary == "amount ="
+
+    def test_malformed_filters_are_isolated(self):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        report = {
+            "filters": json.dumps(
+                [
+                    "not a dict",
+                    {"no_expression": True},
+                    {"expression": {"Unknown": {}}, "type": "X"},
+                    fx._filter_in("Device", "device_type", ["a"]),
+                ]
+            )
+        }
+        filters = parse_report_filters(report)
+        assert len(filters) == 1
+        assert filters[0].column == "device_type"
+
+    def test_filters_bad_json_string_returns_empty(self):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        assert parse_report_filters({"filters": "not json{{"}) == []
+
+    def test_filters_non_string_non_list_returns_empty(self):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        assert parse_report_filters({"filters": 42}) == []
+
+    def test_filters_accepts_list_directly(self):
+        from dbt_meta.powerbi.pbir_parser import _parse_filters
+
+        out = _parse_filters([fx._filter_in("D", "c", ["x"])], frozenset())
+        assert out[0].column == "c"
+
+    def test_no_filters_key(self):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        assert parse_report_filters({"sections": []}) == []
+
+    def test_title_missing_variants_return_none(self):
+        from dbt_meta.powerbi.pbir_parser import _extract_title
+
+        assert _extract_title({}) is None
+        assert _extract_title({"vcObjects": 5}) is None
+        assert _extract_title({"vcObjects": {"title": []}}) is None
+        assert _extract_title({"vcObjects": {"title": [5]}}) is None
+        assert _extract_title({"vcObjects": {"title": [{"properties": {}}]}}) is None
+
+    def test_clean_literal_forms(self):
+        from dbt_meta.powerbi.pbir_parser import _clean_literal
+
+        assert _clean_literal("'hello'") == "hello"
+        assert _clean_literal("100L") == "100"
+        assert _clean_literal("3.14D") == "3.14"
+        assert _clean_literal("bare") == "bare"
+        assert _clean_literal(True) == "True"
+
+
+# ============================================================================
+# TestLayoutCmd — layout_cmd + artifact round-trip of semantics
+# ============================================================================
+
+
+class TestLayoutCmd:
+    def _index_with_semantics(self):
+        from dbt_meta.powerbi.pbir_parser import (
+            parse_pbir_legacy,
+            parse_report_filters,
+        )
+
+        report = ReportEntry(workspace="W", report="Sales", dataset="DS")
+        report.pages = parse_pbir_legacy(fx.PBIR_LEGACY_SEMANTICS)
+        report.filters = parse_report_filters(fx.PBIR_LEGACY_SEMANTICS)
+        return PowerBiIndex(reports=[report])
+
+    def test_layout_returns_pages_and_filters(self, tmp_path):
+        out = tmp_path / "idx.json"
+        save_index(self._index_with_semantics(), str(out))
+
+        result = cmd.layout_cmd(str(out), "Sales")
+
+        assert result["report"] == "Sales"
+        assert {f["column"] for f in result["filters"]} == {"device_type", "flags"}
+        page = result["pages"][0]
+        assert page["name"] == "Overview"
+        assert page["filters"][0]["op"] == "relative_date"
+        bar = page["visuals"][0]
+        assert bar["title"] == "Revenue by stage"
+        assert bar["filters"][0]["op"] == "cmp"
+
+    def test_layout_unknown_report_raises(self, tmp_path):
+        out = tmp_path / "idx.json"
+        save_index(self._index_with_semantics(), str(out))
+
+        with pytest.raises(DbtMetaError):
+            cmd.layout_cmd(str(out), "Nonexistent")
+
+    def test_semantics_roundtrip_through_artifact(self, tmp_path):
+        out = tmp_path / "idx.json"
+        save_index(self._index_with_semantics(), str(out))
+
+        loaded = load_index(str(out))
+        report = loaded.reports[0]
+        assert len(report.filters) == 2
+        bar = report.pages[0].visuals[0]
+        assert bar.title == "Revenue by stage"
+        assert bar.filters[0].summary == "amount > 100"
+        assert report.pages[0].filters[0].values == ["30", "days"]
+
+    def test_enrich_attaches_report_filters(self, monkeypatch):
+        from dbt_meta.powerbi.index import PowerBiIndex as Idx
+
+        index = Idx(reports=[ReportEntry("W", "R", "D")])
+        scan = {
+            "workspaces": [
+                {
+                    "id": "ws1",
+                    "name": "W",
+                    "datasets": [],
+                    "reports": [{"id": "r1", "name": "R", "datasetId": "d1"}],
+                }
+            ]
+        }
+        monkeypatch.setattr(
+            cmd, "get_report_definition", lambda *a, **k: fx.PBIR_LEGACY_SEMANTICS
+        )
+
+        got, _total = cmd.enrich_with_layouts(index, scan, "fabtok")
+
+        assert got == 1
+        assert len(index.reports[0].filters) == 2
+        assert index.reports[0].pages[0].name == "Overview"
+
+
+class TestPbirAdvancedRender:
+    def _advanced(self, condition):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        report = {
+            "filters": json.dumps(
+                [
+                    {
+                        "expression": fx._col_expr("events", "x"),
+                        "type": "Advanced",
+                        "filter": {"Where": [{"Condition": condition}]},
+                    }
+                ]
+            )
+        }
+        return parse_report_filters(report)[0]
+
+    def test_advanced_or_with_in_and_comparison(self):
+        cond = {
+            "Or": {
+                "Left": {
+                    "In": {
+                        "Expressions": [fx._col_expr("events", "country")],
+                        "Values": [
+                            [{"Literal": {"Value": "'EE'"}}],
+                            "not-a-list",
+                        ],
+                    }
+                },
+                "Right": {
+                    "Comparison": {
+                        "ComparisonKind": 1,
+                        "Left": fx._col_expr("events", "amount"),
+                        "Right": {"Literal": {"Value": "0L"}},
+                    }
+                },
+            }
+        }
+        f = self._advanced(cond)
+        assert f.op == "advanced"
+        assert f.summary == "country in (EE) or amount > 0"
+
+    def test_advanced_not_condition(self):
+        cond = {
+            "Not": {
+                "Expression": {
+                    "Comparison": {
+                        "ComparisonKind": 0,
+                        "Left": fx._col_expr("events", "status"),
+                        "Right": {"Literal": {"Value": "'x'"}},
+                    }
+                }
+            }
+        }
+        f = self._advanced(cond)
+        assert f.summary == "not status = x"
+
+    def test_advanced_unknown_condition_renders_empty(self):
+        f = self._advanced({"Weird": {}})
+        # No renderable conditions → fallback summary.
+        assert f.summary == "x (advanced)"
+
+    def test_expr_label_aggregation_without_inner(self):
+        from dbt_meta.powerbi.pbir_parser import _expr_label
+
+        assert _expr_label({"Aggregation": {"Function": 0}}) == "Sum(?)"
+        assert _expr_label({"Aggregation": {"Function": 99, "Expression": {}}}) == "Agg(?)"
+
+    def test_expr_label_none_for_unknown(self):
+        from dbt_meta.powerbi.pbir_parser import _expr_label
+
+        assert _expr_label({}) is None
+        assert _expr_label("not a dict") is None
+
+    def test_entity_prop_requires_property(self):
+        from dbt_meta.powerbi.pbir_parser import _unwrap_column_like
+
+        assert _unwrap_column_like({"Column": {"Expression": {}}}) is None
+
+    def test_unwrap_non_dict(self):
+        from dbt_meta.powerbi.pbir_parser import _unwrap_column_like
+
+        assert _unwrap_column_like("x") is None
+        assert _unwrap_column_like({"Nope": {}}) is None
+
+    def test_render_condition_non_dict(self):
+        from dbt_meta.powerbi.pbir_parser import _render_condition
+
+        assert _render_condition("x") == ""
+
+    def test_find_int_literal_in_list(self):
+        from dbt_meta.powerbi.pbir_parser import _find_int_literal
+
+        assert _find_int_literal([{"Literal": {"Value": "7L"}}]) == "7"
+        assert _find_int_literal([{"Literal": {"Value": "3.5D"}}]) is None
+        assert _find_int_literal("scalar") is None
+
+
+class TestPbirUnwrapEdges:
+    def test_aggregation_without_inner_is_skipped(self):
+        from dbt_meta.powerbi.pbir_parser import parse_report_filters
+
+        report = {
+            "filters": json.dumps(
+                [
+                    {
+                        "expression": {"Aggregation": {"Function": 0, "Expression": {}}},
+                        "type": "Advanced",
+                        "filter": {"Where": []},
+                    }
+                ]
+            )
+        }
+        # Unresolvable aggregation field → filter dropped, never raised.
+        assert parse_report_filters(report) == []

@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] - 2026-06-24
+
+Power BI artifacts gain per-page visual layout: which visual, which fields/
+measures, which slicers — extracted from the Fabric report definition and
+nested under each report in the index, so an agent can reason about dashboard
+composition (e.g. "PPC Reg Cohorts has a Stage funnel and a Device slicer")
+without screenshots.
+
+### Added
+- **Per-page visual→field layout in `powerbi artifacts`** — a second pass calls
+  the Fabric Get Report Definition API (`getDefinition?format=PBIR-Legacy`) per
+  report, parses the classic `report.json` layout, and attaches
+  `pages: [{name, visuals: [{type, fields: {role: [{table, column, kind}]}}]}]`
+  to each `ReportEntry`. Fields use raw dataset model names; roles are mapped to
+  a canonical vocabulary (`axis`/`legend`/`values`/`tooltip`/`size`/…) with raw
+  fallback; `kind` is `measure` (aggregation-wrapped or a defined DAX measure)
+  or `column`. `pages` is sparse — omitted for reports without a retrievable
+  layout. SCHEMA_VERSION bumped `1.0` → `1.1`.
+- **`meta powerbi artifacts --no-layouts`** — skip the layout pass entirely (for
+  the fast path, or when the Fabric SP role isn't provisioned).
+- **Visual semantics — titles & filters in the layout** — the layout pass now
+  also parses, from the same `report.json`, each visual's explicit title and
+  filters at all three scopes (report / page / visual). `ReportEntry.filters`,
+  `PageEntry.filters`, and `VisualEntry.title` + `VisualEntry.filters` are all
+  sparse (omitted when empty). A `FilterRef` is `{table, column, kind, op,
+  values, summary}` with `op` ∈ `in` / `cmp` / `relative_date` / `top_n` /
+  `advanced`; `values` is a flat list of strings and `summary` a single
+  human-readable line, so the agent reads every filter uniformly. Parsing is
+  failure-isolated — a filter that can't be parsed is dropped, never aborting
+  the report's layout. SCHEMA_VERSION bumped `1.1` → `1.2`.
+- **`meta powerbi layout <report>`** — print a report's visual semantics
+  (pages → visuals → fields/titles/filters) from the index. Complements `show`
+  (data-lineage: tables / SQL / dbt models); `-j/--json` for the machine shape.
+
+### Changed
+- The layout pass acquires its own **Fabric-scoped token**
+  (`https://api.fabric.microsoft.com/.default`) — separate from the Power BI
+  Admin Scanner token, which the Fabric data-plane rejects. Each report is
+  fetched in isolation: any failure (no PBIR, HTTP error, LRO timeout) leaves
+  that report's `pages` empty and is reported as an `N/M reports got layouts`
+  counter, never aborting the scan.
+
 ## [0.3.4] - 2026-06-19
 
 Lineage and Power BI artifacts are now consistently prod-only and self-locating.

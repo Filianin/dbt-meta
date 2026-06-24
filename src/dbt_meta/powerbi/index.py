@@ -25,7 +25,7 @@ from .mapper import DbtTableIndex, TableMapping
 from .resolver import QueryNode, resolve_query_tables
 from .sql_analyzer import analyze_sql
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.2"
 
 
 @dataclass(frozen=True)
@@ -36,6 +36,63 @@ class TableRef:
     status: str  # model | source | external
     dbt_model: str | None = None
     parse_status: str = "ok"
+
+
+@dataclass(frozen=True)
+class FieldRef:
+    """One field/measure bound to a visual, named as the dataset model names it.
+
+    ``table`` / ``column`` are raw model names (not dbt/BigQuery physical names);
+    ``kind`` is ``measure`` (aggregation-wrapped or a defined DAX measure) or
+    ``column`` (a bare dimension).
+    """
+
+    table: str
+    column: str
+    kind: str  # measure | column
+
+
+@dataclass(frozen=True)
+class FilterRef:
+    """One filter applied at report / page / visual scope.
+
+    ``table`` / ``column`` name the filtered field as the dataset models it
+    (raw names, like :class:`FieldRef`); ``kind`` is ``measure`` or ``column``.
+    ``op`` is the normalized operator (``in`` / ``cmp`` / ``relative_date`` /
+    ``top_n`` / ``advanced``); ``values`` is always a flat list of strings
+    (literals / comparison bound / N), empty when the filter card carries no
+    pinned default. ``summary`` is one human-readable line. The shape never
+    branches by ``op`` so the agent reads every filter uniformly.
+    """
+
+    table: str
+    column: str
+    kind: str  # measure | column
+    op: str  # in | cmp | relative_date | top_n | advanced
+    values: list[str] = field(default_factory=list)
+    summary: str = ""
+
+
+@dataclass(frozen=True)
+class VisualEntry:
+    """One visual on a page: its type and its fields grouped by canonical role."""
+
+    type: str
+    fields: dict[str, list[FieldRef]]
+    # Sparse: ``title`` only when the author set it explicitly; ``filters`` only
+    # when the visual carries visual-level filters.
+    title: str | None = None
+    filters: list[FilterRef] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class PageEntry:
+    """One report page (section) and the visuals on it."""
+
+    name: str
+    visuals: list[VisualEntry]
+    # Sparse: page-level filters, omitted when empty.
+    filters: list[FilterRef] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -58,6 +115,10 @@ class ReportEntry:
     dataset: str
     tables: list[TableRef] = field(default_factory=list)
     sql_analysis: list[SqlAnalysisEntry] = field(default_factory=list)
+    # Sparse: only set when the report's PBIR layout was retrieved + parsed.
+    pages: list[PageEntry] = field(default_factory=list)
+    # Sparse: report-level filters from the PBIR layout, omitted when empty.
+    filters: list[FilterRef] = field(default_factory=list)
 
 
 @dataclass

@@ -15,10 +15,14 @@ from typing import Any
 import orjson
 
 from .index import (
+    FieldRef,
+    FilterRef,
+    PageEntry,
     PowerBiIndex,
     ReportEntry,
     SqlAnalysisEntry,
     TableRef,
+    VisualEntry,
 )
 
 
@@ -29,6 +33,81 @@ def _table_ref_to_dict(t: TableRef) -> dict[str, Any]:
         "dbt_model": t.dbt_model,
         "parse_status": t.parse_status,
     }
+
+
+def _filter_ref_to_dict(f: FilterRef) -> dict[str, Any]:
+    return {
+        "table": f.table,
+        "column": f.column,
+        "kind": f.kind,
+        "op": f.op,
+        "values": list(f.values),
+        "summary": f.summary,
+    }
+
+
+def _filter_ref_from_dict(f: dict[str, Any]) -> FilterRef:
+    return FilterRef(
+        table=f.get("table", ""),
+        column=f.get("column", ""),
+        kind=f.get("kind", "column"),
+        op=f.get("op", "advanced"),
+        values=list(f.get("values") or []),
+        summary=f.get("summary", ""),
+    )
+
+
+def _visual_to_dict(v: VisualEntry) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "type": v.type,
+        "fields": {
+            role: [{"table": f.table, "column": f.column, "kind": f.kind} for f in refs]
+            for role, refs in v.fields.items()
+        },
+    }
+    # Sparse: emit title/filters only when present.
+    if v.title is not None:
+        out["title"] = v.title
+    if v.filters:
+        out["filters"] = [_filter_ref_to_dict(f) for f in v.filters]
+    return out
+
+
+def _visual_from_dict(v: dict[str, Any]) -> VisualEntry:
+    return VisualEntry(
+        type=v.get("type", "unknown"),
+        fields={
+            role: [
+                FieldRef(
+                    table=f.get("table", ""),
+                    column=f.get("column", ""),
+                    kind=f.get("kind", "column"),
+                )
+                for f in refs
+            ]
+            for role, refs in (v.get("fields") or {}).items()
+        },
+        title=v.get("title"),
+        filters=[_filter_ref_from_dict(f) for f in (v.get("filters") or [])],
+    )
+
+
+def _page_to_dict(p: PageEntry) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "name": p.name,
+        "visuals": [_visual_to_dict(v) for v in p.visuals],
+    }
+    if p.filters:
+        out["filters"] = [_filter_ref_to_dict(f) for f in p.filters]
+    return out
+
+
+def _page_from_dict(p: dict[str, Any]) -> PageEntry:
+    return PageEntry(
+        name=p.get("name", ""),
+        visuals=[_visual_from_dict(v) for v in p.get("visuals", [])],
+        filters=[_filter_ref_from_dict(f) for f in (p.get("filters") or [])],
+    )
 
 
 def _sql_entry_to_dict(s: SqlAnalysisEntry) -> dict[str, Any]:
@@ -54,6 +133,19 @@ def index_to_dict(index: PowerBiIndex) -> dict[str, Any]:
                 "dataset": r.dataset,
                 "tables": [_table_ref_to_dict(t) for t in r.tables],
                 "sql_analysis": [_sql_entry_to_dict(s) for s in r.sql_analysis],
+                # Sparse: emit `pages` only when layout was retrieved (index
+                # style — absence means "no PBIR layout", not "no pages").
+                **(
+                    {"pages": [_page_to_dict(p) for p in r.pages]}
+                    if r.pages
+                    else {}
+                ),
+                # Sparse: report-level filters only when present.
+                **(
+                    {"filters": [_filter_ref_to_dict(f) for f in r.filters]}
+                    if r.filters
+                    else {}
+                ),
             }
             for r in index.reports
         ],
@@ -88,6 +180,8 @@ def index_from_dict(data: dict[str, Any]) -> PowerBiIndex:
                 )
                 for s in r.get("sql_analysis", [])
             ],
+            pages=[_page_from_dict(p) for p in r.get("pages", [])],
+            filters=[_filter_ref_from_dict(f) for f in (r.get("filters") or [])],
         )
         for r in data.get("reports", [])
     ]
