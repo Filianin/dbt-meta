@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.6] - 2026-07-02
+
+List-valued `config.*` selectors now match by membership. A model whose
+`meta.domain` is a list (e.g. `['trading','amas']`) is matched by
+`meta list config.meta.domain:trading` — previously the value was stringified
+(`"['trading', 'amas']"`) and never matched, silently returning nothing. Scalar
+config values still match by string equality (backward compatible).
+
+Added `meta list --domain X` as sugar for `config.meta.domain:X` (membership).
+
+This supports the multi-domain model tagging convention where `meta.domain` is
+always a list (order not significant, no primary domain).
+
 ## [0.3.5] - 2026-06-24
 
 Power BI artifacts gain per-page visual layout: which visual, which fields/

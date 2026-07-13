@@ -157,7 +157,7 @@ def _apply_selector(models: list[dict[str, Any]], selector: str) -> list[dict[st
             return models
         config_part, config_val = selector.rsplit(':', 1)
         config_path = config_part[7:].split('.')
-        return [m for m in models if _nested_get(m.get('config', {}), config_path) == config_val]
+        return [m for m in models if _config_value_matches(_nested_get(m.get('config', {}), config_path), config_val)]
 
     selector_type, selector_value = selector.split(':', 1)
 
@@ -174,15 +174,29 @@ def _apply_selector(models: list[dict[str, Any]], selector: str) -> list[dict[st
 def _nested_get(data: Any, path: list[str]) -> Any:
     """Walk a dotted config path (e.g. ['meta', 'domain']) into nested dicts.
 
-    Returns the value coerced to str for comparison with the string selector
-    value, or None if any segment is missing or non-dict.
+    Returns the raw value at the path (scalar or list), or None if any segment is
+    missing or non-dict. Coercion/comparison is left to `_config_value_matches` so
+    that list values (e.g. multi-domain `meta.domain`) survive intact.
     """
     current: Any = data
     for key in path:
         if not isinstance(current, dict):
             return None
         current = current.get(key)
-    return str(current) if current is not None else None
+    return current
+
+
+def _config_value_matches(value: Any, config_val: str) -> bool:
+    """Match a resolved config value against a string selector value.
+
+    List values match by membership (e.g. `meta.domain=['trading','amas']` matches
+    selector `trading`); scalar values match by string equality (backward compat).
+    """
+    if value is None:
+        return False
+    if isinstance(value, (list, tuple)):
+        return config_val in [str(x) for x in value]
+    return str(value) == config_val
 
 
 def _generate_git_warnings(models: list[dict[str, Any]], use_dev: bool) -> list[dict[str, str]]:

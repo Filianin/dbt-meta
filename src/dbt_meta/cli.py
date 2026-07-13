@@ -1085,6 +1085,7 @@ def search(
 @app.command("list")
 def list_cmd(
     selectors: Optional[list[str]] = typer.Argument(None, help="Selectors: tag:name config.key:val path:dir package:name"),
+    domain: Optional[str] = typer.Option(None, "--domain", help="Filter by domain (membership; sugar for config.meta.domain:X)"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
     modified: bool = typer.Option(False, "-m", "--modified", help="Show only modified/new models (git-aware)"),
     and_logic: bool = typer.Option(False, "--and", help="Require ALL tags (default: OR - at least one)"),
@@ -1097,12 +1098,13 @@ def list_cmd(
     \b
     SELECTORS:
       tag:name               - Filter by tag (OR logic by default)
-      config.key:value       - Filter by config value
+      config.key:value       - Filter by config value (list values match by membership)
       path:dir/              - Filter by file path
       package:name           - Filter by package
 
     \b
     FLAGS:
+      --domain X             - Filter by domain (membership; sugar for config.meta.domain:X)
       --and                  - Use AND logic for tags (default: OR)
       --group                - Group results by tag combinations
       -m, --modified         - Show only git-modified/new models
@@ -1116,6 +1118,7 @@ def list_cmd(
       meta list tag:verified tag:active --and     # BOTH tags (AND)
       meta list tag:verified tag:active --group   # Grouped by tags
       meta list config.materialized:incremental   # Incremental models
+      meta list --domain trading                  # Models tagged with domain (list membership)
       meta list path:models/staging/              # Staging models
       meta list -m                                # Git-modified models
       meta list tag:verified -j                   # JSON output
@@ -1133,7 +1136,10 @@ def list_cmd(
     """
     try:
         manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-        selector_list = list(selectors) if selectors else None
+        collected: list[str] = list(selectors) if selectors else []
+        if domain:
+            collected.append(f"config.meta.domain:{domain}")
+        selector_list = collected or None
 
         result = LsCommand(
             manifest_path,

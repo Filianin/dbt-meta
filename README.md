@@ -268,7 +268,8 @@ The line is emitted via plain `print()` (not Rich) so terminal copy-paste return
 
 **`list` selectors:**
 - `tag:name` — filter by tag (OR logic by default)
-- `config.key:value` — filter by config value (e.g. `config.materialized:incremental`); supports nested keys via dotted path (e.g. `config.meta.domain:its`)
+- `config.key:value` — filter by config value (e.g. `config.materialized:incremental`); supports nested keys via dotted path (e.g. `config.meta.domain:its`). **List values match by membership** — `config.meta.domain:trading` matches a model tagged `['trading','amas']`.
+- `--domain X` — sugar for `config.meta.domain:X` (membership)
 - `path:dir/` — filter by file path prefix
 - `package:name` — filter by package
 
@@ -623,7 +624,8 @@ meta models staging
 # Advanced filtering with selectors
 meta list tag:daily                           # Models with 'daily' tag
 meta list config.materialized:incremental     # Incremental models
-meta list config.meta.domain:its              # Nested config key (dotted path)
+meta list config.meta.domain:its              # Nested config key (dotted path; list membership)
+meta list --domain its                        # Same, via the --domain sugar
 meta list path:models/core/                   # Models in specific folder
 
 # Multiple selectors with OR logic (default)
