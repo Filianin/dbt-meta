@@ -33,6 +33,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+lineage = [
+    "sqlglot[rs]>=30.0.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.1.0",
@@ -94,6 +97,10 @@ markers = [
 ]
 
 [tool.coverage.run]
+# The lineage builder spawns worker processes; declare multiprocessing so
+# subprocess coverage is combined cleanly instead of racing (pytest-cov handles
+# the combine automatically).
+concurrency = ["multiprocessing"]
 omit = [
     "src/dbt_meta/cli.py",  # UI layer - tested manually
     "src/dbt_meta/manifest/finder.py",  # Utility - manifest auto-discovery

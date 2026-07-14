@@ -153,8 +153,9 @@ def _apply_selector(models: list[dict[str, Any]], selector: str) -> list[dict[st
         return models
 
     if selector.startswith('config.'):
-        if ':' not in selector[7:]:
-            return models
+        # A ':' is guaranteed here: the caller already returned on ':' not in
+        # selector, and the 'config.' prefix (7 chars) contains none, so the
+        # separator always lands inside selector[7:].
         config_part, config_val = selector.rsplit(':', 1)
         config_path = config_part[7:].split('.')
         return [m for m in models if _config_value_matches(_nested_get(m.get('config', {}), config_path), config_val)]

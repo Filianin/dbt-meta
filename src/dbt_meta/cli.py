@@ -2425,15 +2425,59 @@ def _validate_column_ref(column_ref: str, json_output: bool) -> None:
     raise typer.Exit(code=1)
 
 
+def _available_cpus() -> int:
+    """Best-effort available-CPU count (affinity-aware where supported)."""
+    import os
+
+    try:
+        return len(os.sched_getaffinity(0))  # type: ignore[attr-defined]
+    except AttributeError:
+        return os.cpu_count() or 1
+
+
+def _resolve_lineage_jobs(cli_jobs: Optional[int]) -> int:
+    """Resolve worker count: --jobs > DBT_LINEAGE_JOBS > min(cpus, 3)."""
+    import os
+
+    if cli_jobs is not None:
+        return max(1, cli_jobs)
+    env = os.environ.get("DBT_LINEAGE_JOBS")
+    if env:
+        try:
+            return max(1, int(env))
+        except ValueError:
+            pass
+    return min(_available_cpus(), 3)
+
+
+def _resolve_max_columns(cli_val: Optional[int]) -> int:
+    """Resolve column-count guard: --max-columns > DBT_LINEAGE_MAX_COLUMNS > 400."""
+    import os
+
+    from dbt_meta.lineage.builder import _MAX_MODEL_COLUMNS
+
+    if cli_val is not None:
+        return max(0, cli_val)
+    env = os.environ.get("DBT_LINEAGE_MAX_COLUMNS")
+    if env:
+        try:
+            return max(0, int(env))
+        except ValueError:
+            pass
+    return _MAX_MODEL_COLUMNS
+
+
 @lineage_app.command("build")
 def lineage_build(
     output: Optional[str] = typer.Option(None, "-o", "--output", help="Custom output path"),
     manifest_path: Optional[str] = typer.Option(None, "--manifest", help="Explicit manifest.json path"),
     catalog_path: Optional[str] = typer.Option(None, "--catalog", help="Explicit catalog.json path"),
     json_output: bool = typer.Option(False, "-j", "--json", help="JSON output (build summary)"),
-    verbose: bool = typer.Option(False, "-v", "--verbose", help="Print per-model progress"),
-    timeout: int = typer.Option(30, "--timeout", help="Per-model timeout in seconds (0 disables)"),
+    verbose: bool = typer.Option(False, "-v", "--verbose", help="Print periodic progress"),
+    timeout: int = typer.Option(0, "--timeout", help="Per-model timeout in seconds (0 = disabled, let slow models finish)"),
     no_compile: bool = typer.Option(False, "--no-compile", help="Skip auto `dbt compile` when the local manifest lacks compiled SQL"),
+    jobs: Optional[int] = typer.Option(None, "-J", "--jobs", help="Worker processes (default: min(cpus, 3); env DBT_LINEAGE_JOBS; 1 = sequential)"),
+    max_columns: Optional[int] = typer.Option(None, "--max-columns", help="Skip models wider than N columns (default 400; env DBT_LINEAGE_MAX_COLUMNS; 0 disables)"),
 ) -> None:
     """Build column-level lineage artifact from manifest + catalog.
 
@@ -2499,24 +2543,46 @@ def lineage_build(
         # Mirror manifest location: same dir as the production manifest
         out_path = os.path.join(os.path.dirname(manifest_file), "lineage.json")
 
+    effective_jobs = _resolve_lineage_jobs(jobs)
+    effective_max_columns = _resolve_max_columns(max_columns)
+    available = _available_cpus()
+
     if not json_output:
         console.print(f"[dim]Manifest:[/dim] {manifest_file}")
         console.print(f"[dim]Catalog:[/dim]  {catalog_file or '(none)'}")
         console.print(f"[dim]Output:[/dim]   {out_path}")
-        console.print(f"[dim]Per-model timeout:[/dim] {timeout}s")
+        console.print(f"[dim]Per-model timeout:[/dim] {f'{timeout}s' if timeout > 0 else 'disabled'}")
+        console.print(f"[dim]Max columns:[/dim] {effective_max_columns if effective_max_columns > 0 else 'unlimited'}")
+        console.print(f"[dim]Workers:[/dim] {effective_jobs}")
+        if effective_jobs > available:
+            console.print(
+                f"[yellow]Warning:[/yellow] --jobs {effective_jobs} exceeds {available} "
+                f"available CPU(s); expect scheduler throttling."
+            )
         console.print("[cyan]Building lineage graph...[/cyan]")
 
     progress_callback = None
     if verbose and not json_output:
+        # Periodic throughput summary rather than one line per model.
+        progress_state = {"start": time.time(), "last_print": 0.0}
+
         def progress_callback(idx: int, total: int, name: str, model_elapsed: float) -> None:
-            tag = "[yellow]slow[/yellow]" if model_elapsed >= 3.0 else "[dim]ok[/dim]"
-            console.print(f"  [{idx}/{total}] {name} ({model_elapsed:.2f}s) {tag}")
+            now = time.time()
+            if idx < total and now - progress_state["last_print"] < 2.0:
+                return
+            progress_state["last_print"] = now
+            wall = now - progress_state["start"]
+            rate = idx / wall if wall > 0 else 0.0
+            eta = (total - idx) / rate if rate > 0 else 0.0
+            console.print(f"  [dim]{idx}/{total}[/dim] processed · {rate:.1f} models/s · ETA {eta:.0f}s")
 
     builder = LineageBuilder(
         manifest,
         catalog,
         per_model_timeout=timeout,
         progress_callback=progress_callback,
+        jobs=effective_jobs,
+        max_columns=effective_max_columns,
     )
     t0 = time.time()
     graph, stats = builder.build()
@@ -2528,11 +2594,13 @@ def lineage_build(
         print(json.dumps({
             "artifact": artifact,
             "elapsed_seconds": round(elapsed, 2),
+            "jobs": effective_jobs,
             "models_total": stats.models_total,
             "models_parsed": stats.models_parsed,
             "models_skipped_no_sql": stats.models_skipped_no_sql,
             "models_skipped_parse_error": stats.models_skipped_parse_error,
             "models_skipped_timeout": stats.models_skipped_timeout,
+            "models_skipped_wide": stats.models_skipped_wide,
             "nodes": graph.node_count,
             "edges": graph.edge_count,
             "warnings_count": len(stats.warnings),
@@ -2548,6 +2616,8 @@ def lineage_build(
         console.print(f"   [yellow]Skipped (parse error):[/yellow] {stats.models_skipped_parse_error}")
     if stats.models_skipped_timeout:
         console.print(f"   [yellow]Skipped (timeout >{timeout}s):[/yellow] {stats.models_skipped_timeout}")
+    if stats.models_skipped_wide:
+        console.print(f"   [yellow]Skipped (>{effective_max_columns} columns):[/yellow] {stats.models_skipped_wide}")
     console.print(f"   Graph: {graph.node_count} columns, {graph.edge_count} edges")
     console.print(f"   Artifact: {artifact}")
     if stats.slow_models:

@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.6] - 2026-07-02
+## [0.3.6] - 2026-07-14
 
 List-valued `config.*` selectors now match by membership. A model whose
 `meta.domain` is a list (e.g. `['trading','amas']`) is matched by
@@ -17,6 +17,38 @@ Added `meta list --domain X` as sugar for `config.meta.domain:X` (membership).
 
 This supports the multi-domain model tagging convention where `meta.domain` is
 always a list (order not significant, no primary domain).
+
+`meta lineage build` gains parallel processing via `-J/--jobs N` (env
+`DBT_LINEAGE_JOBS`). The per-model SQLGlot parse is CPU-bound and single-core;
+dispatching it across a `spawn` process pool cuts a ~1000-model build from ~20
+min (single-core) to ~2 min at 3 workers. Default is `min(cpus, 3)`
+(affinity-aware, capped low so a shared prod Airflow pod is not oversubscribed); `-J1` restores
+the sequential path. The artifact is byte-stable regardless of worker count
+(nodes/edges are sorted at serialization), so `-J1` and `-JN` produce an
+identical file. A broken worker (OOM/segfault) is isolated: the remaining models
+finish sequentially so the build never dies mid-run. Optional extra
+`pip install "dbt-meta[lineage]"` pulls `sqlglot[rs]` (Rust tokenizer) for a
+further modest parse speedup.
+
+The pool intentionally does **not** set `max_tasks_per_child`: recycling spawn
+workers that carry large `initializer` payloads (the table index + SQLGlot
+schema) deadlocked the pool at the recycle threshold — the whole build stalled
+at 0% CPU with workers never re-spawning. Workers now live for the pool's
+lifetime. The per-model `--timeout` also now defaults to `0` (disabled):
+skipping a model discards its lineage, and the SIGALRM budget cannot interrupt
+SQLGlot's C-level regex anyway, so slow models are allowed to finish rather than
+dropped. Pass a positive `--timeout` only to deliberately cap and drop
+pathological models.
+
+A `--max-columns N` guard (default `400`, `0` disables; env
+`DBT_LINEAGE_MAX_COLUMNS`) skips models resolving to more than `N` columns
+before parsing. All-columns SQLGlot lineage on a very wide `SELECT *` passthrough
+— e.g. a 1478-column staging model over a 1476-column raw source — balloons to
+~1.7 GB of RAM and minutes of pure-Python work, and is the single model that
+dominated (and could OOM) a full build. Downstream models still resolve their
+edges to the skipped model's columns by name (`add_edge` auto-creates the
+nodes); only the skipped model's own internal passthrough edges to the raw
+source are absent.
 
 ## [0.3.5] - 2026-06-24
 

@@ -233,7 +233,7 @@ Returns: Top by Score + Top Storage Savings.
 - SQLGlot требует **compiled SQL** (не jinja). Модели без `compiled_code` skip с warning'ом.
 - `SELECT * EXCEPT(...)` требует `catalog.json` для expansion. Без catalog колонки достижимые через `*` теряются.
 - UDF internals opaque (leaf = "derived from input cols", тело UDF не парсится).
-- Build CPU-heavy: ~5-10 min для 800+ моделей без `sqlglot[c]`. Рекомендация: CI build prod-артефакта, дистрибуция через `~/dbt-state/` sync.
+- Build CPU-heavy (per-model `sqlglot.lineage` — pure-Python, GIL-bound). Параллелится через `-J/--jobs` (env `DBT_LINEAGE_JOBS`), дефолт `min(cpus, 3)` (cap низкий — не перегружать shared prod Airflow), `-J1` = sequential. Реализация: module-level `_process_one` (единый для sequential и pool), `spawn`-пул с `initializer`-раздачей read-only индексов, `BrokenProcessPool` → дострой хвоста в sequential. **Без `max_tasks_per_child`** — worker recycling под spawn с большими initargs (`table_index` + sqlglot-схема) дедлочил пул на пороге recycle (пул висел на 0% CPU, воркеры не пересоздавались); воркеры живут на весь пул. Артефакт **byte-stable** независимо от `--jobs` (`LineageGraph.to_dict` сортирует nodes/edges). На ~1000 моделей: полный build ~2 мин при `-J3` (было ~20 мин / зависание). `--timeout` по дефолту **0 (выключен)** — пропуск модели теряет её lineage, а SIGALRM всё равно не прерывает C-level regex sqlglot; медленным моделям дают досчитать. **Column-count guard** (`--max-columns`, env `DBT_LINEAGE_MAX_COLUMNS`, дефолт 400, `0` = off): all-columns lineage на очень широкой таблице (напр. `jira_issues` — 1478 колонок, passthrough `SELECT * EXCEPT` из 1476-колоночного источника) раздувается до ~1.7 ГБ RAM и минут pure-Python работы; такие модели скипаются **до парсинга** (`_SKIP_WIDE`) по числу колонок из catalog (`len(col_types)`). Downstream по-прежнему резолвит рёбра к колонкам скипнутой модели по имени (`add_edge` авто-создаёт узлы) — теряются лишь внутренние passthrough-рёбра самой широкой модели к сырому источнику. Опциональный extra `dbt-meta[lineage]` → `sqlglot[rs]` (Rust-токенизатор, скромный доп. выигрыш). Рекомендация: CI build prod-артефакта, дистрибуция через `~/dbt-state/` sync.
 
 ## Adding a New Command
 
@@ -258,6 +258,8 @@ Type hints обязательны (strict mypy).
 - `DBT_DEV_MANIFEST_PATH` (default `./target/manifest.json`)
 - `DBT_PROD_CATALOG_PATH`, `DBT_DEV_CATALOG_PATH`
 - `DBT_PROD_LINEAGE_PATH` (lineage is prod-only — no dev variant; resolution: `--artifact` → `DBT_PROD_LINEAGE_PATH` → `~/dbt-state/lineage.json`)
+- `DBT_LINEAGE_JOBS` — worker processes for `lineage build` (resolution: `-J/--jobs` → `DBT_LINEAGE_JOBS` → `min(cpus, 3)`; `1` = sequential). Pin explicitly in Airflow to the pod's CPU/RAM budget.
+- `DBT_LINEAGE_MAX_COLUMNS` — skip models wider than N columns in `lineage build` (resolution: `--max-columns` → `DBT_LINEAGE_MAX_COLUMNS` → `400`; `0` = disabled). Guards against RAM/time blow-up on very wide `SELECT *` passthrough models.
 
 **Fallback toggles:**
 - `DBT_FALLBACK_TARGET` (dev manifest, default `true`)

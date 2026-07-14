@@ -135,6 +135,23 @@ class TestStatsCount:
         _, stats = builder.build()
         assert stats.models_total == 1
 
+    def test_build_counts_wide_skip(self):
+        # build() with a catalog wider than max_columns increments the stat.
+        manifest = _make_manifest(
+            "wide_model",
+            "staging",
+            "wide_model",
+            "SELECT * FROM testdb.raw_schema.wide",
+        )
+        catalog = _make_catalog(
+            "model.test_pkg.wide_model",
+            "staging",
+            "wide_model",
+            [f"c{i}" for i in range(10)],
+        )
+        _, stats = LineageBuilder(manifest, catalog, max_columns=5).build()
+        assert stats.models_skipped_wide == 1
+
 
 class TestSchemaConsistency:
     def test_uniform_3_level_schema(self):
@@ -458,6 +475,211 @@ class TestPerModelTimeout:
             _, stats = builder.build()
         assert stats.models_skipped_timeout == 1
         assert any("timeout after 1s" in w for w in stats.warnings)
+
+
+class TestProcessOne:
+    """Direct unit tests of the module-level per-model core."""
+
+    def test_no_sql_skip(self):
+        from dbt_meta.lineage.builder import _process_one
+
+        r = _process_one(
+            "uid",
+            "m",
+            "   ",
+            table_index={},
+            sqlglot_schema={},
+            col_types={},
+            dialect="bigquery",
+            per_model_timeout=0,
+        )
+        assert r.skip == "no_sql"
+        assert r.nodes == [] and r.edges == []
+        assert "no compiled_code" in (r.warning or "")
+
+    def test_parse_error_skip(self):
+        from dbt_meta.lineage.builder import _process_one
+
+        r = _process_one(
+            "uid",
+            "broken",
+            "THIS IS NOT @#$%^ VALID",
+            table_index={},
+            sqlglot_schema={},
+            col_types={},
+            dialect="bigquery",
+            per_model_timeout=0,
+        )
+        assert r.skip == "parse_error"
+        assert "parse error:" in (r.warning or "")
+
+    def test_wide_model_skipped_before_parsing(self):
+        from dbt_meta.lineage.builder import _process_one
+
+        wide_cols = {f"c{i}": "STRING" for i in range(10)}
+        r = _process_one(
+            "uid",
+            "wide",
+            "SELECT * FROM testdb.raw.huge",
+            table_index={},
+            sqlglot_schema={},
+            col_types=wide_cols,
+            dialect="bigquery",
+            per_model_timeout=0,
+            max_columns=5,
+        )
+        assert r.skip == "wide"
+        assert r.nodes == [] and r.edges == []
+        assert "10 columns exceed max_columns=5" in (r.warning or "")
+
+    def test_wide_guard_disabled_with_zero(self):
+        from dbt_meta.lineage.builder import _process_one
+
+        wide_cols = {f"c{i}": "STRING" for i in range(10)}
+        r = _process_one(
+            "uid",
+            "wide",
+            "SELECT c0 FROM testdb.raw.huge",
+            table_index={},
+            sqlglot_schema={},
+            col_types=wide_cols,
+            dialect="bigquery",
+            per_model_timeout=0,
+            max_columns=0,
+        )
+        assert r.skip != "wide"
+
+    def test_wide_guard_boundary_equal_not_skipped(self):
+        # len(col_types) == max_columns must NOT trip the guard (strict `>`).
+        from dbt_meta.lineage.builder import _process_one
+
+        cols = {f"c{i}": "STRING" for i in range(5)}
+        r = _process_one(
+            "uid",
+            "edge",
+            "SELECT c0 FROM testdb.raw.huge",
+            table_index={},
+            sqlglot_schema={},
+            col_types=cols,
+            dialect="bigquery",
+            per_model_timeout=0,
+            max_columns=5,
+        )
+        assert r.skip != "wide"
+
+    def test_produces_nodes_and_edges(self):
+        from dbt_meta.lineage.builder import _process_one
+
+        upstream = _model_full("up", sql="SELECT id, name FROM testdb.raw.t", alias="up")
+        downstream = _model_full(
+            "down", sql="SELECT id AS client_id FROM testdb.ds.up", alias="down"
+        )
+        manifest = _full_manifest(models=[upstream, downstream])
+        catalog = {
+            "nodes": {
+                upstream["unique_id"]: {
+                    "metadata": {"database": "testdb", "schema": "ds", "name": "up"},
+                    "columns": {
+                        "id": {"name": "id", "type": "INT64"},
+                        "name": {"name": "name", "type": "STRING"},
+                    },
+                }
+            },
+            "sources": {},
+        }
+        b = LineageBuilder(manifest, catalog)
+        b._build_indices()
+        col_types = b._build_col_types_map()
+
+        r = _process_one(
+            "model.test_pkg.down",
+            "down",
+            "SELECT id AS client_id FROM testdb.ds.up",
+            table_index=b._table_index,
+            sqlglot_schema=b._sqlglot_schema,
+            col_types=col_types.get("model.test_pkg.down", {}),
+            dialect="bigquery",
+            per_model_timeout=0,
+        )
+        assert r.skip is None
+        assert "down.client_id" in {n[0] for n in r.nodes}
+        assert "up.id" in {e[0] for e in r.edges}
+
+
+class TestParallelBuild:
+    """Parallel build must match sequential exactly (proves worker == core + determinism)."""
+
+    def _fixture(self):
+        up = _model_full("up", sql="SELECT id, name FROM testdb.raw.t", alias="up")
+        mid = _model_full("mid", sql="SELECT id AS cid, name FROM testdb.ds.up", alias="mid")
+        down = _model_full("down", sql="SELECT cid FROM testdb.ds.mid", alias="down")
+        manifest = _full_manifest(models=[up, mid, down])
+        catalog = {
+            "nodes": {
+                up["unique_id"]: {
+                    "metadata": {"database": "testdb", "schema": "ds", "name": "up"},
+                    "columns": {
+                        "id": {"name": "id", "type": "INT64"},
+                        "name": {"name": "name", "type": "STRING"},
+                    },
+                },
+                mid["unique_id"]: {
+                    "metadata": {"database": "testdb", "schema": "ds", "name": "mid"},
+                    "columns": {
+                        "cid": {"name": "cid", "type": "INT64"},
+                        "name": {"name": "name", "type": "STRING"},
+                    },
+                },
+            },
+            "sources": {},
+        }
+        return manifest, catalog
+
+    def test_parallel_artifact_byte_identical_to_sequential(self):
+        import orjson
+
+        manifest, catalog = self._fixture()
+        g1, s1 = LineageBuilder(manifest, catalog, jobs=1).build()
+        g2, s2 = LineageBuilder(manifest, catalog, jobs=2).build()
+
+        assert s1.models_parsed == s2.models_parsed == 3
+        assert g1.to_dict() == g2.to_dict()
+        assert orjson.dumps(g1.to_dict()) == orjson.dumps(g2.to_dict())
+
+    def test_parallel_progress_counter_is_monotonic(self):
+        manifest, catalog = self._fixture()
+        calls = []
+        LineageBuilder(
+            manifest, catalog, jobs=2, progress_callback=lambda i, t, n, e: calls.append((i, t))
+        ).build()
+        assert [c[0] for c in calls] == [1, 2, 3]
+        assert all(c[1] == 3 for c in calls)
+
+    def test_parallel_wide_model_skipped_via_worker(self):
+        # max_columns must propagate through _init_worker → worker → _process_one
+        # (parallel path), not just the sequential call.
+        up = _model_full("up", sql="SELECT id, name FROM testdb.raw.t", alias="up")
+        wide = _model_full("wide", sql="SELECT * FROM testdb.ds.up", alias="wide")
+        manifest = _full_manifest(models=[up, wide])
+        catalog = {
+            "nodes": {
+                up["unique_id"]: {
+                    "metadata": {"database": "testdb", "schema": "ds", "name": "up"},
+                    "columns": {
+                        "id": {"name": "id", "type": "INT64"},
+                        "name": {"name": "name", "type": "STRING"},
+                    },
+                },
+                wide["unique_id"]: {
+                    "metadata": {"database": "testdb", "schema": "ds", "name": "wide"},
+                    "columns": {f"c{i}": {"name": f"c{i}", "type": "STRING"} for i in range(10)},
+                },
+            },
+            "sources": {},
+        }
+        # jobs=2 with 2 tasks routes through the spawn pool.
+        _, stats = LineageBuilder(manifest, catalog, jobs=2, max_columns=5).build()
+        assert stats.models_skipped_wide == 1
 
 
 class TestClassifyTransform:
