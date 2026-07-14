@@ -210,7 +210,7 @@ Backed by SQLGlot 30.7+ (`sqlglot.lineage`, all-columns mode) and rustworkx for 
 
 | Command | Description | Key flags | Example |
 |---------|-------------|-----------|---------|
-| `lineage build` | Build the lineage artifact from manifest + catalog | `-j`, `-v`, `--timeout N`, `-o PATH`, `--manifest`, `--catalog` | `meta lineage build -v` |
+| `lineage build` | Build the lineage artifact from manifest + catalog | `-j`, `-v`, `-J/--jobs N`, `--max-columns N`, `--timeout N`, `-o PATH`, `--manifest`, `--catalog` | `meta lineage build -J3 -v` |
 | `lineage column <model>.<col>` | Direct + transitive upstream lineage for a column | `-j`, `--artifact` | `meta lineage column core_clients.client_id` |
 | `lineage downstream <model>.<col>` | Direct + transitive downstream impact for a column | `-j`, `--artifact` | `meta lineage downstream raw.events.user_id` |
 | `lineage stats` | Print artifact summary (nodes, edges, generated_at, warnings) | `-j`, `--artifact` | `meta lineage stats -j` |
@@ -218,8 +218,10 @@ Backed by SQLGlot 30.7+ (`sqlglot.lineage`, all-columns mode) and rustworkx for 
 Lineage is a **prod-only** concept (column-level lineage of the deployed state); there is no `--dev` variant. Artifact resolution: `--artifact` → `DBT_PROD_LINEAGE_PATH` → `~/dbt-state/lineage.json`.
 
 **`build` flags:**
-- `-v, --verbose` — print per-model progress (`[123/934] model_name (0.42s) ok`)
-- `--timeout N` — per-model SIGALRM budget in seconds (default 30, 0 disables)
+- `-v, --verbose` — print a periodic progress summary (`123/934 processed · 21.4 models/s · ETA 38s`)
+- `-J, --jobs N` — worker processes for the CPU-bound SQLGlot parse. Default `min(cpus, 3)` (affinity-aware, capped low to stay friendly on shared prod Airflow); `1` = sequential. Also settable via `DBT_LINEAGE_JOBS`. On a ~1000-model project ~3 workers cut wall time roughly 3x; scale `--jobs` to the box's CPU **and** memory (each worker holds its own copy of the SQLGlot schema). The artifact is byte-identical regardless of `--jobs`.
+- `--max-columns N` — skip models resolving to more than `N` columns (default `400`, `0` disables; also `DBT_LINEAGE_MAX_COLUMNS`). All-columns lineage on a very wide `SELECT *` passthrough (e.g. a 1400+ column raw-source staging model) balloons to GBs of RAM and minutes of pure-Python work; the guard skips it before parsing. Downstream models still resolve their edges to the skipped model's columns by name — only the skipped model's own internal passthrough edges are absent.
+- `--timeout N` — per-model SIGALRM budget in seconds (default `0` = disabled). Skipping a model drops its lineage, and SIGALRM cannot interrupt SQLGlot's C-level regex anyway, so slow models are let to finish; set a positive budget only if you deliberately want to cap and drop pathological models.
 - `-o PATH` — explicit output path (default: next to the prod manifest, i.e. `~/dbt-state/lineage.json`)
 
 For best performance install the mypyc-compiled SQLGlot: `pip install 'sqlglot[c]'` — gives 2-4× speedup on large projects (~470 s → ~150 s for 934 models).
@@ -268,7 +270,8 @@ The line is emitted via plain `print()` (not Rich) so terminal copy-paste return
 
 **`list` selectors:**
 - `tag:name` — filter by tag (OR logic by default)
-- `config.key:value` — filter by config value (e.g. `config.materialized:incremental`); supports nested keys via dotted path (e.g. `config.meta.domain:its`)
+- `config.key:value` — filter by config value (e.g. `config.materialized:incremental`); supports nested keys via dotted path (e.g. `config.meta.domain:its`). **List values match by membership** — `config.meta.domain:trading` matches a model tagged `['trading','amas']`.
+- `--domain X` — sugar for `config.meta.domain:X` (membership)
 - `path:dir/` — filter by file path prefix
 - `package:name` — filter by package
 
@@ -623,7 +626,8 @@ meta models staging
 # Advanced filtering with selectors
 meta list tag:daily                           # Models with 'daily' tag
 meta list config.materialized:incremental     # Incremental models
-meta list config.meta.domain:its              # Nested config key (dotted path)
+meta list config.meta.domain:its              # Nested config key (dotted path; list membership)
+meta list --domain its                        # Same, via the --domain sugar
 meta list path:models/core/                   # Models in specific folder
 
 # Multiple selectors with OR logic (default)

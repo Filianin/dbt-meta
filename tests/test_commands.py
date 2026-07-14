@@ -2091,13 +2091,91 @@ class TestLsCommand:
         assert [m['unique_id'] for m in result] == ['model.p.a']
 
     def test_nested_get_missing_and_nondict_segments(self):
-        """_nested_get returns None when a path segment is absent or non-dict."""
+        """_nested_get returns the raw value, or None for absent/non-dict segments."""
         from dbt_meta.command_impl.ls import _nested_get
 
         assert _nested_get({'meta': {'domain': 'its'}}, ['meta', 'domain']) == 'its'
+        assert _nested_get({'meta': {'domain': ['its', 'fin']}}, ['meta', 'domain']) == ['its', 'fin']
         assert _nested_get({'meta': {}}, ['meta', 'domain']) is None
         assert _nested_get({'meta': 'scalar'}, ['meta', 'domain']) is None
         assert _nested_get({}, ['meta', 'domain']) is None
+
+    def test_apply_selector_list_config_value_membership(self):
+        """A list config value matches by membership; scalar still matches by equality."""
+        from dbt_meta.command_impl.ls import _apply_selector
+
+        models = [
+            {'unique_id': 'model.p.a', 'config': {'meta': {'domain': ['trading', 'amas']}}},
+            {'unique_id': 'model.p.b', 'config': {'meta': {'domain': ['payments']}}},
+            {'unique_id': 'model.p.c', 'config': {'meta': {'domain': 'trading'}}},
+            {'unique_id': 'model.p.d', 'config': {}},
+        ]
+        result = _apply_selector(models, 'config.meta.domain:trading')
+        assert [m['unique_id'] for m in result] == ['model.p.a', 'model.p.c']
+
+    def test_config_value_matches(self):
+        """_config_value_matches: membership for lists, equality for scalars, None miss."""
+        from dbt_meta.command_impl.ls import _config_value_matches
+
+        assert _config_value_matches(['trading', 'amas'], 'trading') is True
+        assert _config_value_matches(['trading', 'amas'], 'payments') is False
+        assert _config_value_matches('trading', 'trading') is True
+        assert _config_value_matches('trading', 'amas') is False
+        assert _config_value_matches(None, 'trading') is False
+        # tuple values behave like lists (membership)
+        assert _config_value_matches(('trading', 'amas'), 'amas') is True
+        # non-string list elements are coerced to str before comparison
+        assert _config_value_matches([1, 2], '1') is True
+        assert _config_value_matches([1, 2], '3') is False
+        # empty list never matches
+        assert _config_value_matches([], 'trading') is False
+        # scalar non-string coerces too
+        assert _config_value_matches(42, '42') is True
+
+    def test_list_domain_flag_equivalent_to_selector(self, prod_manifest):
+        """`meta list --domain X` yields the same output as `config.meta.domain:X`."""
+        from typer.testing import CliRunner
+
+        from dbt_meta.cli import app
+
+        runner = CliRunner()
+        via_flag = runner.invoke(app, ["list", "--domain", "trading", "-j", "--manifest", str(prod_manifest)])
+        via_selector = runner.invoke(app, ["list", "config.meta.domain:trading", "-j", "--manifest", str(prod_manifest)])
+        assert via_flag.exit_code == 0
+        assert via_selector.exit_code == 0
+        assert via_flag.output == via_selector.output
+
+    def test_list_domain_flag_appends_to_existing_selectors(self, prod_manifest):
+        """`--domain` composes with a positional selector (both applied via AND-of-non-tag)."""
+        from typer.testing import CliRunner
+
+        from dbt_meta.cli import app
+
+        runner = CliRunner()
+        combined = runner.invoke(
+            app,
+            ["list", "config.materialized:view", "--domain", "trading", "-j", "--manifest", str(prod_manifest)],
+        )
+        explicit = runner.invoke(
+            app,
+            ["list", "config.materialized:view", "config.meta.domain:trading", "-j", "--manifest", str(prod_manifest)],
+        )
+        assert combined.exit_code == 0
+        assert explicit.exit_code == 0
+        assert combined.output == explicit.output
+
+    def test_list_domain_flag_no_matches_is_empty_not_error(self, prod_manifest):
+        """A domain with zero models exits 0 with an empty result, never errors."""
+        from typer.testing import CliRunner
+
+        from dbt_meta.cli import app
+
+        runner = CliRunner()
+        result = runner.invoke(
+            app, ["list", "--domain", "no_such_domain_zzz", "-j", "--manifest", str(prod_manifest)]
+        )
+        assert result.exit_code == 0
+        assert '[]' in result.output or '"models": []' in result.output
 
     def test_format_json_includes_meta_only_when_present(self):
         """JSON output carries 'meta' only for models that have a non-empty meta."""

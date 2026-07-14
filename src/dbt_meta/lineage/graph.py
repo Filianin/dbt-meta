@@ -152,6 +152,11 @@ class LineageGraph:
     def to_dict(self) -> dict[str, Any]:
         """Serialize graph to JSON-friendly dict.
 
+        Nodes and edges are sorted by id so the output is byte-stable
+        regardless of insertion order — the parallel build completes models
+        out of order, but the artifact must not churn between runs (and
+        sequential vs parallel builds must produce an identical file).
+
         Schema:
             {
                 "nodes": [{"id": "...", ...attrs}, ...],
@@ -175,6 +180,8 @@ class LineageGraph:
                 edge.update(attrs)
             edges.append(edge)
 
+        nodes.sort(key=lambda n: n["id"])
+        edges.sort(key=lambda e: (e["src"], e["dst"]))
         return {"nodes": nodes, "edges": edges}
 
     @classmethod

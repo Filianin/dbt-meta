@@ -42,4 +42,7 @@ htmlcov/
 # Project-specific development files
 CLAUDE.md*.json
 
+# Local planning docs (not part of the package)
+docs/plans/
+
 dist/
