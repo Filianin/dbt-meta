@@ -10,7 +10,7 @@ Provides dbt-meta CLI with:
 
 import json
 from pathlib import Path
-from typing import Any, Callable, NoReturn, Optional
+from typing import Any, Callable, List, NoReturn, Optional
 
 import typer
 from rich import print as rprint
@@ -1875,6 +1875,10 @@ def powerbi_compliance(
         None, "-o", "--output",
         help="Compliance JSON output path (default: <manifest-dir>/powerbi_compliance.json)",
     ),
+    exclude_workspace: Optional[List[str]] = typer.Option(
+        None, "--exclude-workspace",
+        help="Workspace to skip entirely (repeatable), e.g. dev sandboxes",
+    ),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output summary as JSON"),
 ) -> None:
     """Flag dashboards referencing tables outside the core/report dbt layers.
@@ -1897,7 +1901,10 @@ def powerbi_compliance(
         out_path = output or os.path.join(
             os.path.dirname(manifest_path), "powerbi_compliance.json"
         )
-        result = pbi.compliance_cmd(index_path, raw_path, manifest_path, out_path)
+        result = pbi.compliance_cmd(
+            index_path, raw_path, manifest_path, out_path,
+            exclude_workspaces=exclude_workspace,
+        )
     except FileNotFoundError as e:
         handle_error(DbtMetaError(str(e)), json_output)
         return

@@ -34,8 +34,12 @@ class MSource:
 _NAV_STEP = re.compile(r'\{\[Name="(?P<name>[^"]+)"(?:,Kind="(?P<kind>[^"]+)")?\]\}')
 
 # The SQL string literal that is the 2nd positional arg of Value.NativeQuery.
+# M escapes a literal double-quote inside a string by doubling it (``""``), not
+# with a backslash — so the body is any run of non-quote chars and ``""`` pairs,
+# terminated by a lone ``"``. (A backslash regex here truncated the SQL at the
+# first BigQuery ``"literal"``, e.g. right before ``NOT IN ( "...")``.)
 _NATIVE_SQL = re.compile(
-    r'Value\.NativeQuery\(\s*GoogleBigQuery\.Database\(\).*?\[Data\]\s*,\s*"(?P<sql>(?:[^"\\]|\\.)*)"',
+    r'Value\.NativeQuery\(\s*GoogleBigQuery\.Database\(\).*?\[Data\]\s*,\s*"(?P<sql>(?:[^"]|"")*)"',
     re.DOTALL,
 )
 
@@ -56,11 +60,16 @@ def _ref_name(ref: str) -> str:
 
 
 def _decode_m_string(s: str) -> str:
-    """Decode M string escapes into a plain SQL string."""
+    """Decode M string escapes into a plain SQL string.
+
+    M uses ``#(lf)`` / ``#(tab)`` / ``#(cr)`` control escapes and doubles a
+    literal double-quote as ``""``.
+    """
     return (
         s.replace("#(lf)", "\n")
         .replace("#(tab)", "\t")
-        .replace('\\"', '"')
+        .replace("#(cr)", "\r")
+        .replace('""', '"')
     )
 
 

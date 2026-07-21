@@ -24,7 +24,15 @@ from .index import PowerBiIndex, ReportEntry
 from .mapper import DbtTableIndex, TableMapping
 
 APPROVED_LAYERS = frozenset({"core", "report"})
+# Physical-schema prefixes that map to the curated core/report layers. Used as a
+# fallback for tables the manifest does not resolve (built by another project or
+# outside dbt), so e.g. ``core_utils`` / ``report_tableau`` are not flagged.
+APPROVED_SCHEMA_PREFIXES = ("core", "report")
 LEGACY_DOMAIN = "legacy"
+# Power BI republishes an App copy of a report as "[App] <name>": it loses owner
+# metadata and always mirrors a subset of the base report's tables, so it is a
+# pure duplicate we skip to avoid double-counting.
+APP_REPORT_PREFIX = "[App] "
 
 
 @dataclass(frozen=True)
@@ -45,6 +53,7 @@ class Unverified:
     dashboard: str
     workspace: str
     reason: str  # parse_error
+    owner: str | None = None
 
 
 @dataclass
@@ -60,20 +69,36 @@ def _schema_table(bq: str) -> str:
     return ".".join(parts[-2:]) if len(parts) >= 2 else bq
 
 
+def _schema(bq: str) -> str:
+    """``project.schema.table`` -> ``schema`` (physical schema segment)."""
+    parts = bq.split(".")
+    return parts[-2] if len(parts) >= 2 else ""
+
+
 def classify(mapping: TableMapping) -> str | None:
     """Return a violation ``reason``, or ``None`` when the table is compliant.
 
-    Approved = ``model`` in an approved layer with a non-legacy domain. A legacy
-    approved-layer model is ``domain:legacy``; everything else is
-    ``layer:<layer or status>`` (e.g. ``layer:staging``, ``layer:sources``,
-    ``layer:external``).
+    Hybrid classification:
+
+    * a manifest-resolved ``model`` is judged by its dbt layer — approved only in
+      ``core`` / ``report`` (a legacy-domain approved model is ``domain:legacy``),
+      otherwise ``layer:<layer>`` (e.g. ``layer:staging``);
+    * a declared ``source`` is always ``layer:sources``;
+    * a table the manifest does not resolve falls back to the physical schema
+      convention — ``core*`` / ``report*`` schemas are approved, everything else
+      is ``layer:external``.
     """
-    if mapping.status == "model" and mapping.layer in APPROVED_LAYERS:
-        if LEGACY_DOMAIN in mapping.domain:
-            return "domain:legacy"
+    if mapping.status == "model":
+        if mapping.layer in APPROVED_LAYERS:
+            if LEGACY_DOMAIN in mapping.domain:
+                return "domain:legacy"
+            return None
+        return f"layer:{mapping.layer}"
+    if mapping.status == "source":
+        return "layer:sources"
+    if _schema(mapping.bq).startswith(APPROVED_SCHEMA_PREFIXES):
         return None
-    layer = mapping.layer or mapping.status
-    return f"layer:{layer}"
+    return "layer:external"
 
 
 def check_report(
@@ -109,16 +134,25 @@ def check_compliance(
     index: PowerBiIndex,
     dbt_index: DbtTableIndex,
     owners: dict[tuple[str, str], str] | None = None,
+    exclude_workspaces: set[str] | None = None,
 ) -> ComplianceReport:
     """Classify every report in ``index`` against the dbt manifest.
 
     ``owners`` maps ``(workspace, report)`` to the owner's display name (from the
     raw scan), attached to each violation for @mention resolution downstream.
+
+    ``exclude_workspaces`` names workspaces dropped from the check entirely (e.g.
+    dev sandboxes) — their reports produce neither violations nor unverified.
     """
     owners = owners or {}
+    excluded = exclude_workspaces or set()
     violations: list[Violation] = []
     unverified: list[Unverified] = []
     for report in index.reports:
+        if report.workspace in excluded:
+            continue
+        if report.report.startswith(APP_REPORT_PREFIX):
+            continue  # App-published duplicate of the base report
         owner = owners.get((report.workspace, report.report))
         report_violations, unparsed = check_report(report, dbt_index, owner)
         violations.extend(report_violations)
@@ -128,6 +162,7 @@ def check_compliance(
                     dashboard=report.report,
                     workspace=report.workspace,
                     reason="parse_error",
+                    owner=owner,
                 )
             )
     return ComplianceReport(
@@ -151,7 +186,12 @@ def report_to_dict(report: ComplianceReport) -> dict[str, Any]:
             for v in report.violations
         ],
         "unverified": [
-            {"dashboard": u.dashboard, "workspace": u.workspace, "reason": u.reason}
+            {
+                "dashboard": u.dashboard,
+                "workspace": u.workspace,
+                "reason": u.reason,
+                "owner": u.owner,
+            }
             for u in report.unverified
         ],
     }

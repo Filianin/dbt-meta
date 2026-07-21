@@ -118,25 +118,43 @@ def source_for_report(raw_path: str, report_name: str) -> dict[str, Any]:
     return {"report": report.get("name", report_name), "sources": sources}
 
 
-def owners_index(raw_path: str) -> dict[tuple[str, str], str]:
-    """Map ``(workspace, report)`` -> the first Owner-access user's display name.
+def _graph_id_directory(raw: dict) -> dict[str, str]:
+    """``graphId`` -> ``displayName`` across every user entry in the scan.
 
-    Used by the compliance check to attach a dashboard owner to each violation.
-    Power BI scrubs emails from the raw dump, so only the display name survives;
-    email resolution happens downstream via a name→email map.
+    Power BI scrubs the ``modifiedBy`` display name but keeps ``modifiedById``
+    (the principal's graph id); user entries carry both ``graphId`` and
+    ``displayName``, so the union of all user lists resolves a modifier id back
+    to a name.
+    """
+    names: dict[str, str] = {}
+    for ws in raw.get("workspaces") or []:
+        for report in ws.get("reports") or []:
+            for u in report.get("users") or []:
+                gid = u.get("graphId")
+                dn = u.get("displayName")
+                if gid and dn:
+                    names.setdefault(gid, dn)
+    return names
+
+
+def owners_index(raw_path: str) -> dict[tuple[str, str], str]:
+    """Map ``(workspace, report)`` -> the display name of who last modified it.
+
+    The functional owner is the last person to touch the report
+    (``modifiedById``), not the Owner-access list (which is padded with blanket
+    admins). The id is resolved to a name via the scan-wide graphId directory;
+    reports whose modifier id is missing or unresolvable are omitted. Email
+    resolution happens downstream via a name→email map.
     """
     raw = _load_raw(raw_path)
+    names = _graph_id_directory(raw)
     result: dict[tuple[str, str], str] = {}
     for ws in raw.get("workspaces") or []:
         ws_name = ws.get("name", "")
         for report in ws.get("reports") or []:
-            owners = [
-                u.get("displayName", "")
-                for u in (report.get("users") or [])
-                if u.get("reportUserAccessRight") == "Owner" and u.get("displayName")
-            ]
-            if owners:
-                result[(ws_name, report.get("name", ""))] = owners[0]
+            modifier = names.get(report.get("modifiedById") or "")
+            if modifier:
+                result[(ws_name, report.get("name", ""))] = modifier
     return result
 
 

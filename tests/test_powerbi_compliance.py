@@ -12,6 +12,7 @@ import orjson
 
 import dbt_meta.command_impl.powerbi as cmd
 from dbt_meta.powerbi.artifact import save_index
+from dbt_meta.powerbi.raw_reader import owners_index
 from dbt_meta.powerbi.compliance import (
     ComplianceReport,
     check_compliance,
@@ -87,6 +88,20 @@ class TestClassify:
     def test_external_is_violation(self):
         assert classify(IDX.lookup("other.foo.bar")) == "layer:external"
 
+    def test_unmapped_core_schema_is_compliant(self):
+        """A table the manifest does not resolve, in a ``core*`` schema, is
+        approved by the physical-schema fallback (e.g. ``core_utils.d_calendar``
+        built outside dbt)."""
+        assert classify(IDX.lookup(f"{DB}.core_utils.d_calendar")) is None
+
+    def test_unmapped_report_schema_is_compliant(self):
+        assert classify(IDX.lookup(f"{DB}.report_tableau.some_report")) is None
+
+    def test_unmapped_other_schema_is_external(self):
+        """An unresolved table whose schema is neither ``core*`` nor ``report*``
+        stays a violation (e.g. a Tableau extract in the ``tableau`` schema)."""
+        assert classify(IDX.lookup(f"{DB}.tableau.vps_clients")) == "layer:external"
+
     def test_legacy_core_model_is_violation(self):
         assert classify(IDX.lookup(f"{DB}.core_x.core_legacy")) == "domain:legacy"
 
@@ -160,10 +175,48 @@ class TestCheckCompliance:
             "foo.bar": "layer:external",
         }
 
+    def test_excluded_workspace_is_skipped(self):
+        """A report in an excluded workspace produces no violations at all, even
+        when it references out-of-layer tables."""
+        index = PowerBiIndex(
+            reports=[
+                _report("Dev Thing", "BI Team in Dev", [f"{DB}.staging.stg_bad"]),
+                _report("Prod Thing", "BI", [f"{DB}.staging.stg_bad"]),
+            ]
+        )
+        rep = check_compliance(index, IDX, exclude_workspaces={"BI Team in Dev"})
+        assert {v.workspace for v in rep.violations} == {"BI"}
+        assert len(rep.violations) == 1
+
+    def test_app_published_duplicate_is_skipped(self):
+        """An "[App] <name>" report is a Power BI App republish of the base report
+        and is skipped entirely (no owner, always a duplicate)."""
+        index = PowerBiIndex(
+            reports=[
+                _report("Sales", "BI", [f"{DB}.staging.stg_bad"]),
+                _report("[App] Sales", "BI", [f"{DB}.staging.stg_bad"]),
+            ]
+        )
+        rep = check_compliance(index, IDX)
+        assert len(rep.violations) == 1
+        assert rep.violations[0].dashboard == "Sales"
+
     def test_owner_attached_from_map(self):
         index = PowerBiIndex(reports=[_report("R", "BI", [f"{DB}.staging.stg_bad"])])
         rep = check_compliance(index, IDX, owners={("BI", "R"): "Ivan Petrov"})
         assert rep.violations[0].owner == "Ivan Petrov"
+
+    def test_unverified_carries_owner(self):
+        """Owner is attached to unverified reports too, so a downstream allowlist
+        can filter unparsed dashboards by owner."""
+        index = PowerBiIndex(reports=[
+            _report("R", "BI", [f"{DB}.core_client.core_ok"], sql_analysis=[
+                SqlAnalysisEntry(query="q", tables=(), filters=(), joins=(),
+                                 group_by=(), parse_status="partial"),
+            ]),
+        ])
+        rep = check_compliance(index, IDX, owners={("BI", "R"): "Ivan Petrov"})
+        assert rep.unverified[0].owner == "Ivan Petrov"
 
     def test_dedups_identical_schema_table(self):
         index = PowerBiIndex(
@@ -233,6 +286,83 @@ def test_report_to_dict_shape():
     assert set(d) == {"compliant", "violations", "unverified"}
 
 
+# ── owners_index (last-modifier attribution) ─────────────────────────────────
+
+
+def _raw_with_modifier(tmp_path, modified_by_id, users):
+    raw = {
+        "workspaces": [
+            {
+                "name": "BI",
+                "reports": [
+                    {"name": "R", "modifiedById": modified_by_id, "users": users}
+                ],
+            }
+        ]
+    }
+    path = tmp_path / "raw.json"
+    path.write_bytes(orjson.dumps(raw))
+    return str(path)
+
+
+def test_owner_is_last_modifier_not_first_owner(tmp_path):
+    """Owner attribution follows ``modifiedById`` (functional owner), resolved via
+    the graphId directory — not the first Owner-access user."""
+    path = _raw_with_modifier(
+        tmp_path,
+        "gid-luka",
+        [
+            {"displayName": "Alex Stolnikov", "graphId": "gid-alex", "reportUserAccessRight": "Owner"},
+            {"displayName": "Luka Beridze", "graphId": "gid-luka", "reportUserAccessRight": "Owner"},
+        ],
+    )
+    assert owners_index(path) == {("BI", "R"): "Luka Beridze"}
+
+
+def test_owner_omitted_when_modifier_unresolvable(tmp_path):
+    """No entry when the modifier id resolves to no known user."""
+    path = _raw_with_modifier(
+        tmp_path,
+        "gid-ghost",
+        [{"displayName": "Alex Stolnikov", "graphId": "gid-alex", "reportUserAccessRight": "Owner"}],
+    )
+    assert owners_index(path) == {}
+
+
+def test_owner_omitted_when_report_has_no_modifier_id(tmp_path):
+    """A report without ``modifiedById`` contributes no owner."""
+    raw = {
+        "workspaces": [
+            {
+                "name": "BI",
+                "reports": [
+                    {"name": "R", "users": [
+                        {"displayName": "Luka", "graphId": "gid-luka", "reportUserAccessRight": "Owner"},
+                    ]}
+                ],
+            }
+        ]
+    }
+    path = tmp_path / "raw.json"
+    path.write_bytes(orjson.dumps(raw))
+    assert owners_index(str(path)) == {}
+
+
+def test_directory_skips_users_missing_graph_id_or_name(tmp_path):
+    """User entries without both graphId and displayName never enter the
+    directory, so a modifier id matching only such an entry stays unresolved."""
+    path = _raw_with_modifier(
+        tmp_path,
+        "gid-luka",
+        [
+            {"displayName": "No Graph Id", "reportUserAccessRight": "Owner"},  # no graphId
+            {"graphId": "gid-nameless", "reportUserAccessRight": "Owner"},  # no displayName
+            {"displayName": "Luka", "graphId": "gid-luka", "reportUserAccessRight": "Owner"},
+        ],
+    )
+    assert owners_index(path) == {("BI", "R"): "Luka"}
+
+
 # ── compliance_cmd (end-to-end file I/O) ──────────────────────────────────────
 
 
@@ -262,8 +392,13 @@ def test_compliance_cmd_end_to_end(tmp_path):
                 "reports": [
                     {
                         "name": "Sales Overview",
+                        "modifiedById": "gid-ivan",
                         "users": [
-                            {"displayName": "Ivan Petrov", "reportUserAccessRight": "Owner"},
+                            {
+                                "displayName": "Ivan Petrov",
+                                "graphId": "gid-ivan",
+                                "reportUserAccessRight": "Owner",
+                            },
                         ],
                     }
                 ],

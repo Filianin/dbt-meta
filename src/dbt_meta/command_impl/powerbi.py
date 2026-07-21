@@ -257,20 +257,28 @@ def build_index_artifact(raw_path: str, manifest_path: str, out_path: str) -> di
 
 
 def compliance_cmd(
-    index_path: str, raw_path: str, manifest_path: str, out_path: str
+    index_path: str,
+    raw_path: str,
+    manifest_path: str,
+    out_path: str,
+    exclude_workspaces: list[str] | None = None,
 ) -> dict[str, Any]:
     """Check data-layer compliance and write the violations JSON to ``out_path``.
 
     Reads the compact index (already-resolved tables), the manifest (layer +
     domain classification) and the raw scan (dashboard owners). No live Power BI
     scan. Writes ``{compliant, violations, unverified}`` and returns a summary.
+
+    ``exclude_workspaces`` names workspaces skipped entirely (e.g. dev sandboxes).
     """
     index = load_index(index_path)
     manifest = _load_json(manifest_path)
     dbt_index = DbtTableIndex(manifest)
     owners = owners_index(raw_path)
 
-    report = check_compliance(index, dbt_index, owners)
+    report = check_compliance(
+        index, dbt_index, owners, exclude_workspaces=set(exclude_workspaces or [])
+    )
     payload = report_to_dict(report)
 
     with open(out_path, "wb") as fh:
