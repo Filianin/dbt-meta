@@ -54,7 +54,7 @@ class TestFetchBigQueryWithoutModelFallback:
             return [{'name': 'id', 'data_type': 'INT64'}]
 
         monkeypatch.setattr('dbt_meta.command_impl.column_source._fetch_columns_from_bigquery_direct', _fake_fetch)
-        monkeypatch.setattr('dbt_meta.command_impl.column_source.infer_table_parts', lambda name: ('core', 'events'))
+        monkeypatch.setattr('dbt_meta.command_impl.resolver.infer_table_parts', lambda name: ('core', 'events'))
 
         result = source._fetch_without_model('core__events', ModelState.MODIFIED_UNCOMMITTED, prod_model=None)
 
@@ -72,7 +72,7 @@ class TestFetchBigQueryWithoutModelNewNotFound:
             lambda *a, **kw: None,
         )
         monkeypatch.setattr(
-            'dbt_meta.command_impl.column_source._calculate_dev_schema',
+            'dbt_meta.command_impl.resolver.calculate_dev_schema',
             lambda: 'personal_test',
         )
 

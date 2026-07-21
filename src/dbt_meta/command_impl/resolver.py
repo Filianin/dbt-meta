@@ -20,7 +20,9 @@ from typing import Any, Optional
 
 from dbt_meta.config import Config
 from dbt_meta.fallback import FallbackLevel
+from dbt_meta.utils.bigquery import infer_table_parts
 from dbt_meta.utils.dev import build_dev_table_name, calculate_dev_schema
+from dbt_meta.utils.model_state import ModelState
 
 
 @dataclass
@@ -110,3 +112,88 @@ def resolve_location(
         table = alias or name
 
     return ResolvedLocation(database=database, schema=schema, table=table, is_dev=False)
+
+
+@dataclass
+class ColumnTarget:
+    """Physical table the ``columns`` command should query in BigQuery.
+
+    Distinct from :class:`ResolvedLocation` on purpose: ``columns`` chooses its
+    table by git *state* (freshness), not by manifest fallback *level*, and it
+    trusts the model's already-resolved fields (``schema`` overridden to dev by
+    ModelStateDetector, top-level ``alias``) rather than re-deriving from
+    ``config``. Both live here so this module owns every "where does the data
+    come from" answer.
+
+    Attributes:
+        database: BigQuery project, or ``None`` when it should be inferred by
+            the BigQuery client (new models / name inference).
+        schema: BigQuery dataset.
+        table: Table name.
+        is_dev: Whether this points at a dev table (drives result messaging).
+    """
+
+    database: Optional[str]
+    schema: str
+    table: str
+    is_dev: bool
+
+
+def resolve_column_target(
+    state: ModelState,
+    model: Optional[dict[str, Any]],
+    prod_model: Optional[dict[str, Any]],
+    model_name: str,
+    use_dev: bool,
+) -> Optional[ColumnTarget]:
+    """Resolve the BigQuery table the ``columns`` command should query.
+
+    Mirrors the git-state-aware selection previously scattered across
+    BigQueryColumnSource. Returns ``None`` for states with no fetchable table
+    (the caller then reports "not found").
+
+    Args:
+        state: Detected git lifecycle state.
+        model: Model dict (dev-schema already applied when ``use_dev``); ``None``
+            when the model is absent from every manifest.
+        prod_model: Production manifest model (used as the prod location source).
+        model_name: dbt model name (dev table name / inference input).
+        use_dev: Whether the command was invoked with ``--dev``.
+
+    Returns:
+        ColumnTarget, or ``None`` when no table can be determined.
+    """
+    if model is not None:
+        if use_dev:
+            # Dev: trust the model's already-resolved (dev) schema + SQL filename.
+            return ColumnTarget(
+                database=model.get("database", ""),
+                schema=model.get("schema", ""),
+                table=model_name,
+                is_dev=True,
+            )
+        # Prod: prefer the prod manifest model for the physical location.
+        source = prod_model if prod_model else model
+        return ColumnTarget(
+            database=source.get("database", ""),
+            schema=source.get("schema", ""),
+            table=source.get("alias") or source.get("name", ""),
+            is_dev=False,
+        )
+
+    # No model in any manifest — location depends on git state.
+    if state == ModelState.MODIFIED_UNCOMMITTED and not use_dev:
+        if prod_model:
+            return ColumnTarget(
+                database=prod_model.get("database", ""),
+                schema=prod_model.get("schema", ""),
+                table=prod_model.get("alias") or prod_model.get("name", ""),
+                is_dev=False,
+            )
+        schema, table = infer_table_parts(model_name)
+        return ColumnTarget(database=None, schema=schema or "", table=table, is_dev=False)
+
+    if state in (ModelState.NEW_UNCOMMITTED, ModelState.NEW_COMMITTED):
+        return ColumnTarget(database=None, schema=calculate_dev_schema(), table=model_name, is_dev=True)
+
+    return None
