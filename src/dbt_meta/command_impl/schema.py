@@ -5,12 +5,10 @@ import sys
 from typing import Any, Optional
 
 from dbt_meta.command_impl.base import BaseCommand
+from dbt_meta.command_impl.resolver import resolve_location
 from dbt_meta.fallback import FallbackLevel
 from dbt_meta.utils.bigquery import (
     run_bq_command as _run_bq_command,
-)
-from dbt_meta.utils.dev import (
-    build_dev_schema_result as _build_dev_schema_result,
 )
 from dbt_meta.utils.dev import (
     calculate_dev_schema as _calculate_dev_schema,
@@ -72,6 +70,10 @@ class SchemaCommand(BaseCommand):
     def process_model(self, model: dict[str, Any], level: Optional[FallbackLevel] = None) -> dict[str, str]:
         """Process model data and return schema location.
 
+        Delegates to the shared ``resolve_location`` seam, which honours
+        invariant #4 (dev-manifest hit → dev schema) and the prod
+        schema/table resolution strategies.
+
         Args:
             model: Model data from manifest or BigQuery
             level: Fallback level where model was found
@@ -79,51 +81,9 @@ class SchemaCommand(BaseCommand):
         Returns:
             Schema location dictionary
         """
-        # Special case: if found in dev manifest fallback (LEVEL 2), return dev schema
-        # This happens when model not in prod manifest but found in dev manifest
-        if level == FallbackLevel.DEV_MANIFEST and not self.use_dev:
-            return _build_dev_schema_result(model, self.model_name)
-
-        # Dev mode: use dev schema
-        if self.use_dev:
-            return _build_dev_schema_result(model, self.model_name)
-
-        # Production mode: use production schema
-        config = model.get('config', {})
-
-        # Schema/database resolution based on config
-        model_database = model.get('database', '')
-        model_schema = model.get('schema', '')
-        config_database = config.get('database', '')
-        config_schema = config.get('schema', '')
-
-        if self.config.prod_schema_source == 'model':
-            database = model_database
-            schema_name = model_schema
-        elif self.config.prod_schema_source == 'config':
-            database = config_database or model_database
-            schema_name = config_schema or model_schema
-        else:  # 'config_or_model' (default)
-            database = config_database or model_database
-            schema_name = config_schema or model_schema
-
-        # Table name resolution based on config
-        alias = config.get('alias', '')
-        name = model.get('name', '')
-
-        if self.config.prod_table_name_strategy == 'name':
-            table_name = name or alias
-        elif self.config.prod_table_name_strategy == 'alias':
-            table_name = alias or name
-        else:  # 'alias_or_name' (default)
-            table_name = alias or name
-
-        return {
-            'database': database,
-            'schema': schema_name,
-            'table': table_name,
-            'full_name': f"{database}.{schema_name}.{table_name}"
-        }
+        return resolve_location(
+            model, self.model_name, level, self.use_dev, self.config
+        ).as_dict()
 
     def _get_model_bigquery_dev(self) -> Optional[dict[str, Any]]:
         """Get model from BigQuery in dev mode.

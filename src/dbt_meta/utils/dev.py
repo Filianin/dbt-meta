@@ -254,26 +254,3 @@ def build_dev_table_name(model: dict[str, Any], model_name: str) -> str:
     else:
         # Treat as literal string
         return pattern
-
-
-def build_dev_schema_result(model: dict[str, Any], model_name: str) -> dict[str, str]:
-    """
-    Build dev schema result from model data.
-
-    Args:
-        model: Model data from manifest
-        model_name: Original model name (for fallback)
-
-    Returns:
-        Dictionary with schema, table, full_name (dev format)
-
-    Note: Dev tables use pattern from DBT_DEV_TABLE_PATTERN (default: filename)
-    """
-    dev_schema = calculate_dev_schema()
-    table_name = build_dev_table_name(model, model_name)
-
-    return {
-        'schema': dev_schema,
-        'table': table_name,
-        'full_name': f"{dev_schema}.{table_name}"
-    }
