@@ -12,7 +12,6 @@ import orjson
 
 import dbt_meta.command_impl.powerbi as cmd
 from dbt_meta.powerbi.artifact import save_index
-from dbt_meta.powerbi.raw_reader import owners_index
 from dbt_meta.powerbi.compliance import (
     ComplianceReport,
     check_compliance,
@@ -26,6 +25,7 @@ from dbt_meta.powerbi.index import (
     TableRef,
 )
 from dbt_meta.powerbi.mapper import DbtTableIndex
+from dbt_meta.powerbi.raw_reader import owners_index
 
 DB = "admirals-bi-dwh"
 
@@ -101,6 +101,19 @@ class TestClassify:
         """An unresolved table whose schema is neither ``core*`` nor ``report*``
         stays a violation (e.g. a Tableau extract in the ``tableau`` schema)."""
         assert classify(IDX.lookup(f"{DB}.tableau.vps_clients")) == "layer:external"
+
+    def test_unmapped_exact_root_schema_is_compliant(self):
+        """The bare root schema (``core``/``report``, no suffix) is approved."""
+        assert classify(IDX.lookup(f"{DB}.core.d_calendar")) is None
+        assert classify(IDX.lookup(f"{DB}.report.dashboard_x")) is None
+
+    def test_unmapped_prefix_collision_is_external(self):
+        """Token boundary: a schema that merely *starts with* an approved root
+        but is a different word (``reporting_stale``, ``coreanything``) is NOT
+        the core/report layer → violation, not silently approved."""
+        assert classify(IDX.lookup(f"{DB}.reporting_stale.t")) == "layer:external"
+        assert classify(IDX.lookup(f"{DB}.coreanything.t")) == "layer:external"
+        assert classify(IDX.lookup(f"{DB}.report_archive_legacy.t")) is None
 
     def test_legacy_core_model_is_violation(self):
         assert classify(IDX.lookup(f"{DB}.core_x.core_legacy")) == "domain:legacy"

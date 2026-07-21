@@ -120,6 +120,19 @@ class TestMParserNonBigQuery:
     def test_dax_calculated_table(self):
         assert parse_m_expression(fx.DAX_CALCULATED).kind == "dax"
 
+    def test_truncated_navigation_falls_through_to_unknown(self):
+        # GoogleBigQuery.Database present but <3 nav steps → not a resolvable
+        # table; a `let` expr with no other match → unknown/partial.
+        result = parse_m_expression(fx.NAV_TRUNCATED)
+        assert result.kind == "unknown"
+        assert result.parse_status == "partial"
+        assert result.tables == ()
+
+    def test_unrecognized_let_expression_is_partial(self):
+        result = parse_m_expression(fx.UNKNOWN_LET)
+        assert result.kind == "unknown"
+        assert result.parse_status == "partial"
+
 
 # ============================================================================
 # Native-SQL analyzer

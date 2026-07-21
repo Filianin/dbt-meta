@@ -10,7 +10,7 @@ Provides dbt-meta CLI with:
 
 import json
 from pathlib import Path
-from typing import Any, Callable, List, NoReturn, Optional
+from typing import Any, Callable, NoReturn, Optional
 
 import typer
 from rich import print as rprint
@@ -1875,7 +1875,7 @@ def powerbi_compliance(
         None, "-o", "--output",
         help="Compliance JSON output path (default: <manifest-dir>/powerbi_compliance.json)",
     ),
-    exclude_workspace: Optional[List[str]] = typer.Option(
+    exclude_workspace: Optional[list[str]] = typer.Option(
         None, "--exclude-workspace",
         help="Workspace to skip entirely (repeatable), e.g. dev sandboxes",
     ),
@@ -2966,13 +2966,14 @@ def _ensure_manifest_compiled(
     if no_compile or using_prod or is_explicit:
         _fail()
 
-    from dbt_meta.usage.advisor_refresh import (
-        _find_dbt_executable,
-        _infer_project_root,
+    from dbt_meta.utils.compiled_sql import (
+        find_dbt_executable,
+        infer_project_root,
+        run_dbt_compile,
     )
 
-    project_root = _infer_project_root(manifest_file)
-    dbt_cmd = _find_dbt_executable(project_root) if project_root else None
+    project_root = infer_project_root(manifest_file)
+    dbt_cmd = find_dbt_executable(project_root) if project_root else None
     if not project_root or not dbt_cmd:
         _fail(
             "Auto-compile skipped: "
@@ -2986,31 +2987,21 @@ def _ensure_manifest_compiled(
         "rest. This can take 5-15 min on large projects; pass "
         "`--no-compile` to skip.[/dim]"
     )
-    import os
-    import subprocess as _subprocess
-
-    compile_argv: list[str] = [dbt_cmd, "compile"]
     # Use the project-local profiles.yml when present; otherwise let dbt fall
     # back to ~/.dbt/profiles.yml. Without this, projects that ship their own
     # profiles.yml at root produce 0/N compiled because dbt can't find any
     # profile and silently fails per model.
-    if os.path.isfile(os.path.join(project_root, "profiles.yml")):
-        compile_argv += ["--profiles-dir", project_root]
-
-    try:
-        result = _subprocess.run(
-            compile_argv,
-            cwd=project_root,
-            capture_output=True,
-            text=True,
-            timeout=1800,  # 30 min — full-project compile budget
-        )
-    except (_subprocess.TimeoutExpired, OSError) as exc:
-        _fail(f"`dbt compile` failed to launch: {exc}")
-
-    if result.returncode != 0:
-        tail = "\n      ".join((result.stderr or result.stdout or "").splitlines()[-10:])
-        _fail(f"`dbt compile` exited with code {result.returncode}:\n      {tail}")
+    profiles_dir = (
+        project_root if (Path(project_root) / "profiles.yml").is_file() else None
+    )
+    ok, err = run_dbt_compile(
+        project_root,
+        profiles_dir=profiles_dir,
+        timeout=1800,  # 30 min — full-project compile budget
+    )
+    if not ok:
+        tail = "\n      ".join((err or "").splitlines()[-10:])
+        _fail(f"`dbt compile` failed:\n      {tail}")
 
     try:
         manifest = orjson.loads(Path(manifest_file).read_bytes())
@@ -3306,10 +3297,11 @@ def optimize_refresh(
         meta optimize refresh -m --no-compile             # use whatever manifest is on disk as-is
     """
     from dbt_meta.usage import RefreshAdvisor, changed_models_from_git
-    from dbt_meta.usage.advisor_refresh import (
-        _find_dbt_executable,
-        _infer_project_root,
-        _RefreshDecision,
+    from dbt_meta.usage.advisor_refresh import _RefreshDecision
+    from dbt_meta.utils.compiled_sql import (
+        find_dbt_executable,
+        infer_project_root,
+        run_dbt_compile,
     )
 
     manifest, catalog, manifest_file = _load_manifest_and_catalog(True, manifest_path, catalog_path)
@@ -3387,46 +3379,32 @@ def optimize_refresh(
         # its full downstream chain — exactly what SQLGlot needs. We derive
         # the model short name from the file basename (dbt's convention).
         if modified_files and not no_compile:
-            import subprocess as _subprocess
             from pathlib import Path as _Path
 
-            project_root = _infer_project_root(manifest_file)
+            project_root = infer_project_root(manifest_file)
             selectors = sorted({
                 f"{_Path(f).stem}+"
                 for f in modified_files
                 if f.endswith(".sql") and "models/" in f and _Path(f).stem
             })
-            dbt_cmd = _find_dbt_executable(project_root) if project_root else None
+            dbt_cmd = find_dbt_executable(project_root) if project_root else None
             if project_root and dbt_cmd and selectors:
                 Console(stderr=True).print(
                     f"[dim]ℹ️  Running `dbt compile --select {' '.join(selectors)}` "
                     f"in {project_root} to refresh manifest + compiled SQL of the impacted chain "
                     f"(may take 1-5 min on first run)…[/dim]"
                 )
-                try:
-                    compile_result = _subprocess.run(
-                        [dbt_cmd, "compile", "--select", *selectors],
-                        cwd=project_root,
-                        capture_output=True,
-                        text=True,
-                        timeout=600,
-                    )
-                except (_subprocess.TimeoutExpired, OSError) as exc:
-                    Console(stderr=True).print(
-                        f"[yellow]⚠️  `dbt compile` did not complete ({exc}); using the on-disk manifest as-is.[/yellow]"
-                    )
-                    compile_result = None
-                if compile_result is not None and compile_result.returncode == 0:
+                ok, err = run_dbt_compile(project_root, select=selectors, timeout=600)
+                if ok:
                     manifest, catalog, manifest_file = _load_manifest_and_catalog(True, manifest_path, catalog_path)
-                elif compile_result is not None:
-                    # Show the LAST chunk of stderr/stdout — dbt-fusion prints
-                    # an "Execution Summary" footer and the actual error lines
+                else:
+                    # Show the LAST chunk of output — dbt-fusion prints an
+                    # "Execution Summary" footer and the actual error lines
                     # right above it, so the meaningful content is near the
                     # tail of the output.
-                    err_text = (compile_result.stderr or compile_result.stdout or "").strip()
-                    err_tail = "\n      ".join(err_text.splitlines()[-12:]) if err_text else "(no output captured)"
+                    err_tail = "\n      ".join((err or "").splitlines()[-12:]) or "(no output captured)"
                     Console(stderr=True).print(
-                        f"[yellow]⚠️  `dbt compile` failed (exit {compile_result.returncode}). "
+                        f"[yellow]⚠️  `dbt compile` did not complete. "
                         f"Last lines of output:\n      {err_tail}\n"
                         f"    Falling back to the on-disk manifest — models without compiled_code "
                         f"will land in `full_refresh` conservatively.\n"

@@ -24,10 +24,13 @@ from .index import PowerBiIndex, ReportEntry
 from .mapper import DbtTableIndex, TableMapping
 
 APPROVED_LAYERS = frozenset({"core", "report"})
-# Physical-schema prefixes that map to the curated core/report layers. Used as a
+# Physical-schema names that map to the curated core/report layers. Used as a
 # fallback for tables the manifest does not resolve (built by another project or
 # outside dbt), so e.g. ``core_utils`` / ``report_tableau`` are not flagged.
-APPROVED_SCHEMA_PREFIXES = ("core", "report")
+# Matched on a token boundary — the exact name or a ``<name>_`` prefix — so
+# ``core``/``core_utils``/``report_tableau`` pass but ``reporting_stale`` and
+# ``coreanything`` (which are NOT the core/report layer) do not.
+APPROVED_SCHEMA_ROOTS = ("core", "report")
 LEGACY_DOMAIN = "legacy"
 # Power BI republishes an App copy of a report as "[App] <name>": it loses owner
 # metadata and always mirrors a subset of the base report's tables, so it is a
@@ -75,6 +78,18 @@ def _schema(bq: str) -> str:
     return parts[-2] if len(parts) >= 2 else ""
 
 
+def _schema_root_approved(schema: str) -> bool:
+    """True when ``schema`` is an approved root, matched on a token boundary.
+
+    Approves the exact root (``core``) or a ``<root>_`` prefix (``core_utils``),
+    but never a bare-prefix collision like ``reporting_stale``/``coreanything``.
+    """
+    return any(
+        schema == root or schema.startswith(f"{root}_")
+        for root in APPROVED_SCHEMA_ROOTS
+    )
+
+
 def classify(mapping: TableMapping) -> str | None:
     """Return a violation ``reason``, or ``None`` when the table is compliant.
 
@@ -85,8 +100,9 @@ def classify(mapping: TableMapping) -> str | None:
       otherwise ``layer:<layer>`` (e.g. ``layer:staging``);
     * a declared ``source`` is always ``layer:sources``;
     * a table the manifest does not resolve falls back to the physical schema
-      convention — ``core*`` / ``report*`` schemas are approved, everything else
-      is ``layer:external``.
+      convention — ``core`` / ``core_*`` / ``report`` / ``report_*`` schemas are
+      approved (token boundary, not bare prefix), everything else is
+      ``layer:external``.
     """
     if mapping.status == "model":
         if mapping.layer in APPROVED_LAYERS:
@@ -96,7 +112,7 @@ def classify(mapping: TableMapping) -> str | None:
         return f"layer:{mapping.layer}"
     if mapping.status == "source":
         return "layer:sources"
-    if _schema(mapping.bq).startswith(APPROVED_SCHEMA_PREFIXES):
+    if _schema_root_approved(_schema(mapping.bq)):
         return None
     return "layer:external"
 

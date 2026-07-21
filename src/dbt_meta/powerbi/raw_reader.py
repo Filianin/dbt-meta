@@ -118,7 +118,7 @@ def source_for_report(raw_path: str, report_name: str) -> dict[str, Any]:
     return {"report": report.get("name", report_name), "sources": sources}
 
 
-def _graph_id_directory(raw: dict) -> dict[str, str]:
+def _graph_id_directory(raw: dict[str, Any]) -> dict[str, str]:
     """``graphId`` -> ``displayName`` across every user entry in the scan.
 
     Power BI scrubs the ``modifiedBy`` display name but keeps ``modifiedById``

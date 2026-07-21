@@ -327,7 +327,7 @@ outside the dbt project.
 | `powerbi measures` | DAX measures + expressions + `dax_refs` for a report | `--raw`, `-j` | `meta powerbi measures "Retain"` |
 | `powerbi source` | Power Query M-expressions for a report | `--raw`, `-j` | `meta powerbi source "Retain"` |
 | `powerbi owners` | Report owners + last modified | `--raw`, `-j` | `meta powerbi owners "Organic Leads"` |
-| `powerbi compliance` | Flag dashboards referencing tables outside the `core`/`report` dbt layers (or `domain=legacy`) | `--index`, `--raw`, `--manifest`, `-o/--output`, `-j` | `meta powerbi compliance` |
+| `powerbi compliance` | Flag dashboards referencing tables outside the `core`/`report` dbt layers (or `domain=legacy`) | `--index`, `--raw`, `--manifest`, `-o/--output`, `--exclude-workspace`, `-j` | `meta powerbi compliance --exclude-workspace "Dev Sandbox"` |
 
 Power BI artifacts are **prod-only**. `artifacts` writes to the same paths the
 cron-managed sync uses by default (`~/dbt-state/powerbi_raw.json`,

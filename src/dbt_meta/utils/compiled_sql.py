@@ -1,8 +1,18 @@
-"""Compiled SQL retrieval with 3-level fallback.
+"""Compiled SQL retrieval + the shared dbt-compile toolkit.
 
-Used by `meta validate` and `meta scan` to get compiled SQL for BigQuery dry run.
+This module is the single home for four concerns that used to be re-implemented
+across ``usage/advisor_refresh.py`` and ``cli.py``:
 
-Fallback strategy:
+* :func:`infer_project_root` — walk up to the dbt project root (manifest path,
+  then cwd fallback).
+* :func:`find_dbt_executable` — venv-aware discovery of the ``dbt`` CLI.
+* :func:`read_disk_compiled` — read ``target/compiled/.../<file>.sql`` for a node.
+* :func:`run_dbt_compile` — the one ``dbt compile`` subprocess runner, with
+  single / bulk / whole-project modes selected by keyword args.
+
+:func:`get_compiled_sql` (used by ``meta validate`` and ``meta scan``) is the
+3-level fallback built on top of these:
+
 1. model['compiled_code'] from manifest (fast, works for `dbt compile`/`dbt run` output)
 2. target/compiled/{package}/{original_file_path} on disk (works when compile ran
    but dev manifest only had `dbt parse`)
@@ -13,13 +23,164 @@ Returns (sql, error_message) where exactly one is non-None.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
-DBT_COMPILE_TIMEOUT = 180  # seconds
+DBT_COMPILE_TIMEOUT = 180  # seconds — single/bulk compile budget
+
+
+# ── shared dbt-compile toolkit ──────────────────────────────────────────────
+
+
+def infer_project_root(manifest_path: str | None) -> str | None:
+    """Find a dbt project root by walking from the manifest path, then cwd.
+
+    Two-step strategy:
+      1. Walk up from the manifest path itself (handles dev manifest at
+         ``<project>/target/manifest.json``).
+      2. Walk up from ``Path.cwd()`` (handles prod manifest at
+         ``~/dbt-state/manifest.json`` when the user is invoking ``meta``
+         from inside ``reports/`` or ``reports-spare/``). To avoid
+         accidentally picking up unrelated ``dbt_project.yml`` files higher
+         up the home directory, step 2 additionally requires a ``target/``
+         subdirectory next to ``dbt_project.yml`` — a strong signal the user
+         actually built the project (``dbt parse``/``compile``/``run`` all
+         create it).
+
+    Without step 2, prod-manifest runs from a real dbt project couldn't
+    trigger auto-compile because ``~/dbt-state/`` is not a dbt project.
+    """
+    if manifest_path:
+        try:
+            resolved: Path | None = Path(manifest_path).expanduser().resolve()
+        except OSError:
+            resolved = None
+        if resolved is not None:
+            for parent in [resolved.parent, *resolved.parents]:
+                if (parent / "dbt_project.yml").exists():
+                    return str(parent)
+
+    try:
+        cwd = Path.cwd().resolve()
+    except OSError:
+        return None
+    for parent in [cwd, *cwd.parents]:
+        if (parent / "dbt_project.yml").exists() and (parent / "target").is_dir():
+            return str(parent)
+    return None
+
+
+def find_dbt_executable(project_root: str | None) -> str | None:
+    """Locate the dbt CLI to use, preferring the project's own venv.
+
+    Order:
+      1. ``<project_root>/.venv/bin/dbt`` (most common convention)
+      2. ``<project_root>/venv/bin/dbt``
+      3. ``$VIRTUAL_ENV/bin/dbt`` if the user has a venv activated
+      4. ``shutil.which("dbt")`` — system PATH
+
+    The project-local lookup matters because users frequently install
+    ``dbt-core`` inside a project venv while having a different ``dbt`` on
+    PATH (e.g. ``dbt-fusion`` preview). Without this the wrong CLI would be
+    invoked and either fail or produce a differently-parsed manifest.
+    """
+    if project_root:
+        for candidate in (".venv/bin/dbt", "venv/bin/dbt"):
+            local = Path(project_root) / candidate
+            if local.is_file():
+                return str(local)
+    venv_env = os.environ.get("VIRTUAL_ENV")
+    if venv_env:
+        venv_dbt = Path(venv_env) / "bin" / "dbt"
+        if venv_dbt.is_file():
+            return str(venv_dbt)
+    return shutil.which("dbt")
+
+
+def _node_package(node: dict[str, Any]) -> str:
+    """Package name for a node: ``package_name`` → unique_id ``model.<pkg>.<name>``."""
+    pkg = node.get("package_name")
+    if pkg:
+        return str(pkg)
+    parts = str(node.get("unique_id", "")).split(".")
+    if len(parts) >= 3 and parts[0] == "model":
+        return parts[1]
+    return ""
+
+
+def read_disk_compiled(project_root: str, node: dict[str, Any]) -> str:
+    """Read compiled SQL from ``target/compiled/{package}/{original_file_path}``.
+
+    Returns empty string when the file is missing, empty, or unreadable.
+    """
+    package = _node_package(node)
+    path = node.get("original_file_path") or node.get("path") or ""
+    if not (package and path):
+        return ""
+    compiled_path = Path(project_root) / "target" / "compiled" / package / path
+    if not compiled_path.is_file():
+        return ""
+    try:
+        content = compiled_path.read_text()
+    except OSError:
+        return ""
+    return content if content.strip() else ""
+
+
+def run_dbt_compile(
+    project_root: str,
+    *,
+    select: list[str] | None = None,
+    target: str | None = None,
+    profiles_dir: str | None = None,
+    timeout: int = DBT_COMPILE_TIMEOUT,
+) -> tuple[bool, str | None]:
+    """Invoke ``dbt compile`` in ``project_root``. Returns (success, error_text).
+
+    Modes are expressed through the keyword args:
+      * single: ``select=[model], target="dev"``
+      * bulk:   ``select=[m1, m2, ...]``
+      * whole:  ``select=None`` (compile the entire project)
+
+    ``profiles_dir`` adds ``--profiles-dir`` (projects that ship their own
+    ``profiles.yml`` at root). Without it dbt falls back to ``~/.dbt``.
+    """
+    dbt_cmd = find_dbt_executable(project_root)
+    if not dbt_cmd:
+        return False, "dbt CLI not found in project venv or PATH"
+
+    argv: list[str] = [dbt_cmd, "compile"]
+    if select:
+        argv += ["--select", *select]
+    if target:
+        argv += ["--target", target]
+    if profiles_dir:
+        argv += ["--profiles-dir", profiles_dir]
+
+    try:
+        result = subprocess.run(
+            argv,
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"dbt compile timed out after {timeout}s"
+    except OSError as exc:
+        return False, f"failed to launch dbt: {exc}"
+
+    if result.returncode != 0:
+        output = ((result.stdout or "") + (result.stderr or "")).strip()
+        return False, output or f"dbt compile exited with code {result.returncode}"
+    return True, None
+
+
+# ── validate / scan: 3-level compiled-SQL fallback ──────────────────────────
 
 
 def get_compiled_sql(
@@ -48,15 +209,13 @@ def get_compiled_sql(
     if sql:
         return sql, None
 
-    project_root = _infer_project_root(manifest_path)
-    package_name = _extract_package_name(model)
-    original_file_path = model.get('original_file_path') or model.get('path') or ''
+    project_root = infer_project_root(manifest_path)
 
     # Level 2: target/compiled/ on disk
-    if project_root and package_name and original_file_path:
-        sql = _read_compiled_file(project_root, package_name, original_file_path)
-        if sql:
-            return sql, None
+    if project_root:
+        disk = read_disk_compiled(project_root, model)
+        if disk:
+            return disk, None
 
     # Level 3: auto-compile (only in --dev mode)
     if use_dev and auto_compile:
@@ -67,18 +226,19 @@ def get_compiled_sql(
             f"ℹ️  No compiled SQL for '{model_name}'. Running `dbt compile --select {model_name} --target dev`...",
             file=sys.stderr,
         )
-        ok, err = _run_dbt_compile(model_name, project_root)
+        ok, err = run_dbt_compile(project_root, select=[model_name], target="dev")
         if not ok:
             return None, (
                 f"dbt compile failed:\n{err}\n"
                 f"Try running manually: dbt compile --select {model_name} --target dev"
             )
 
-        if package_name and original_file_path:
-            sql = _read_compiled_file(project_root, package_name, original_file_path)
-            if sql:
-                return sql, None
+        disk = read_disk_compiled(project_root, model)
+        if disk:
+            return disk, None
 
+        package_name = _node_package(model)
+        original_file_path = model.get('original_file_path') or model.get('path') or ''
         return None, (
             f"dbt compile succeeded but compiled SQL not found at expected path.\n"
             f"Expected: target/compiled/{package_name}/{original_file_path}"
@@ -88,83 +248,6 @@ def get_compiled_sql(
     if use_dev:
         return None, _msg_dev_no_compile(model_name)
     return None, _msg_prod_no_compile(model_name)
-
-
-def _infer_project_root(manifest_path: str) -> str | None:
-    """Find project root by looking for dbt_project.yml above the manifest path."""
-    if not manifest_path:
-        return None
-    try:
-        resolved = Path(manifest_path).expanduser().resolve()
-    except OSError:
-        return None
-
-    for parent in [resolved.parent, *resolved.parents]:
-        if (parent / 'dbt_project.yml').exists():
-            return str(parent)
-    return None
-
-
-def _extract_package_name(model: dict[str, Any]) -> str:
-    """Extract package name from model metadata.
-
-    Priority: model['package_name'] → unique_id prefix `model.<pkg>.<name>`.
-    """
-    pkg = model.get('package_name')
-    if pkg:
-        return str(pkg)
-
-    unique_id = str(model.get('unique_id', ''))
-    parts = unique_id.split('.')
-    if len(parts) >= 3 and parts[0] == 'model':
-        return parts[1]
-    return ''
-
-
-def _read_compiled_file(project_root: str, package_name: str, original_file_path: str) -> str | None:
-    """Read compiled SQL from target/compiled/{package}/{path} if it exists and is non-empty."""
-    compiled_path = Path(project_root) / 'target' / 'compiled' / package_name / original_file_path
-    if not compiled_path.is_file():
-        return None
-    try:
-        content = compiled_path.read_text()
-    except OSError:
-        return None
-    return content if content.strip() else None
-
-
-def _run_dbt_compile(
-    model_name: str,
-    project_root: str,
-    timeout: int = DBT_COMPILE_TIMEOUT,
-) -> tuple[bool, str | None]:
-    """Invoke `dbt compile --select <model> --target dev` in the project root.
-
-    Returns:
-        (success, error_text)
-    """
-    dbt_cmd = shutil.which('dbt')
-    if not dbt_cmd:
-        return False, "dbt CLI not found in PATH"
-
-    try:
-        result = subprocess.run(
-            [dbt_cmd, 'compile', '--select', model_name, '--target', 'dev'],
-            cwd=project_root,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
-        return False, f"dbt compile timed out after {timeout}s"
-    except OSError as exc:
-        return False, f"Failed to launch dbt: {exc}"
-
-    if result.returncode != 0:
-        output = (result.stdout or '') + (result.stderr or '')
-        return False, output.strip() or f"dbt compile exited with code {result.returncode}"
-
-    return True, None
 
 
 def _msg_dev_no_compile(model_name: str) -> str:
