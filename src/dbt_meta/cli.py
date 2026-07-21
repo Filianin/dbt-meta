@@ -185,6 +185,7 @@ def _build_commands_panel() -> Panel:
     # Integration — Power BI (blue)
     table.add_row("[bold blue]Power BI:[/bold blue]", "")
     table.add_row("  [blue]powerbi artifacts[/blue]", "Scan workspaces + build compact index → ~/dbt-state/")
+    table.add_row("  [blue]powerbi compliance[/blue]", "Flag dashboards using tables outside core/report layers")
     table.add_row("  [blue]powerbi list[/blue]", "List all reports (workspace | report | dataset)")
     table.add_row("  [blue]powerbi find <q>[/blue]", "Find reports / metrics behind a dashboard")
     table.add_row("  [blue]powerbi show <report>[/blue]", "Report breakdown: tables + SQL analysis")
@@ -1858,6 +1859,65 @@ def powerbi_artifacts(
             f"{layout_line}"
             f"  raw   → {result['raw_path']}\n"
             f"  index → {result['index_path']}"
+        )
+
+
+@powerbi_app.command("compliance")
+def powerbi_compliance(
+    index: Optional[str] = typer.Option(
+        None, "--index", help="powerbi_index.json path (default: prod-manifest dir)"
+    ),
+    raw: Optional[str] = typer.Option(
+        None, "--raw", help="powerbi_raw.json path (default: prod-manifest dir)"
+    ),
+    manifest: Optional[str] = typer.Option(None, "--manifest", help="manifest.json path"),
+    output: Optional[str] = typer.Option(
+        None, "-o", "--output",
+        help="Compliance JSON output path (default: <manifest-dir>/powerbi_compliance.json)",
+    ),
+    json_output: bool = typer.Option(False, "-j", "--json", help="Output summary as JSON"),
+) -> None:
+    """Flag dashboards referencing tables outside the core/report dbt layers.
+
+    A reference is a violation unless it resolves to a dbt model in the ``core``
+    or ``report`` layer with a non-legacy domain. Declared sources, external
+    tables, other-layer models and ``domain = legacy`` models are all flagged.
+    Reports whose source could not be parsed are listed separately as unverified.
+    Writes ``powerbi_compliance.json`` ({compliant, violations, unverified}).
+    """
+    import os
+
+    from dbt_meta.command_impl import powerbi as pbi
+    from dbt_meta.powerbi.artifact import find_powerbi_artifact, find_powerbi_raw
+
+    try:
+        manifest_path, _ = get_manifest_path(manifest, False)
+        index_path = index or find_powerbi_artifact()
+        raw_path = raw or find_powerbi_raw()
+        out_path = output or os.path.join(
+            os.path.dirname(manifest_path), "powerbi_compliance.json"
+        )
+        result = pbi.compliance_cmd(index_path, raw_path, manifest_path, out_path)
+    except FileNotFoundError as e:
+        handle_error(DbtMetaError(str(e)), json_output)
+        return
+    except DbtMetaError as e:
+        handle_error(e, json_output)
+        return
+
+    if json_output:
+        print(json.dumps(result, indent=2))
+    else:
+        status = (
+            "[green]compliant[/green]"
+            if result["compliant"]
+            else f"[red]{result['violations']} violation(s)[/red]"
+        )
+        console.print(
+            f"[bold]Data-layer compliance:[/bold] {status}\n"
+            f"  violations → {result['violations']}\n"
+            f"  unverified → {result['unverified']}\n"
+            f"  output     → {result['output_path']}"
         )
 
 

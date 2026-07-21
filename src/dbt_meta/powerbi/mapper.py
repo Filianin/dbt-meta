@@ -22,20 +22,29 @@ class TableMapping:
     status: str  # model | source | external
     dbt_name: str | None = None
     unique_id: str | None = None
+    # dbt layer (top model folder, e.g. ``core`` / ``report`` / ``staging``);
+    # ``sources`` for declared sources; ``None`` for external tables.
+    layer: str | None = None
+    # ``config.meta.domain`` normalized to a tuple (it may be multi-valued).
+    domain: tuple[str, ...] = ()
+
+
+# One index entry: (status, dbt_name, unique_id, layer, domain).
+_Entry = tuple[str, str, str, "str | None", tuple[str, ...]]
 
 
 class DbtTableIndex:
     """Pre-built physical-name -> dbt-node index for O(1) classification."""
 
     def __init__(self, manifest: dict[str, Any]) -> None:
-        self._index: dict[str, tuple[str, str, str]] = {}  # key -> (status, name, uid)
+        self._index: dict[str, _Entry] = {}  # key -> (status, name, uid, layer, domain)
         # Secondary index on schema.table for native SQL that omits the
         # (default) project id. A schema.table seen under more than one project
         # is ambiguous and dropped so lookup falls back to ``external``.
-        short_hits: dict[str, tuple[str, str, str]] = {}
+        short_hits: dict[str, _Entry] = {}
         ambiguous: set[str] = set()
 
-        def add(key: str, value: tuple[str, str, str]) -> None:
+        def add(key: str, value: _Entry) -> None:
             self._index[key] = value
             short = self._short_key(key)
             if short in short_hits and short_hits[short] != value:
@@ -48,25 +57,58 @@ class DbtTableIndex:
                 continue
             key = self._model_key(node)
             if key:
-                add(key, ("model", node.get("name", ""), uid))
+                add(
+                    key,
+                    (
+                        "model",
+                        node.get("name", ""),
+                        uid,
+                        self._node_layer(node),
+                        self._node_domain(node),
+                    ),
+                )
 
         for uid, node in manifest.get("sources", {}).items():
             if node.get("resource_type") != "source":
                 continue
             key = self._source_key(node)
             if key:
-                add(key, ("source", node.get("name", ""), uid))
+                add(
+                    key,
+                    (
+                        "source",
+                        node.get("name", ""),
+                        uid,
+                        "sources",
+                        self._node_domain(node),
+                    ),
+                )
 
         self._short_index = {
-            short: value
-            for short, value in short_hits.items()
-            if short not in ambiguous
+            short: value for short, value in short_hits.items() if short not in ambiguous
         }
 
     @staticmethod
     def _short_key(key: str) -> str:
         """``db.schema.table`` -> ``schema.table`` (last two segments)."""
         return ".".join(key.split(".")[-2:])
+
+    @staticmethod
+    def _node_layer(node: dict[str, Any]) -> str | None:
+        """Top model folder from ``fqn`` (``[package, layer, ..., name]``)."""
+        fqn = node.get("fqn") or []
+        return fqn[1] if len(fqn) >= 2 else None
+
+    @staticmethod
+    def _node_domain(node: dict[str, Any]) -> tuple[str, ...]:
+        """``config.meta.domain`` (scalar or list) normalized to a tuple."""
+        meta = node.get("config", {}).get("meta") or node.get("meta") or {}
+        domain = meta.get("domain")
+        if domain is None:
+            return ()
+        if isinstance(domain, (list, tuple)):
+            return tuple(str(d) for d in domain)
+        return (str(domain),)
 
     @staticmethod
     def _model_key(node: dict[str, Any]) -> str:
@@ -96,5 +138,12 @@ class DbtTableIndex:
             hit = self._short_index.get(key)
         if hit is None:
             return TableMapping(bq=bq_table, status="external")
-        status, name, uid = hit
-        return TableMapping(bq=bq_table, status=status, dbt_name=name, unique_id=uid)
+        status, name, uid, layer, domain = hit
+        return TableMapping(
+            bq=bq_table,
+            status=status,
+            dbt_name=name,
+            unique_id=uid,
+            layer=layer,
+            domain=domain,
+        )

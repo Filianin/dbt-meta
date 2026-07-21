@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.7] - 2026-07-21
+
+### Added
+
+- **`meta powerbi compliance`** — data-layer compliance check for Power BI
+  dashboards. Classifies every BigQuery table a report references against the
+  dbt manifest and flags anything that does not resolve to a `core`/`report`
+  model with a non-legacy `domain`. Reads local artifacts only (`--index`,
+  `--raw`, `--manifest`), writes `{compliant, violations, unverified}` JSON via
+  `-o`. Layer is derived from the manifest `fqn` (top model folder), `domain`
+  from `config.meta.domain` (list-aware). Reports whose source could not be
+  parsed are listed separately as `unverified` (never asserted as compliant).
+
+### Fixed
+
+- `meta context` now reports the **dev** schema (`personal_<user>`) for a model
+  resolved via the prod→dev fallback, instead of the prod schema baked into the
+  dev manifest by `dbt compile` (Hard Invariant #4). Model-location logic is now
+  centralized in one `resolver` module (`resolve_location` /
+  `resolve_column_target`) shared by `schema`, `context` and `columns`.
+
 ## [0.3.6] - 2026-07-14
 
 List-valued `config.*` selectors now match by membership. A model whose

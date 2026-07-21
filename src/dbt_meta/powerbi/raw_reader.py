@@ -73,9 +73,7 @@ def _find_dataset(raw: dict[str, Any], dataset_id: str) -> dict[str, Any] | None
     return None
 
 
-def measures_for_report(
-    raw_path: str, report_name: str
-) -> dict[str, Any]:
+def measures_for_report(raw_path: str, report_name: str) -> dict[str, Any]:
     """Return all DAX measures for the dataset behind report_name."""
     raw = _load_raw(raw_path)
     report = _find_report(raw, report_name)
@@ -100,9 +98,7 @@ def measures_for_report(
     return {"report": report.get("name", report_name), "measures": measures}
 
 
-def source_for_report(
-    raw_path: str, report_name: str
-) -> dict[str, Any]:
+def source_for_report(raw_path: str, report_name: str) -> dict[str, Any]:
     """Return M-expressions for tables that have a non-empty source."""
     raw = _load_raw(raw_path)
     report = _find_report(raw, report_name)
@@ -122,9 +118,29 @@ def source_for_report(
     return {"report": report.get("name", report_name), "sources": sources}
 
 
-def owners_for_report(
-    raw_path: str, report_name: str
-) -> dict[str, Any]:
+def owners_index(raw_path: str) -> dict[tuple[str, str], str]:
+    """Map ``(workspace, report)`` -> the first Owner-access user's display name.
+
+    Used by the compliance check to attach a dashboard owner to each violation.
+    Power BI scrubs emails from the raw dump, so only the display name survives;
+    email resolution happens downstream via a name→email map.
+    """
+    raw = _load_raw(raw_path)
+    result: dict[tuple[str, str], str] = {}
+    for ws in raw.get("workspaces") or []:
+        ws_name = ws.get("name", "")
+        for report in ws.get("reports") or []:
+            owners = [
+                u.get("displayName", "")
+                for u in (report.get("users") or [])
+                if u.get("reportUserAccessRight") == "Owner" and u.get("displayName")
+            ]
+            if owners:
+                result[(ws_name, report.get("name", ""))] = owners[0]
+    return result
+
+
+def owners_for_report(raw_path: str, report_name: str) -> dict[str, Any]:
     """Return Owner-level users and last-modified metadata for a report."""
     raw = _load_raw(raw_path)
     report = _find_report(raw, report_name)
