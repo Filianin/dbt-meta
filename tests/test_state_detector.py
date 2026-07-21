@@ -240,7 +240,7 @@ class TestModelStateDetectorDevMode:
         with (
             patch("dbt_meta.utils.state_detector._get_cached_parser", side_effect=_get_parser),
             patch("dbt_meta.utils.state_detector.get_model_git_status", return_value=_git()),
-            patch("dbt_meta.utils.state_detector._calculate_dev_schema", return_value="personal_user"),
+            patch("dbt_meta.utils.dev.calculate_dev_schema", return_value="personal_user"),
             patch("os.path.exists", return_value=True),
         ):
             result = detector.detect()

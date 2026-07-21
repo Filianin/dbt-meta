@@ -117,7 +117,7 @@ class TestBigQueryColumnSourceWithoutModel:
         source = BigQueryColumnSource()
 
         with (
-            patch("dbt_meta.command_impl.column_source._calculate_dev_schema", return_value="personal_pfilianin"),
+            patch("dbt_meta.command_impl.resolver.calculate_dev_schema", return_value="personal_pfilianin"),
             patch(
                 "dbt_meta.command_impl.column_source._fetch_columns_from_bigquery_direct",
                 return_value=_SAMPLE_COLUMNS,
@@ -155,12 +155,48 @@ class TestBigQueryColumnSourceWithoutModel:
             return _SAMPLE_COLUMNS
 
         with (
-            patch("dbt_meta.command_impl.column_source.infer_table_parts", return_value=("core", "model")),
+            patch("dbt_meta.command_impl.resolver.infer_table_parts", return_value=("core", "model")),
             patch("dbt_meta.command_impl.column_source._fetch_columns_from_bigquery_direct", side_effect=_mock_bq),
         ):
             result = source.fetch(None, "core__model", ModelState.MODIFIED_UNCOMMITTED)
 
         assert result == _SAMPLE_COLUMNS
+
+    def test_modified_without_dev_not_found_returns_none(self, capsys):
+        prod_model = {**_STABLE_MODEL, "schema": "prod_schema"}
+        source = BigQueryColumnSource(use_dev=False)
+
+        with patch(
+            "dbt_meta.command_impl.column_source._fetch_columns_from_bigquery_direct", return_value=None
+        ):
+            result = source.fetch(None, "test_model", ModelState.MODIFIED_UNCOMMITTED, prod_model=prod_model)
+
+        assert result is None
+        err = capsys.readouterr().err
+        assert "❌ Model not found" in err
+        assert "defer run" not in err  # no defer hint for non-NEW state
+
+    def test_new_without_dev_not_found_suggests_defer(self, capsys):
+        source = BigQueryColumnSource(use_dev=False)
+
+        with (
+            patch("dbt_meta.command_impl.resolver.calculate_dev_schema", return_value="personal_x"),
+            patch("dbt_meta.command_impl.column_source._fetch_columns_from_bigquery_direct", return_value=None),
+        ):
+            result = source.fetch(None, "new_model", ModelState.NEW_COMMITTED)
+
+        assert result is None
+        err = capsys.readouterr().err
+        assert "defer run --select new_model" in err
+
+    def test_unfetchable_state_without_model_returns_none(self, capsys):
+        source = BigQueryColumnSource(use_dev=False)
+
+        result = source.fetch(None, "gone", ModelState.NOT_FOUND)
+
+        assert result is None
+        err = capsys.readouterr().err
+        assert "❌ Model not found" in err
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +324,7 @@ class TestCatalogColumnSource:
         source = CatalogColumnSource(cfg)
 
         with (
-            patch("dbt_meta.command_impl.column_source._calculate_dev_schema", return_value="personal_user"),
+            patch("dbt_meta.command_impl.resolver.calculate_dev_schema", return_value="personal_user"),
             patch(
                 "dbt_meta.command_impl.column_source._fetch_columns_from_bigquery_direct",
                 return_value=_SAMPLE_COLUMNS,

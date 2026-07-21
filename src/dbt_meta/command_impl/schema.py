@@ -5,13 +5,10 @@ import sys
 from typing import Any, Optional
 
 from dbt_meta.command_impl.base import BaseCommand
-from dbt_meta.errors import ModelNotFoundError
+from dbt_meta.command_impl.resolver import resolve_location
 from dbt_meta.fallback import FallbackLevel
 from dbt_meta.utils.bigquery import (
     run_bq_command as _run_bq_command,
-)
-from dbt_meta.utils.dev import (
-    build_dev_schema_result as _build_dev_schema_result,
 )
 from dbt_meta.utils.dev import (
     calculate_dev_schema as _calculate_dev_schema,
@@ -55,11 +52,6 @@ class SchemaCommand(BaseCommand):
     SUPPORTS_BIGQUERY = True
     SUPPORTS_DEV = True
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        """Initialize schema command."""
-        super().__init__(*args, **kwargs)
-        self._fallback_level: Optional[FallbackLevel] = None  # Track which level found the model
-
     def execute(self) -> Optional[dict[str, str]]:
         """Execute schema command.
 
@@ -70,55 +62,17 @@ class SchemaCommand(BaseCommand):
         if not model:
             return None
 
+        # _fallback_level is populated by BaseCommand.get_model_with_fallback.
+        # When the model was found in the dev manifest (LEVEL 2), process_model
+        # returns the dev schema location, not production.
         return self.process_model(model, self._fallback_level)
-
-    def _get_model_prod_mode(self) -> Optional[dict[str, Any]]:
-        """Override to track fallback level for special dev manifest handling.
-
-        When model found in dev manifest (LEVEL 2), schema command returns
-        dev schema location, not production schema.
-        """
-        from dbt_meta.utils import get_cached_parser as _get_cached_parser
-
-        parser = _get_cached_parser(self.manifest_path)
-
-        # Build allowed fallback levels
-        allowed_levels = [FallbackLevel.PROD_MANIFEST, FallbackLevel.DEV_MANIFEST]
-        if self.SUPPORTS_BIGQUERY:
-            allowed_levels.append(FallbackLevel.BIGQUERY)
-
-        try:
-            result = self._fallback_strategy.get_model(
-                model_name=self.model_name,
-                prod_parser=parser,
-                allowed_levels=allowed_levels
-            )
-
-            # Track fallback level
-            self._fallback_level = result.level
-
-            # Collect warnings from fallback
-            if result.warnings:
-                from dbt_meta.utils import print_warnings as _print_warnings
-                fallback_warnings = [
-                    {
-                        "type": f"{result.level.value}_fallback" if result.level else "fallback",
-                        "severity": "warning",
-                        "message": warning,
-                        "source": result.level.value if result.level else "unknown"
-                    }
-                    for warning in result.warnings
-                ]
-                _print_warnings(fallback_warnings, self.json_output)
-
-            return result.data
-
-        except ModelNotFoundError:
-            # Model not found in any fallback level - expected error
-            return None
 
     def process_model(self, model: dict[str, Any], level: Optional[FallbackLevel] = None) -> dict[str, str]:
         """Process model data and return schema location.
+
+        Delegates to the shared ``resolve_location`` seam, which honours
+        invariant #4 (dev-manifest hit → dev schema) and the prod
+        schema/table resolution strategies.
 
         Args:
             model: Model data from manifest or BigQuery
@@ -127,51 +81,9 @@ class SchemaCommand(BaseCommand):
         Returns:
             Schema location dictionary
         """
-        # Special case: if found in dev manifest fallback (LEVEL 2), return dev schema
-        # This happens when model not in prod manifest but found in dev manifest
-        if level == FallbackLevel.DEV_MANIFEST and not self.use_dev:
-            return _build_dev_schema_result(model, self.model_name)
-
-        # Dev mode: use dev schema
-        if self.use_dev:
-            return _build_dev_schema_result(model, self.model_name)
-
-        # Production mode: use production schema
-        config = model.get('config', {})
-
-        # Schema/database resolution based on config
-        model_database = model.get('database', '')
-        model_schema = model.get('schema', '')
-        config_database = config.get('database', '')
-        config_schema = config.get('schema', '')
-
-        if self.config.prod_schema_source == 'model':
-            database = model_database
-            schema_name = model_schema
-        elif self.config.prod_schema_source == 'config':
-            database = config_database or model_database
-            schema_name = config_schema or model_schema
-        else:  # 'config_or_model' (default)
-            database = config_database or model_database
-            schema_name = config_schema or model_schema
-
-        # Table name resolution based on config
-        alias = config.get('alias', '')
-        name = model.get('name', '')
-
-        if self.config.prod_table_name_strategy == 'name':
-            table_name = name or alias
-        elif self.config.prod_table_name_strategy == 'alias':
-            table_name = alias or name
-        else:  # 'alias_or_name' (default)
-            table_name = alias or name
-
-        return {
-            'database': database,
-            'schema': schema_name,
-            'table': table_name,
-            'full_name': f"{database}.{schema_name}.{table_name}"
-        }
+        return resolve_location(
+            model, self.model_name, level, self.use_dev, self.config
+        ).as_dict()
 
     def _get_model_bigquery_dev(self) -> Optional[dict[str, Any]]:
         """Get model from BigQuery in dev mode.

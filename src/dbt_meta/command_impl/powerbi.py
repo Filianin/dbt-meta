@@ -23,10 +23,17 @@ from ..powerbi.artifact import (
     load_index,
     save_index,
 )
+from ..powerbi.compliance import check_compliance, report_to_dict
 from ..powerbi.index import PowerBiIndex, ReportEntry, build_index
+from ..powerbi.mapper import DbtTableIndex
 from ..powerbi.pbir_parser import parse_pbir_legacy, parse_report_filters
 from ..powerbi.query import find, reports_for_model, show
-from ..powerbi.raw_reader import measures_for_report, owners_for_report, source_for_report
+from ..powerbi.raw_reader import (
+    measures_for_report,
+    owners_for_report,
+    owners_index,
+    source_for_report,
+)
 from ..powerbi.scanner import get_powerbi_token, scan_workspaces
 from ..utils.monitoring import fetch_model_query_costs
 from ..utils.powerbi import get_fabric_token, get_report_definition
@@ -35,6 +42,7 @@ __all__ = [
     "_load_lineage_graph",
     "artifacts_cmd",
     "build_index_artifact",
+    "compliance_cmd",
     "cost_cmd",
     "enrich_with_layouts",
     "find_in_index",
@@ -76,11 +84,7 @@ def _scan_summary(scan_result: dict[str, Any]) -> dict[str, int]:
 
 def scan_command(config: Config, out_path: str) -> dict[str, Any]:
     """Scan the configured workspaces and write the raw scanResult to ``out_path``."""
-    if not (
-        config.powerbi_tenant_id
-        and config.powerbi_client_id
-        and config.powerbi_client_secret
-    ):
+    if not (config.powerbi_tenant_id and config.powerbi_client_id and config.powerbi_client_secret):
         raise DbtMetaError(
             "Power BI credentials not configured.",
             suggestion="Set POWERBI_TENANT_ID / POWERBI_CLIENT_ID / "
@@ -235,9 +239,7 @@ def artifacts_cmd(
     }
 
 
-def build_index_artifact(
-    raw_path: str, manifest_path: str, out_path: str
-) -> dict[str, Any]:
+def build_index_artifact(raw_path: str, manifest_path: str, out_path: str) -> dict[str, Any]:
     """Build the compact index from a raw scanResult + manifest, write to ``out_path``."""
     scan_result = _load_json(raw_path)
     manifest = _load_json(manifest_path)
@@ -251,6 +253,34 @@ def build_index_artifact(
         "tables": table_count,
         "metrics": len(index.metric_index),
         "output": out_path,
+    }
+
+
+def compliance_cmd(
+    index_path: str, raw_path: str, manifest_path: str, out_path: str
+) -> dict[str, Any]:
+    """Check data-layer compliance and write the violations JSON to ``out_path``.
+
+    Reads the compact index (already-resolved tables), the manifest (layer +
+    domain classification) and the raw scan (dashboard owners). No live Power BI
+    scan. Writes ``{compliant, violations, unverified}`` and returns a summary.
+    """
+    index = load_index(index_path)
+    manifest = _load_json(manifest_path)
+    dbt_index = DbtTableIndex(manifest)
+    owners = owners_index(raw_path)
+
+    report = check_compliance(index, dbt_index, owners)
+    payload = report_to_dict(report)
+
+    with open(out_path, "wb") as fh:
+        fh.write(orjson.dumps(payload, option=orjson.OPT_INDENT_2))
+
+    return {
+        "compliant": payload["compliant"],
+        "violations": len(payload["violations"]),
+        "unverified": len(payload["unverified"]),
+        "output_path": out_path,
     }
 
 
@@ -278,9 +308,7 @@ def list_cmd(artifact_path: str) -> dict[str, Any]:
     (``show`` / ``cost`` / ``lineage`` / ``owners``) have a name to target.
     """
     index = load_index(artifact_path)
-    reports = sorted(
-        index.reports, key=lambda r: (r.workspace.lower(), r.report.lower())
-    )
+    reports = sorted(index.reports, key=lambda r: (r.workspace.lower(), r.report.lower()))
     return {
         "count": len(reports),
         "reports": [_report_to_dict(r) for r in reports],
@@ -337,9 +365,7 @@ def cost_cmd(artifact_path: str, report_name: str) -> dict[str, Any]:
         )
 
     rows = fetch_model_query_costs() or []
-    cost_by_model: dict[str, dict[str, Any]] = {
-        str(r.get("dbt_model_name", "")): r for r in rows
-    }
+    cost_by_model: dict[str, dict[str, Any]] = {str(r.get("dbt_model_name", "")): r for r in rows}
 
     tables = []
     for t in report.tables:

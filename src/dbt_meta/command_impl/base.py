@@ -18,6 +18,9 @@ from dbt_meta.fallback import FallbackLevel, FallbackStrategy
 from dbt_meta.utils import get_cached_parser as _get_cached_parser
 from dbt_meta.utils import print_warnings as _print_warnings
 from dbt_meta.utils.dev import (
+    apply_dev_schema as _apply_dev_schema,
+)
+from dbt_meta.utils.dev import (
     find_dev_manifest as _find_dev_manifest,
 )
 from dbt_meta.utils.git import check_manifest_git_mismatch as _check_manifest_git_mismatch
@@ -77,6 +80,11 @@ class BaseCommand(ABC):
         self.use_dev = use_dev
         self.json_output = json_output
         self.warnings: list[dict[str, str]] = []
+        # Level where get_model_with_fallback() found the model. Populated by
+        # _get_model_prod_mode / _get_model_dev_mode so subclasses (e.g.
+        # SchemaCommand) can special-case dev-manifest hits without re-running
+        # the fallback themselves.
+        self._fallback_level: Optional[FallbackLevel] = None
         # CRITICAL: Use config.prod_manifest_path for fallback strategy
         self._fallback_strategy = FallbackStrategy(config, config.prod_manifest_path)
 
@@ -171,21 +179,21 @@ class BaseCommand(ABC):
                 parser = _get_cached_parser(dev_manifest)
                 model = parser.get_model(self.model_name)
                 if model:
-                    # CRITICAL: Override schema to dev schema when using --dev
+                    # CRITICAL: Override schema to dev schema when using --dev.
                     # Dev manifest may contain production schema (from dbt compile)
-                    # but at runtime we want to use dev schema for BigQuery queries
-                    from dbt_meta.utils.dev import calculate_dev_schema
-                    dev_schema = calculate_dev_schema()
-                    model = model.copy()  # Don't modify cached model
-                    model['schema'] = dev_schema  # Override with dev schema
-                    return model
+                    # but at runtime we want to use dev schema for BigQuery queries.
+                    self._fallback_level = FallbackLevel.DEV_MANIFEST
+                    return _apply_dev_schema(model)  # Don't modify cached model
             except (ManifestNotFoundError, ManifestParseError):  # pragma: no cover
                 # Dev manifest not available or invalid - continue to BigQuery fallback
                 pass
 
         # Fallback to BigQuery for dev (if supported and enabled)
         if self.SUPPORTS_BIGQUERY and self.config.fallback_bigquery_enabled:
-            return self._get_model_bigquery_dev()
+            result = self._get_model_bigquery_dev()
+            if result is not None:
+                self._fallback_level = FallbackLevel.BIGQUERY
+            return result
 
         return None
 
@@ -197,8 +205,13 @@ class BaseCommand(ABC):
         Returns:
             Model data if found, None otherwise
         """
-        # CRITICAL: Use config.prod_manifest_path, NOT self.manifest_path
-        prod_manifest_path = self.config.prod_manifest_path
+        # In prod mode self.manifest_path is the explicit (--manifest) or prod
+        # manifest — honour it (--manifest is highest priority per invariant #2).
+        # It is never the dev manifest here because --dev routes to
+        # _get_model_dev_mode; the sole exception is a SUPPORTS_DEV=False command
+        # invoked with --dev (e.g. analyze), where self.manifest_path may be dev,
+        # so fall back to config.prod_manifest_path.
+        prod_manifest_path = self.manifest_path if not self.use_dev else self.config.prod_manifest_path
         if not prod_manifest_path or not os.path.exists(prod_manifest_path):
             return None
         parser = _get_cached_parser(prod_manifest_path)
@@ -214,6 +227,10 @@ class BaseCommand(ABC):
                 prod_parser=parser,
                 allowed_levels=allowed_levels
             )
+
+            # Track which level found the model, so subclasses can special-case
+            # dev-manifest hits without re-running the fallback.
+            self._fallback_level = result.level
 
             # Collect warnings from fallback
             if result.warnings:

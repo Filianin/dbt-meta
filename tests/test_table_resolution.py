@@ -69,12 +69,12 @@ class TestTableResolution:
         """Test dev table resolution when model not in manifest."""
         source = BigQueryColumnSource(use_dev=True)
 
-        with patch('dbt_meta.command_impl.column_source._calculate_dev_schema', return_value='personal_pavel_filianin'):
+        with patch('dbt_meta.command_impl.resolver.calculate_dev_schema', return_value='personal_pavel_filianin'):
             with patch('dbt_meta.command_impl.column_source._fetch_columns_from_bigquery_direct') as mock_fetch:
                 mock_fetch.return_value = [{'name': 'id', 'data_type': 'INT64'}]
                 source._fetch_without_model('core_new__feature', ModelState.NEW_UNCOMMITTED, prod_model=None)
 
-                mock_fetch.assert_called_with('personal_pavel_filianin', 'core_new__feature')
+                mock_fetch.assert_called_with('personal_pavel_filianin', 'core_new__feature', None)
 
     def test_multiple_models_dev_resolution(self):
         """Test multiple models to ensure consistent dev table resolution."""
@@ -155,9 +155,9 @@ class TestTableResolution:
         """NEW models should still use dev schema (they only exist in dev)."""
         source = BigQueryColumnSource(use_dev=False)
 
-        with patch('dbt_meta.command_impl.column_source._calculate_dev_schema', return_value='personal_pavel_filianin'):
+        with patch('dbt_meta.command_impl.resolver.calculate_dev_schema', return_value='personal_pavel_filianin'):
             with patch('dbt_meta.command_impl.column_source._fetch_columns_from_bigquery_direct') as mock_fetch:
                 mock_fetch.return_value = [{'name': 'id', 'data_type': 'INT64'}]
                 source._fetch_without_model('core_new__feature', ModelState.NEW_UNCOMMITTED, prod_model=None)
 
-                mock_fetch.assert_called_with('personal_pavel_filianin', 'core_new__feature')
+                mock_fetch.assert_called_with('personal_pavel_filianin', 'core_new__feature', None)

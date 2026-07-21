@@ -15,13 +15,8 @@ from dbt_meta.catalog.parser import CatalogParser
 from dbt_meta.command_impl.base import BaseCommand
 from dbt_meta.command_impl.columns import ColumnsCommand
 from dbt_meta.command_impl.docs import DocsCommand
+from dbt_meta.command_impl.resolver import resolve_location
 from dbt_meta.fallback import FallbackLevel
-from dbt_meta.utils.dev import (
-    build_dev_table_name as _build_dev_table_name,
-)
-from dbt_meta.utils.dev import (
-    calculate_dev_schema as _calculate_dev_schema,
-)
 
 
 class ContextCommand(BaseCommand):
@@ -58,32 +53,30 @@ class ContextCommand(BaseCommand):
         if not model:
             return None
 
-        return self.process_model(model)
+        # Pass the fallback level so a prod-mode dev-manifest hit resolves to the
+        # dev schema (invariant #4) instead of the prod schema baked into the dev
+        # manifest.
+        return self.process_model(model, self._fallback_level)
 
     def process_model(self, model: dict[str, Any], level: Optional[FallbackLevel] = None) -> dict[str, Any]:
         """Assemble the bundle from the resolved model plus column/catalog sources.
 
         Args:
             model: Model data from manifest or BigQuery
-            level: Fallback level (unused; column source resolves its own state)
+            level: Fallback level where the model was found (drives FQN via the
+                shared resolve_location seam)
 
         Returns:
             Bundle dictionary
         """
         config = model.get('config', {})
 
-        # FQN + table name: dev uses personal_USERNAME schema + SQL filename;
-        # prod uses node database/schema + config.alias.
-        if self.use_dev:
-            schema_name = _calculate_dev_schema()
-            database = ''
-            table_name = _build_dev_table_name(model, self.model_name)
-            full_name = f"{schema_name}.{table_name}"
-        else:
-            database = model.get('database', '')
-            schema_name = model.get('schema', '')
-            table_name = config.get('alias', model.get('name', ''))
-            full_name = f"{database}.{schema_name}.{table_name}"
+        # FQN + table name via the shared seam: dev (--dev or prod→dev fallback)
+        # uses personal_USERNAME schema + SQL filename; prod uses node
+        # database/schema + config.alias.
+        full_name = resolve_location(
+            model, self.model_name, level, self.use_dev, self.config
+        ).full_name
 
         # Column spine from BigQuery/catalog, descriptions left-joined from manifest.
         columns = self._build_columns()

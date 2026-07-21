@@ -10,14 +10,11 @@ from abc import ABC, abstractmethod
 from typing import Any, Optional
 
 from dbt_meta.catalog.parser import CatalogParser
+from dbt_meta.command_impl.resolver import resolve_column_target
 from dbt_meta.config import Config
 from dbt_meta.utils.bigquery import (
     fetch_columns_from_bigquery_direct as _fetch_columns_from_bigquery_direct,
 )
-from dbt_meta.utils.bigquery import (
-    infer_table_parts,
-)
-from dbt_meta.utils.dev import calculate_dev_schema as _calculate_dev_schema
 from dbt_meta.utils.model_state import ModelState
 
 # States where catalog is unreliable — go directly to BigQuery
@@ -85,24 +82,19 @@ class BigQueryColumnSource(ColumnSource):
         state: ModelState,
         prod_model: Optional[dict[str, Any]],
     ) -> Optional[list[dict[str, str]]]:
-        if self._use_dev:
-            database = model.get('database', '')
-            schema = model.get('schema', '')
-            table = model_name
-        else:
-            source = prod_model if prod_model else model
-            database = source.get('database', '')
-            schema = source.get('schema', '')
-            table = source.get('alias') or source.get('name', '')
+        # A present model always resolves to a target (dev or prod location).
+        target = resolve_column_target(state, model, prod_model, model_name, self._use_dev)
+        assert target is not None
+        location = f"{target.schema}.{target.table}"
 
         self._print_state_message(state, model_name)
-        columns = _fetch_columns_from_bigquery_direct(schema, table, database)
+        columns = _fetch_columns_from_bigquery_direct(target.schema, target.table, target.database)
 
         if columns:
-            self._print_result_message(state, len(columns), f"{schema}.{table}", is_dev=self._use_dev)
+            self._print_result_message(state, len(columns), location, is_dev=target.is_dev)
             return columns
 
-        self._print_not_found_message(state, model_name, f"{schema}.{table}")
+        self._print_not_found_message(state, model_name, location)
         return None
 
     def _fetch_without_model(
@@ -111,36 +103,25 @@ class BigQueryColumnSource(ColumnSource):
         state: ModelState,
         prod_model: Optional[dict[str, Any]],
     ) -> Optional[list[dict[str, str]]]:
-        if state == ModelState.MODIFIED_UNCOMMITTED and not self._use_dev:
-            if prod_model:
-                schema = prod_model.get('schema', '')
-                table = prod_model.get('alias') or prod_model.get('name', '')
-                database = prod_model.get('database', '')
-            else:
-                schema, table = infer_table_parts(model_name)
-                database = None
+        target = resolve_column_target(state, None, prod_model, model_name, self._use_dev)
+        is_new = state in (ModelState.NEW_UNCOMMITTED, ModelState.NEW_COMMITTED)
 
+        if target is not None:
             self._print_state_message(state, model_name)
-            columns = _fetch_columns_from_bigquery_direct(schema, table, database)
+            columns = _fetch_columns_from_bigquery_direct(target.schema, target.table, target.database)
 
             if columns:
-                self._print_result_message(state, len(columns), f"{schema}.{table}", is_dev=False)
-                return columns
-
-        elif state in (ModelState.NEW_UNCOMMITTED, ModelState.NEW_COMMITTED):
-            dev_schema = _calculate_dev_schema()
-            self._print_state_message(state, model_name)
-            columns = _fetch_columns_from_bigquery_direct(dev_schema, model_name)
-
-            if columns:
-                self._print_result_message(state, len(columns), f"{dev_schema}.{model_name}", is_dev=True)
-                print("\n\U0001f4a1 To build and query:", file=sys.stderr)
-                print(f"   defer run --select {model_name}", file=sys.stderr)
+                self._print_result_message(
+                    state, len(columns), f"{target.schema}.{target.table}", is_dev=target.is_dev
+                )
+                if is_new:
+                    print("\n\U0001f4a1 To build and query:", file=sys.stderr)
+                    print(f"   defer run --select {model_name}", file=sys.stderr)
                 return columns
 
         self._print_not_found_message(state, model_name, None)
 
-        if state in (ModelState.NEW_UNCOMMITTED, ModelState.NEW_COMMITTED):
+        if is_new:
             print("\n\U0001f4a1 To build and query:", file=sys.stderr)
             print(f"   defer run --select {model_name}", file=sys.stderr)
 

@@ -137,6 +137,28 @@ def validate_dev_dataset(dataset: str) -> str:
     return dataset
 
 
+def apply_dev_schema(model: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of ``model`` with its schema overridden to the dev dataset.
+
+    Dev manifests often carry the *prod* schema (baked in by ``dbt compile``);
+    at runtime dev commands must query ``personal_<user>``. This centralises the
+    ``model.copy(); model['schema'] = calculate_dev_schema()`` idiom that was
+    duplicated across BaseCommand and ModelStateDetector.
+
+    Note: table-name resolution stays per-command (``build_dev_table_name``);
+    this only fixes the dataset, not the physical table name.
+
+    Args:
+        model: Model data from a manifest.
+
+    Returns:
+        A shallow copy of ``model`` with ``schema`` set to the dev dataset.
+    """
+    result = model.copy()
+    result['schema'] = calculate_dev_schema()
+    return result
+
+
 def build_dev_table_name(model: dict[str, Any], model_name: str) -> str:
     """
     Build dev table name based on DBT_DEV_TABLE_PATTERN.
@@ -232,26 +254,3 @@ def build_dev_table_name(model: dict[str, Any], model_name: str) -> str:
     else:
         # Treat as literal string
         return pattern
-
-
-def build_dev_schema_result(model: dict[str, Any], model_name: str) -> dict[str, str]:
-    """
-    Build dev schema result from model data.
-
-    Args:
-        model: Model data from manifest
-        model_name: Original model name (for fallback)
-
-    Returns:
-        Dictionary with schema, table, full_name (dev format)
-
-    Note: Dev tables use pattern from DBT_DEV_TABLE_PATTERN (default: filename)
-    """
-    dev_schema = calculate_dev_schema()
-    table_name = build_dev_table_name(model, model_name)
-
-    return {
-        'schema': dev_schema,
-        'table': table_name,
-        'full_name': f"{dev_schema}.{table_name}"
-    }

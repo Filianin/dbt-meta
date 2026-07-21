@@ -13,7 +13,7 @@ from typing import Any, Optional
 from dbt_meta.config import Config
 from dbt_meta.manifest.parser import ManifestParser
 from dbt_meta.utils import get_cached_parser as _get_cached_parser
-from dbt_meta.utils.dev import calculate_dev_schema as _calculate_dev_schema
+from dbt_meta.utils.dev import apply_dev_schema as _apply_dev_schema
 from dbt_meta.utils.git import check_manifest_git_mismatch, get_model_git_status
 from dbt_meta.utils.model_state import ModelState, detect_model_state
 
@@ -71,8 +71,7 @@ class ModelStateDetector:
         # When use_dev=True, override schema to dev schema so BigQuery queries
         # the dev dataset, not prod (dev manifests often contain prod schema from dbt compile).
         if self._use_dev and dev_model:
-            model = dev_model.copy()
-            model['schema'] = _calculate_dev_schema()
+            model = _apply_dev_schema(dev_model)
         elif prod_model:
             model = prod_model
         elif dev_model:
