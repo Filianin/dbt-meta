@@ -4,15 +4,17 @@ Provides deep analysis of model partitioning/clustering effectiveness
 by combining manifest metadata with BigQuery monitoring data.
 """
 
+import os
+from collections import Counter
 from typing import Any, Optional
 
 from dbt_meta.command_impl.base import BaseCommand
 from dbt_meta.config import Config
-from dbt_meta.errors import DbtMetaError
+from dbt_meta.errors import ManifestNotFoundError, ManifestParseError
 from dbt_meta.fallback import FallbackLevel
+from dbt_meta.utils import get_cached_parser as _get_cached_parser
 from dbt_meta.utils.monitoring import (
     fetch_column_clustering_info,
-    fetch_downstream_filter_patterns,
     fetch_partition_stats,
     fetch_storage_metrics,
     fetch_usage_stats,
@@ -116,53 +118,42 @@ class AnalyzeCommand(BaseCommand):
         }
 
     def _analyze_downstream_filters(self, model: dict[str, Any]) -> list[str]:
-        """Analyze filter patterns in downstream models.
+        """Columns of *this* model that its direct downstream children filter on.
 
-        Returns list of column names commonly used in WHERE clauses
-        of models that depend on this one.
+        Uses the scope-aware ``ColumnUsageExtractor`` (shared with the optimize
+        advisors) instead of a WHERE-regex, so aliases, function-wrapping and
+        subquery scope are handled and only columns belonging to *this* model
+        are counted. Ordered by how many children filter on each column.
         """
-        from dbt_meta.command_impl.children import ChildrenCommand
-        from dbt_meta.command_impl.sql import SqlCommand
+        from dbt_meta.usage._common import (
+            collect_events,
+            direct_downstream,
+            find_target_node,
+        )
+        from dbt_meta.usage.extractor import ColumnUsageExtractor
 
+        prod_manifest_path = self.config.prod_manifest_path
+        if not prod_manifest_path or not os.path.exists(prod_manifest_path):
+            return []
         try:
-            children = ChildrenCommand(
-                self.config, self.manifest_path, self.model_name,
-                use_dev=False, json_output=True, recursive=False,
-            ).execute()
-        except DbtMetaError:
+            manifest = _get_cached_parser(prod_manifest_path).manifest
+        except (ManifestNotFoundError, ManifestParseError):
             return []
 
-        if not children:
+        target = find_target_node(manifest, self.model_name)
+        if target is None:
+            return []
+        unique_id, target_node = target
+
+        downstream_ids = direct_downstream(manifest, unique_id)
+        if not downstream_ids:
             return []
 
-        # Get SQL for each child and extract filter patterns
-        all_filters: dict[str, int] = {}
-
-        for child in children[:10]:  # Limit to first 10 children
-            child_name = child.get('model', child.get('path', ''))
-            if not child_name:
-                continue
-
-            # Extract model name from path if needed
-            if '/' in child_name:
-                child_name = child_name.split('/')[-1].replace('.sql', '')
-
-            try:
-                sql_result = SqlCommand(
-                    self.config, self.manifest_path, child_name,
-                    use_dev=False, json_output=False, raw=False,
-                ).execute()
-                if sql_result:
-                    sql_text = sql_result if isinstance(sql_result, str) else sql_result.get('sql', '')
-                    filters = fetch_downstream_filter_patterns(sql_text)
-                    for f in filters:
-                        all_filters[f] = all_filters.get(f, 0) + 1
-            except DbtMetaError:
-                continue
-
-        # Return top filters (used in multiple children)
-        sorted_filters = sorted(all_filters.items(), key=lambda x: x[1], reverse=True)
-        return [f for f, count in sorted_filters[:5]]
+        events = collect_events(manifest, target_node, ColumnUsageExtractor(), downstream_ids)
+        counts: Counter[str] = Counter(
+            e.column for e in events if e.clause == "where" and e.column
+        )
+        return [col for col, _ in counts.most_common()]
 
     def _generate_recommendations(
         self,

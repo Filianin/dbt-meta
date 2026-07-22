@@ -24,13 +24,9 @@ Usage:
 
 from __future__ import annotations
 
-import os
-import shutil
-import subprocess
 import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 from dbt_meta.usage._common import (
@@ -41,8 +37,13 @@ from dbt_meta.usage._common import (
     upstream_table_aliases,
 )
 from dbt_meta.usage.extractor import ColumnUsageExtractor
+from dbt_meta.utils.compiled_sql import (
+    infer_project_root,
+    read_disk_compiled,
+    run_dbt_compile,
+)
 
-DBT_COMPILE_TIMEOUT = 300  # seconds — bulk compile for many downstream models
+DBT_COMPILE_TIMEOUT = 300  # seconds — bulk compile budget for many downstream models
 
 # Operators that indicate a value-flowing dependency (not just structural)
 _VALUE_FLOW_CLAUSES = {"select", "where", "join", "group_by", "qualify", "partition_by"}
@@ -110,7 +111,7 @@ class RefreshAdvisor:
         self.manifest_path = manifest_path
         self.auto_compile = auto_compile
         self._project_root: str | None = (
-            _infer_project_root(manifest_path) if manifest_path else None
+            infer_project_root(manifest_path) if manifest_path else None
         )
         self._bulk_compile_attempted = False
 
@@ -447,7 +448,7 @@ class RefreshAdvisor:
         if sql:
             return sql
         if self._project_root:
-            disk_sql = _read_disk_compiled(self._project_root, node)
+            disk_sql = read_disk_compiled(self._project_root, node)
             if disk_sql:
                 return disk_sql
         return ""
@@ -459,7 +460,7 @@ class RefreshAdvisor:
         ``dbt compile --select <missing models>`` invocation when:
 
           * project root resolved (we are inside a dbt project, possibly via
-            cwd fallback in :func:`_infer_project_root`)
+            cwd fallback in :func:`~dbt_meta.utils.compiled_sql.infer_project_root`)
           * ``dbt`` CLI is available on PATH
           * at least one downstream model has neither ``compiled_code`` in the
             manifest nor a ``target/compiled/.../<file>.sql`` on disk
@@ -478,7 +479,7 @@ class RefreshAdvisor:
                 continue
             if (node.get("compiled_code") or "").strip():
                 continue
-            if _read_disk_compiled(self._project_root, node):
+            if read_disk_compiled(self._project_root, node):
                 continue
             missing_ids.append(uid)
 
@@ -493,7 +494,9 @@ class RefreshAdvisor:
             f"running `dbt compile` for {len(target_models)} model(s) "
             f"in {self._project_root} (one-time, may take 1-5 min)…\n"
         )
-        ok, err = _run_bulk_dbt_compile(target_models, self._project_root)
+        ok, err = run_dbt_compile(
+            self._project_root, select=target_models, timeout=DBT_COMPILE_TIMEOUT
+        )
         if ok:
             sys.stderr.write("✅ dbt compile succeeded; analysing column usage now.\n")
         else:
@@ -510,132 +513,6 @@ class RefreshAdvisor:
                 f"   Or fix dbt project errors and retry, or use --no-compile to skip\n"
                 f"   the auto-compile attempt entirely.\n"
             )
-
-
-def _infer_project_root(manifest_path: str | None) -> str | None:
-    """Find a dbt project root by walking from the manifest path, then cwd.
-
-    Two-step strategy:
-      1. Walk up from the manifest path itself (handles dev manifest at
-         ``<project>/target/manifest.json``).
-      2. Walk up from ``Path.cwd()`` (handles prod manifest at
-         ``~/dbt-state/manifest.json`` when the user is invoking ``meta``
-         from inside ``reports/`` or ``reports-spare/``). To avoid
-         accidentally picking up unrelated ``dbt_project.yml`` files higher
-         up the home directory, step 2 additionally requires a ``target/``
-         subdirectory next to ``dbt_project.yml`` — that's a strong signal
-         the user actually built the project (``dbt parse``/``compile`` /
-         ``run`` all create it).
-
-    Without step 2, prod-manifest runs from a real dbt project couldn't
-    trigger auto-compile because ``~/dbt-state/`` is not a dbt project,
-    so every downstream missing ``compiled_code`` ended up in
-    ``full_refresh`` with a "no compiled_code; cannot prove safety" reason.
-    """
-    if manifest_path:
-        try:
-            resolved = Path(manifest_path).expanduser().resolve()
-        except OSError:
-            resolved = None
-        if resolved is not None:
-            for parent in [resolved.parent, *resolved.parents]:
-                if (parent / "dbt_project.yml").exists():
-                    return str(parent)
-
-    try:
-        cwd = Path.cwd().resolve()
-    except OSError:
-        return None
-    for parent in [cwd, *cwd.parents]:
-        if (parent / "dbt_project.yml").exists() and (parent / "target").is_dir():
-            return str(parent)
-    return None
-
-
-def _read_disk_compiled(project_root: str, node: dict[str, Any]) -> str:
-    """Read compiled SQL from ``target/compiled/{package}/{original_file_path}``.
-
-    Returns empty string when the file is missing, empty, or unreadable.
-    """
-    package = node.get("package_name") or ""
-    if not package:
-        # Fallback: derive from unique_id "model.<pkg>.<name>"
-        uid = str(node.get("unique_id", ""))
-        parts = uid.split(".")
-        if len(parts) >= 3 and parts[0] == "model":
-            package = parts[1]
-    path = node.get("original_file_path") or node.get("path") or ""
-    if not (package and path):
-        return ""
-    compiled_path = Path(project_root) / "target" / "compiled" / package / path
-    if not compiled_path.is_file():
-        return ""
-    try:
-        content = compiled_path.read_text()
-    except OSError:
-        return ""
-    return content if content.strip() else ""
-
-
-def _find_dbt_executable(project_root: str | None) -> str | None:
-    """Locate the dbt CLI to use, preferring the project's own venv.
-
-    Order:
-      1. ``<project_root>/.venv/bin/dbt`` (most common convention)
-      2. ``<project_root>/venv/bin/dbt``
-      3. ``$VIRTUAL_ENV/bin/dbt`` if the user has a venv activated
-      4. ``shutil.which("dbt")`` — system PATH
-
-    The project-local lookup matters because users frequently install
-    ``dbt-core`` inside a project venv while having a different ``dbt`` on
-    PATH (e.g. ``dbt-fusion`` preview). Without this, ``meta optimize
-    refresh`` would invoke the wrong CLI and either fail or produce a
-    differently-parsed manifest.
-    """
-    if project_root:
-        for candidate in (".venv/bin/dbt", "venv/bin/dbt"):
-            local = Path(project_root) / candidate
-            if local.is_file():
-                return str(local)
-    venv_env = os.environ.get("VIRTUAL_ENV")
-    if venv_env:
-        venv_dbt = Path(venv_env) / "bin" / "dbt"
-        if venv_dbt.is_file():
-            return str(venv_dbt)
-    return shutil.which("dbt")
-
-
-def _run_bulk_dbt_compile(
-    model_names: list[str],
-    project_root: str,
-    timeout: int = DBT_COMPILE_TIMEOUT,
-) -> tuple[bool, str | None]:
-    """Invoke ``dbt compile --select <models...>`` in the project root.
-
-    Returns (success, error_text). The dbt CLI honours the user's default
-    target from ``profiles.yml`` so callers don't need to pass --target.
-    """
-    dbt_cmd = _find_dbt_executable(project_root)
-    if not dbt_cmd:
-        return False, "dbt CLI not found in project venv or PATH"
-    cmd = [dbt_cmd, "compile", "--select", *model_names]
-    try:
-        result = subprocess.run(
-            cmd,
-            cwd=project_root,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
-        return False, f"dbt compile timed out after {timeout}s"
-    except OSError as exc:
-        return False, f"failed to launch dbt: {exc}"
-
-    if result.returncode != 0:
-        out = ((result.stdout or "") + (result.stderr or "")).strip()
-        return False, out or f"dbt compile exited with code {result.returncode}"
-    return True, None
 
 
 def changed_models_from_git(modified_files: Iterable[str], manifest: dict[str, Any]) -> dict[str, None]:

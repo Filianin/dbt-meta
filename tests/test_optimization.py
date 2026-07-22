@@ -1441,78 +1441,98 @@ class TestAnalyzeCommandCoverage:
         assert result['config']['partition_by'] == 'event_date'
         assert result['config']['partition_type'] == 'DAY'
 
-    def test_analyze_downstream_filters_with_children(self):
-        """Test _analyze_downstream_filters with actual children."""
+    @staticmethod
+    def _make_analyze_cmd(model_name='test_model'):
         from dbt_meta.command_impl.analyze import AnalyzeCommand
         from dbt_meta.config import Config
 
-        config = Config.from_config_or_env()
         cmd = AnalyzeCommand.__new__(AnalyzeCommand)
-        cmd.config = config
+        cmd.config = Config.from_config_or_env()
         cmd.manifest_path = '/test/manifest.json'
-        cmd.model_name = 'test_model'
+        cmd.model_name = model_name
         cmd.use_dev = False
         cmd.json_output = False
+        return cmd
 
-        model = {'name': 'test_model'}
+    def test_analyze_downstream_filters_with_children(self):
+        """_analyze_downstream_filters counts columns of this model that direct
+        children filter on, via ColumnUsageExtractor, ordered by frequency."""
+        cmd = self._make_analyze_cmd()
 
-        with patch('dbt_meta.command_impl.children.ChildrenCommand.execute') as mock_children, \
-             patch('dbt_meta.command_impl.sql.SqlCommand.execute') as mock_sql, \
-             patch('dbt_meta.utils.monitoring.fetch_downstream_filter_patterns') as mock_filters:
-            mock_children.return_value = [
-                {'model': 'child1', 'path': 'models/child1.sql'},
-                {'path': 'models/child2.sql'},  # Uses path instead of model
-            ]
-            mock_sql.return_value = 'SELECT * FROM x WHERE event_date > ...'
-            # Return different filters for each child
-            mock_filters.side_effect = [
-                ['event_date', 'user_id'],
-                ['event_date', 'country'],
-            ]
+        manifest = {
+            'nodes': {
+                'model.pkg.test_model': {
+                    'name': 'test_model', 'alias': 'test_model',
+                    'schema': 'core', 'database': 'db',
+                },
+                'model.pkg.child1': {
+                    'name': 'child1',
+                    'compiled_code': (
+                        "SELECT * FROM db.core.test_model "
+                        "WHERE event_date > '2024-01-01' AND user_id = 5"
+                    ),
+                },
+                'model.pkg.child2': {
+                    'name': 'child2',
+                    'compiled_code': (
+                        "SELECT * FROM db.core.test_model "
+                        "WHERE event_date = '2024-01-01' AND country = 'US'"
+                    ),
+                },
+            },
+            'child_map': {
+                'model.pkg.test_model': ['model.pkg.child1', 'model.pkg.child2'],
+                'model.pkg.child1': [],
+                'model.pkg.child2': [],
+            },
+        }
+        parser = MagicMock()
+        parser.manifest = manifest
 
-            result = cmd._analyze_downstream_filters(model)
+        with patch('dbt_meta.command_impl.analyze.os.path.exists', return_value=True), \
+             patch('dbt_meta.command_impl.analyze._get_cached_parser', return_value=parser):
+            result = cmd._analyze_downstream_filters({'name': 'test_model'})
 
-        assert 'event_date' in result  # Most common filter (in both children)
+        assert 'event_date' in result  # filtered by both children → most common
+        assert result[0] == 'event_date'
+        assert 'user_id' in result and 'country' in result
 
-    def test_analyze_downstream_filters_error_handling(self):
-        """Test _analyze_downstream_filters handles DbtMetaError in children."""
-        from dbt_meta.command_impl.analyze import AnalyzeCommand
-        from dbt_meta.config import Config
-        from dbt_meta.errors import ModelNotFoundError
+    def test_analyze_downstream_filters_no_manifest(self):
+        """Missing prod manifest → empty list (no crash)."""
+        cmd = self._make_analyze_cmd()
+        with patch('dbt_meta.command_impl.analyze.os.path.exists', return_value=False):
+            assert cmd._analyze_downstream_filters({}) == []
 
-        config = Config.from_config_or_env()
-        cmd = AnalyzeCommand.__new__(AnalyzeCommand)
-        cmd.config = config
-        cmd.manifest_path = '/test/manifest.json'
-        cmd.model_name = 'test_model'
+    def test_analyze_downstream_filters_parse_error(self):
+        """Unreadable manifest → empty list."""
+        from dbt_meta.errors import ManifestParseError
 
-        with patch('dbt_meta.command_impl.children.ChildrenCommand.execute') as mock_children:
-            mock_children.side_effect = ModelNotFoundError('not_found', ['test'])
+        cmd = self._make_analyze_cmd()
+        with patch('dbt_meta.command_impl.analyze.os.path.exists', return_value=True), \
+             patch('dbt_meta.command_impl.analyze._get_cached_parser',
+                   side_effect=ManifestParseError('/test/manifest.json', 'bad')):
+            assert cmd._analyze_downstream_filters({}) == []
 
-            result = cmd._analyze_downstream_filters({})
+    def test_analyze_downstream_filters_target_missing(self):
+        """Target model absent from manifest → empty list."""
+        cmd = self._make_analyze_cmd(model_name='ghost')
+        parser = MagicMock()
+        parser.manifest = {'nodes': {}, 'child_map': {}}
+        with patch('dbt_meta.command_impl.analyze.os.path.exists', return_value=True), \
+             patch('dbt_meta.command_impl.analyze._get_cached_parser', return_value=parser):
+            assert cmd._analyze_downstream_filters({}) == []
 
-        assert result == []
-
-    def test_analyze_downstream_filters_sql_error(self):
-        """Test _analyze_downstream_filters handles DbtMetaError in sql."""
-        from dbt_meta.command_impl.analyze import AnalyzeCommand
-        from dbt_meta.config import Config
-        from dbt_meta.errors import ModelNotFoundError
-
-        config = Config.from_config_or_env()
-        cmd = AnalyzeCommand.__new__(AnalyzeCommand)
-        cmd.config = config
-        cmd.manifest_path = '/test/manifest.json'
-        cmd.model_name = 'test_model'
-
-        with patch('dbt_meta.command_impl.children.ChildrenCommand.execute') as mock_children, \
-             patch('dbt_meta.command_impl.sql.SqlCommand.execute') as mock_sql:
-            mock_children.return_value = [{'model': 'child1'}]
-            mock_sql.side_effect = ModelNotFoundError('not_found', ['test'])
-
-            result = cmd._analyze_downstream_filters({})
-
-        assert result == []
+    def test_analyze_downstream_filters_no_children(self):
+        """Target with no direct downstream → empty list."""
+        cmd = self._make_analyze_cmd()
+        parser = MagicMock()
+        parser.manifest = {
+            'nodes': {'model.pkg.test_model': {'name': 'test_model', 'schema': 'core'}},
+            'child_map': {'model.pkg.test_model': []},
+        }
+        with patch('dbt_meta.command_impl.analyze.os.path.exists', return_value=True), \
+             patch('dbt_meta.command_impl.analyze._get_cached_parser', return_value=parser):
+            assert cmd._analyze_downstream_filters({}) == []
 
     def test_analyze_recommendation_partition_expiration(self):
         """Test partition expiration recommendation (lines 224-226)."""

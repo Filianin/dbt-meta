@@ -300,6 +300,23 @@ class TestErrorHandling:
         error_output = result.stderr + result.stdout
         assert 'parse' in error_output.lower() or 'error' in error_output.lower()
 
+    def test_invalid_manifest_error_json_mode(self, cli_runner, tmp_path, monkeypatch):
+        """A DbtMetaError raised inside a @meta_command body with -j must be
+        caught by the decorator and re-emitted as a structured JSON error
+        (exercises the decorator's json_output branch, not _not_found_error)."""
+        import json as _json
+
+        invalid_manifest = tmp_path / 'invalid.json'
+        invalid_manifest.write_text('{invalid json')
+        monkeypatch.setenv('DBT_PROD_MANIFEST_PATH', str(invalid_manifest))
+
+        result = cli_runner.invoke(app, ['schema', 'any_model', '-j'])
+
+        assert result.exit_code == 1
+        payload = _json.loads(result.stdout.strip().splitlines()[-1])
+        assert 'error' in payload
+        assert payload['error']
+
     def test_model_not_found_with_suggestion(self, cli_runner, prod_manifest, monkeypatch):
         """Test that ModelNotFoundError includes suggestion"""
         monkeypatch.setenv('DBT_PROD_MANIFEST_PATH', str(prod_manifest))

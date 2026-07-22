@@ -5,6 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.8] - 2026-07-22
+
+### Added
+
+- **`meta powerbi compliance --exclude-workspace`** — repeatable flag to drop
+  named workspaces (e.g. dev sandboxes) from the compliance check entirely;
+  their reports produce neither violations nor unverified entries.
+
+### Changed
+
+- **Power BI compliance classification** is now hybrid: a manifest-resolved
+  `model` is judged by its dbt layer; a declared `source` is always
+  `layer:sources`; a table the manifest cannot resolve falls back to the
+  physical schema convention — `core`/`core_*`/`report`/`report_*` schemas are
+  approved (**token boundary**, so `reporting_stale`/`coreanything` are *not*
+  silently approved), everything else is `layer:external`.
+- **App-published report duplicates** (`[App] <name>`) are skipped — they lose
+  owner metadata and mirror a subset of the base report's tables.
+- **Compliance owner** is now the last modifier (`modifiedById`, resolved via
+  the scan-wide graphId directory), not the padded Owner-access list; the owner
+  is also attached to `unverified` entries.
+- **CompiledSqlResolver unification** — project-root inference, `dbt` executable
+  discovery (venv-aware), on-disk compiled-SQL reads and the `dbt compile`
+  runner now live in one module (`utils/compiled_sql.py`), shared by `validate`,
+  `scan` and `optimize refresh`. `validate`/`scan` gain the stronger discovery
+  (cwd fallback for project root + project-venv `dbt` preference).
+- **`meta analyze` downstream-filter detection** now uses the scope-aware
+  `ColumnUsageExtractor` (shared with the optimize advisors) instead of a
+  WHERE-regex over child SQL. It resolves aliases and function-wrapping, counts
+  only columns belonging to the analysed model, ranks every direct child by
+  filter frequency, and drops the old 10-child / top-5 caps — the clustering
+  suggestion (`consider: …`) is now more precise.
+- **Advisor internals unified** — the cluster and partition advisors share one
+  `resolve_advisor_context` preamble, one `no_extraction_warnings` tail and one
+  `base_type` helper (`usage/_common.py`), replacing byte-identical duplication.
+- **CLI error handling** — the 16 model-metadata commands route `DbtMetaError`
+  through a single `meta_command` decorator, and `parents`/`children` share one
+  `_render_lineage_result` renderer (behaviour unchanged).
+
+### Fixed
+
+- **Power Query native-SQL extraction** no longer truncates at an embedded
+  double-quoted BigQuery literal (e.g. `NOT IN ("a","b")`): M escapes a literal
+  `"` by doubling it (`""`), not with a backslash — the regex and string decoder
+  now handle the M convention (plus `#(cr)`).
+
 ## [0.3.7] - 2026-07-21
 
 ### Added

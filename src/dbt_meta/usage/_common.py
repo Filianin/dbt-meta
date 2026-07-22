@@ -12,9 +12,27 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Any
 
 from dbt_meta.usage.extractor import ColumnUsageExtractor, UsageEvent
+
+
+def base_type(dtype: str) -> str:
+    """BigQuery base type name from a catalog type string.
+
+    Strips a parenthesised or angle-bracketed parameter list, so
+    ``STRING(100)`` → ``STRING`` and ``STRUCT<x INT64>`` / ``ARRAY<INT64>`` /
+    ``RECORD<...>`` → ``STRUCT`` / ``ARRAY`` / ``RECORD``. Shared by the
+    cluster and partition advisors (previously duplicated byte-for-byte).
+    """
+    if not dtype:
+        return ""
+    base = dtype
+    for sep in ("(", "<"):
+        if sep in base:
+            base = base.split(sep, 1)[0]
+    return base.strip().upper()
 
 
 def find_target_node(manifest: dict[str, Any], short_name: str) -> tuple[str, dict[str, Any]] | None:
@@ -310,3 +328,67 @@ def model_cluster_columns(model: dict[str, Any]) -> set[str]:
     if isinstance(cb, list):
         return {str(x).lower() for x in cb if x}
     return set()
+
+
+@dataclass
+class AdvisorContext:
+    """Resolved target + downstream usage — the shared preamble of the
+    cluster and partition advisors' ``recommend()``.
+
+    Attributes:
+        unique_id: manifest unique_id of the target model.
+        model: the target model node dict.
+        downstream_ids: direct-downstream model unique_ids.
+        events: ``UsageEvent`` list collected across all direct downstream.
+        analysed_downstream: short names of downstream that produced events.
+        col_types: ``{column_lower: TYPE_UPPER}`` from catalog.
+    """
+
+    unique_id: str
+    model: dict[str, Any]
+    downstream_ids: list[str]
+    events: list[UsageEvent]
+    analysed_downstream: set[str]
+    col_types: dict[str, Any]
+
+
+def resolve_advisor_context(
+    manifest: dict[str, Any],
+    catalog: dict[str, Any],
+    extractor: ColumnUsageExtractor,
+    target_model_short: str,
+) -> AdvisorContext | None:
+    """Resolve a target model to its direct-downstream usage context.
+
+    Returns ``None`` when the model is absent from the manifest, so each
+    advisor can build its own (differently-shaped) not-found result.
+    """
+    target = find_target_node(manifest, target_model_short)
+    if target is None:
+        return None
+    unique_id, model = target
+    downstream_ids = direct_downstream(manifest, unique_id)
+    events = collect_events(manifest, model, extractor, downstream_ids)
+    analysed_downstream = {e.downstream_model for e in events}
+    col_types = column_types(catalog, unique_id)
+    return AdvisorContext(
+        unique_id=unique_id,
+        model=model,
+        downstream_ids=downstream_ids,
+        events=events,
+        analysed_downstream=analysed_downstream,
+        col_types=col_types,
+    )
+
+
+def no_extraction_warnings(
+    manifest: dict[str, Any],
+    analysed_downstream: set[str],
+    downstream_ids: Iterable[str],
+) -> list[str]:
+    """Advisor warning tail: explain a ``downstream>0 but parsed=0`` result."""
+    downstream_ids = list(downstream_ids)
+    if analysed_downstream or not downstream_ids:
+        return []
+    diag = diagnose_no_extraction(manifest, downstream_ids)
+    return [diag] if diag else []

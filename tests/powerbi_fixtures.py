@@ -73,6 +73,24 @@ DAX_CALCULATED = '''SELECTCOLUMNS(
     "Date", [Date]
 )'''
 
+# GoogleBigQuery.Database present but navigation truncated to <3 steps
+# (only project selected, no schema/table). Falls through the navigation
+# branch and, being a `let` M expression with no other match, lands in
+# `unknown`/`partial`.
+NAV_TRUNCATED = '''let
+    Source = GoogleBigQuery.Database(),
+    #"my-project" = Source{[Name="my-project"]}[Data]
+in
+    #"my-project"'''
+
+# A `let` M expression that matches no known source shape (not native SQL,
+# not GoogleBigQuery navigation, not Table.FromRows) → unknown/partial.
+UNKNOWN_LET = '''let
+    Source = Csv.Document(File.Contents("C:\\data.csv")),
+    #"Promoted Headers" = Table.PromoteHeaders(Source)
+in
+    #"Promoted Headers"'''
+
 # ---------------------------------------------------------------------------
 # PBIR-Legacy report.json (classic single-file layout from Fabric
 # getDefinition?format=PBIR-Legacy). Shape copied from a live dump; all names

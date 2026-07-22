@@ -1,16 +1,13 @@
 """Tests for RefreshAdvisor (column-aware --full-refresh planner)."""
 
-from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from dbt_meta.usage import RefreshAdvisor, changed_models_from_git
-from dbt_meta.usage.advisor_refresh import (
-    _infer_project_root,
-    _read_disk_compiled,
-    _run_bulk_dbt_compile,
-)
+
+# NOTE: project-root inference, disk-compiled read and the dbt-compile runner
+# now live in ``utils/compiled_sql.py`` (unified CompiledSqlResolver) and are
+# unit-tested in ``test_compiled_sql.py``. Here we only test how RefreshAdvisor
+# *drives* them (bulk auto-compile trigger).
 
 
 def _model(short, *, sql, alias=None, materialized="table",
@@ -142,6 +139,34 @@ class TestRefreshFullRefresh:
         full = {d.model for d in plan.needs_full_refresh}
         assert "ds_inc" in full
 
+    def test_list_unique_key_collision_forces_full_refresh(self):
+        # dbt allows a composite (list) unique_key — the set helper must
+        # flatten it, so a change to any member forces full_refresh.
+        target = _model("upstream", sql="SELECT 1", alias="t")
+        ds = _model(
+            "ds_inc",
+            sql="SELECT t.id, t.day FROM proj.ds.t t",
+            materialized="incremental",
+            unique_key=["id", "day"],
+        )
+        manifest = _build_manifest(target, [ds])
+        plan = RefreshAdvisor(manifest).plan({"upstream": {"day"}})
+        assert "ds_inc" in {d.model for d in plan.needs_full_refresh}
+
+    def test_list_partition_by_collision_forces_full_refresh(self):
+        # partition_by given as a bare list (not the usual {field:...} dict) —
+        # the set helper must accept the list form.
+        target = _model("upstream", sql="SELECT 1", alias="t")
+        ds = _model(
+            "ds_inc",
+            sql="SELECT t.event_date FROM proj.ds.t t",
+            materialized="incremental",
+            partition_by=["event_date"],
+        )
+        manifest = _build_manifest(target, [ds])
+        plan = RefreshAdvisor(manifest).plan({"upstream": {"event_date"}})
+        assert "ds_inc" in {d.model for d in plan.needs_full_refresh}
+
 
 class TestRefreshIncremental:
     def test_incremental_with_safe_change_stays_incremental(self):
@@ -262,79 +287,6 @@ class TestChainPropagation:
         assert "d" not in all_models  # not even in scope
 
 
-class TestProjectRootInference:
-    def test_returns_none_when_path_is_none(self):
-        assert _infer_project_root(None) is None
-
-    def test_returns_none_when_no_dbt_project_yml(self, tmp_path):
-        manifest = tmp_path / "manifest.json"
-        manifest.write_text("{}")
-        assert _infer_project_root(str(manifest)) is None
-
-    def test_walks_up_to_find_dbt_project_yml(self, tmp_path):
-        (tmp_path / "dbt_project.yml").write_text("name: test\n")
-        target_dir = tmp_path / "target"
-        target_dir.mkdir()
-        manifest = target_dir / "manifest.json"
-        manifest.write_text("{}")
-        assert _infer_project_root(str(manifest)) == str(tmp_path)
-
-    def test_falls_back_to_cwd_when_manifest_outside_project(self, tmp_path, monkeypatch):
-        # Simulates: prod manifest at ~/dbt-state/manifest.json + cwd inside reports/
-        outside = tmp_path / "dbt-state"
-        outside.mkdir()
-        manifest = outside / "manifest.json"
-        manifest.write_text("{}")
-        project = tmp_path / "reports"
-        project.mkdir()
-        (project / "dbt_project.yml").write_text("name: reports\n")
-        (project / "target").mkdir()
-        monkeypatch.chdir(project)
-        assert _infer_project_root(str(manifest)) == str(project)
-
-    def test_cwd_fallback_requires_target_directory(self, tmp_path, monkeypatch):
-        # A stray dbt_project.yml without target/ next to it is NOT enough —
-        # protects against false positives like ~/Projects/dbt_project.yml.
-        stray = tmp_path / "stray"
-        stray.mkdir()
-        (stray / "dbt_project.yml").write_text("name: stray\n")
-        # No 'target/' directory here.
-        monkeypatch.chdir(stray)
-        assert _infer_project_root(None) is None
-
-
-class TestDiskCompiledRead:
-    def test_reads_existing_file(self, tmp_path):
-        compiled = tmp_path / "target" / "compiled" / "test_pkg" / "models" / "x.sql"
-        compiled.parent.mkdir(parents=True)
-        compiled.write_text("SELECT compiled_sql_here")
-        node = {"package_name": "test_pkg", "original_file_path": "models/x.sql"}
-        assert "compiled_sql_here" in _read_disk_compiled(str(tmp_path), node)
-
-    def test_falls_back_to_unique_id_for_package(self, tmp_path):
-        compiled = tmp_path / "target" / "compiled" / "test_pkg" / "models" / "x.sql"
-        compiled.parent.mkdir(parents=True)
-        compiled.write_text("SELECT 1")
-        node = {"unique_id": "model.test_pkg.x", "original_file_path": "models/x.sql"}
-        assert _read_disk_compiled(str(tmp_path), node) == "SELECT 1"
-
-    def test_returns_empty_when_missing_file(self, tmp_path):
-        node = {"package_name": "p", "original_file_path": "models/x.sql"}
-        assert _read_disk_compiled(str(tmp_path), node) == ""
-
-    def test_returns_empty_for_empty_file(self, tmp_path):
-        compiled = tmp_path / "target" / "compiled" / "p" / "x.sql"
-        compiled.parent.mkdir(parents=True)
-        compiled.write_text("")
-        node = {"package_name": "p", "original_file_path": "x.sql"}
-        assert _read_disk_compiled(str(tmp_path), node) == ""
-
-    def test_returns_empty_when_missing_metadata(self, tmp_path):
-        # No package_name and no derivable unique_id
-        node = {"original_file_path": "models/x.sql"}
-        assert _read_disk_compiled(str(tmp_path), node) == ""
-
-
 class TestRefreshDiskFallback:
     def test_uses_disk_compiled_when_manifest_empty(self, tmp_path):
         # Set up: target with empty compiled_code in manifest, but disk has SQL
@@ -410,7 +362,7 @@ class TestBulkCompileTrigger:
         }
         # No manifest_path → no project root → bulk compile must NOT be attempted
         advisor = RefreshAdvisor(manifest, auto_compile=True)
-        with patch("dbt_meta.usage.advisor_refresh._run_bulk_dbt_compile") as mock_run:
+        with patch("dbt_meta.usage.advisor_refresh.run_dbt_compile") as mock_run:
             advisor.plan({"up": None})
         mock_run.assert_not_called()
 
@@ -447,7 +399,7 @@ class TestBulkCompileTrigger:
             manifest, manifest_path=str(manifest_path), auto_compile=True,
         )
         with patch(
-            "dbt_meta.usage.advisor_refresh._run_bulk_dbt_compile",
+            "dbt_meta.usage.advisor_refresh.run_dbt_compile",
             return_value=(False, "dbt not configured"),
         ) as mock_run:
             plan = advisor.plan({"up": None})
@@ -494,23 +446,70 @@ class TestBulkCompileTrigger:
             manifest, manifest_path=str(manifest_path), auto_compile=True,
         )
         with patch(
-            "dbt_meta.usage.advisor_refresh._run_bulk_dbt_compile",
+            "dbt_meta.usage.advisor_refresh.run_dbt_compile",
             return_value=(True, None),
         ) as mock_run:
             advisor.plan({"up": None})
 
         mock_run.assert_called_once()
-        called_models = mock_run.call_args[0][0]
+        # ``select`` is passed as a keyword to the unified runner.
+        called_models = mock_run.call_args.kwargs["select"]
         # Only the missing model is in the --select list (not all 22)
         assert called_models == ["ds21"]
 
+    def _project(self, tmp_path):
+        (tmp_path / "dbt_project.yml").write_text("name: test\n")
+        manifest_path = tmp_path / "target" / "manifest.json"
+        manifest_path.parent.mkdir()
+        manifest_path.write_text("{}")
+        return str(manifest_path)
 
-class TestBulkDbtCompileLauncher:
-    def test_returns_failure_when_dbt_missing_from_path(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("PATH", "")  # ensure dbt cannot be found
-        ok, err = _run_bulk_dbt_compile(["m1"], str(tmp_path))
-        assert ok is False
-        assert "dbt CLI not found" in (err or "")
+    def test_no_compile_when_all_downstream_compiled(self, tmp_path):
+        # Every downstream already has compiled_code → bulk compile skipped.
+        manifest_path = self._project(tmp_path)
+        manifest = _build_manifest(
+            _model("up", sql="SELECT 1"),
+            [_model("ds", sql="SELECT up.x FROM proj.ds.up up")],
+        )
+        advisor = RefreshAdvisor(
+            manifest, manifest_path=manifest_path, auto_compile=True,
+        )
+        with patch("dbt_meta.usage.advisor_refresh.run_dbt_compile") as mock_run:
+            advisor.plan({"up": None})
+        mock_run.assert_not_called()
+
+    def test_no_compile_when_disk_compiled_exists(self, tmp_path):
+        # Downstream lacks compiled_code in the manifest but the on-disk
+        # target/compiled/.../ds.sql exists → treated as present, no compile.
+        manifest_path = self._project(tmp_path)
+        compiled_dir = tmp_path / "target" / "compiled" / "pkg" / "models"
+        compiled_dir.mkdir(parents=True)
+        (compiled_dir / "ds.sql").write_text("SELECT up.x FROM proj.ds.up up")
+
+        ds = _model("ds", sql="", original_file_path="models/ds.sql")
+        manifest = _build_manifest(_model("up", sql="SELECT 1"), [ds])
+        advisor = RefreshAdvisor(
+            manifest, manifest_path=manifest_path, auto_compile=True,
+        )
+        with patch("dbt_meta.usage.advisor_refresh.run_dbt_compile") as mock_run:
+            advisor.plan({"up": None})
+        mock_run.assert_not_called()
+
+    def test_skips_downstream_id_absent_from_nodes(self, tmp_path):
+        # child_map references a unique_id that is not in ``nodes`` (dangling
+        # edge) — it must be skipped, not crash, and not force a compile.
+        manifest_path = self._project(tmp_path)
+        manifest = _build_manifest(
+            _model("up", sql="SELECT 1"),
+            [_model("ds", sql="SELECT up.x FROM proj.ds.up up")],
+        )
+        manifest["child_map"]["model.pkg.up"].append("model.pkg.phantom")
+        advisor = RefreshAdvisor(
+            manifest, manifest_path=manifest_path, auto_compile=True,
+        )
+        with patch("dbt_meta.usage.advisor_refresh.run_dbt_compile") as mock_run:
+            advisor.plan({"up": None})
+        mock_run.assert_not_called()
 
 
 class TestChangedModelsFromGit:
@@ -530,6 +529,65 @@ class TestChangedModelsFromGit:
         manifest = {"nodes": {"model.p.m1": {"original_file_path": "models/m1.sql"}}}
         out = changed_models_from_git(["models/unknown.sql"], manifest)
         assert out == {}
+
+    def test_ignores_non_model_nodes(self):
+        # Non-model unique_ids (sources, tests, seeds) must be skipped even
+        # when their file path matches a changed file.
+        manifest = {
+            "nodes": {
+                "model.p.m1": {"original_file_path": "models/m1.sql", "resource_type": "model"},
+                "test.p.t1": {"original_file_path": "models/m1.sql", "resource_type": "test"},
+                "seed.p.s1": {"original_file_path": "models/m1.sql", "resource_type": "seed"},
+            }
+        }
+        out = changed_models_from_git(["models/m1.sql"], manifest)
+        assert set(out.keys()) == {"m1"}
+
+
+class TestConfigSetHelpers:
+    """Type-branch coverage for the unique_key / partition_by set extractors."""
+
+    def test_unique_keys_string(self):
+        assert RefreshAdvisor._unique_keys({"config": {"unique_key": "ID"}}) == {"id"}
+
+    def test_unique_keys_list(self):
+        assert RefreshAdvisor._unique_keys(
+            {"config": {"unique_key": ["A", "b", ""]}}
+        ) == {"a", "b"}
+
+    def test_unique_keys_absent(self):
+        assert RefreshAdvisor._unique_keys({"config": {}}) == set()
+
+    def test_unique_keys_wrong_type_returns_empty(self):
+        # A truthy but non-str/non-list unique_key (malformed manifest) →
+        # defensive empty set, never a crash.
+        assert RefreshAdvisor._unique_keys({"config": {"unique_key": 42}}) == set()
+
+    def test_partition_cols_string(self):
+        assert RefreshAdvisor._partition_cols(
+            {"config": {"partition_by": "Event_Date"}}
+        ) == {"event_date"}
+
+    def test_partition_cols_dict(self):
+        assert RefreshAdvisor._partition_cols(
+            {"config": {"partition_by": {"field": "DT"}}}
+        ) == {"dt"}
+
+    def test_partition_cols_dict_empty_field(self):
+        assert RefreshAdvisor._partition_cols(
+            {"config": {"partition_by": {"data_type": "date"}}}
+        ) == set()
+
+    def test_partition_cols_list(self):
+        assert RefreshAdvisor._partition_cols(
+            {"config": {"partition_by": ["A", "b"]}}
+        ) == {"a", "b"}
+
+    def test_partition_cols_absent(self):
+        assert RefreshAdvisor._partition_cols({"config": {}}) == set()
+
+    def test_partition_cols_wrong_type_returns_empty(self):
+        assert RefreshAdvisor._partition_cols({"config": {"partition_by": 7}}) == set()
 
 
 class TestRefreshCliAllModelsMissing:

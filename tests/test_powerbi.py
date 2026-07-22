@@ -80,6 +80,25 @@ class TestMParserNativeSql:
         assert result.kind == "native_sql"
         assert "client_model_countries" in result.cross_query_refs
 
+    def test_doubled_quotes_do_not_truncate_sql(self):
+        """M escapes a literal ``"`` by doubling it. An inner double-quoted SQL
+        literal (e.g. ``NOT IN ("a","b")``) must not cut the extraction short."""
+        expr = (
+            'let\n    Source = Value.NativeQuery(GoogleBigQuery.Database()'
+            '{[Name="proj"]}[Data], '
+            '"select client_id from proj.core.events '
+            'where event_name not in ( ""ev_a"", ""ev_b"" ) and active = 1", '
+            'null, [EnableFolding=true])\nin\n    Source'
+        )
+        result = parse_m_expression(expr)
+
+        assert result.kind == "native_sql"
+        # full SQL survives past the quoted IN-list
+        assert "and active = 1" in result.native_sql
+        # doubled quotes decoded back to single double-quotes
+        assert 'not in ( "ev_a", "ev_b" )' in result.native_sql
+        assert result.parse_status == "ok"
+
     def test_quoted_cross_query_ref_is_unquoted(self):
         expr = (
             'let\n    Source = Value.NativeQuery(GoogleBigQuery.Database()'
@@ -100,6 +119,19 @@ class TestMParserNonBigQuery:
 
     def test_dax_calculated_table(self):
         assert parse_m_expression(fx.DAX_CALCULATED).kind == "dax"
+
+    def test_truncated_navigation_falls_through_to_unknown(self):
+        # GoogleBigQuery.Database present but <3 nav steps → not a resolvable
+        # table; a `let` expr with no other match → unknown/partial.
+        result = parse_m_expression(fx.NAV_TRUNCATED)
+        assert result.kind == "unknown"
+        assert result.parse_status == "partial"
+        assert result.tables == ()
+
+    def test_unrecognized_let_expression_is_partial(self):
+        result = parse_m_expression(fx.UNKNOWN_LET)
+        assert result.kind == "unknown"
+        assert result.parse_status == "partial"
 
 
 # ============================================================================

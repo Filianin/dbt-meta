@@ -14,12 +14,13 @@ from unittest.mock import patch
 import pytest
 
 from dbt_meta.utils.compiled_sql import (
-    _extract_package_name,
-    _infer_project_root,
-    _read_compiled_file,
+    _node_package,
+    find_dbt_executable,
     get_compiled_sql,
+    infer_project_root,
+    read_disk_compiled,
+    run_dbt_compile,
 )
-
 
 # =============================================================================
 # Fixtures
@@ -163,6 +164,7 @@ class TestDiskFallback:
             use_dev=False,
         )
         assert sql == 'SELECT * FROM bar'
+        assert error is None
 
 
 # =============================================================================
@@ -219,6 +221,7 @@ class TestAutoCompile:
             use_dev=False,
         )
         assert sql is None
+        assert error is not None
         assert called['yes'] is False
 
     def test_auto_compile_disabled_by_flag(self, dbt_project, monkeypatch):
@@ -244,6 +247,7 @@ class TestAutoCompile:
             auto_compile=False,
         )
         assert sql is None
+        assert error is not None
         assert called['yes'] is False
 
     def test_auto_compile_fails_when_dbt_not_in_path(self, dbt_project, monkeypatch):
@@ -358,36 +362,217 @@ class TestAutoCompile:
 # =============================================================================
 
 
-class TestExtractPackageName:
+class TestNodePackage:
     def test_uses_package_name_field(self):
         model = {'package_name': 'explicit_pkg'}
-        assert _extract_package_name(model) == 'explicit_pkg'
+        assert _node_package(model) == 'explicit_pkg'
 
     def test_falls_back_to_unique_id(self):
         model = {'unique_id': 'model.from_unique.events'}
-        assert _extract_package_name(model) == 'from_unique'
+        assert _node_package(model) == 'from_unique'
 
     def test_returns_empty_for_malformed_unique_id(self):
         model = {'unique_id': 'source.x.y'}  # not a model
-        assert _extract_package_name(model) == ''
+        assert _node_package(model) == ''
 
     def test_returns_empty_for_missing_data(self):
-        assert _extract_package_name({}) == ''
+        assert _node_package({}) == ''
 
 
 class TestInferProjectRoot:
     def test_finds_project_root_with_dbt_project_yml(self, dbt_project):
-        root = _infer_project_root(str(dbt_project['manifest']))
+        root = infer_project_root(str(dbt_project['manifest']))
         assert root is not None
         assert Path(root) == dbt_project['root']
 
-    def test_returns_none_when_no_project_file(self, tmp_path):
+    def test_returns_none_when_no_project_file(self, tmp_path, monkeypatch):
+        # Pin cwd to a clean dir so the cwd-fallback step also finds nothing,
+        # regardless of where pytest is invoked from.
+        monkeypatch.chdir(tmp_path)
         manifest = tmp_path / 'nowhere.json'
         manifest.write_text('{}')
-        assert _infer_project_root(str(manifest)) is None
+        assert infer_project_root(str(manifest)) is None
 
-    def test_returns_none_for_empty_path(self):
-        assert _infer_project_root('') is None
+    def test_returns_none_for_empty_path(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        assert infer_project_root('') is None
+
+    def test_cwd_fallback_requires_target_dir(self, tmp_path, monkeypatch):
+        # dbt_project.yml at cwd but no target/ → step 2 must reject it.
+        (tmp_path / 'dbt_project.yml').write_text('name: p\n')
+        monkeypatch.chdir(tmp_path)
+        assert infer_project_root('') is None
+
+    def test_cwd_fallback_finds_built_project(self, tmp_path, monkeypatch):
+        # dbt_project.yml + target/ at cwd → step 2 accepts it (prod-manifest
+        # convergence: validate/scan now resolve a root via cwd too).
+        (tmp_path / 'dbt_project.yml').write_text('name: p\n')
+        (tmp_path / 'target').mkdir()
+        monkeypatch.chdir(tmp_path)
+        assert infer_project_root('') == str(tmp_path.resolve())
+
+    def test_manifest_outside_project_uses_cwd(self, tmp_path, monkeypatch):
+        # Prod manifest at ~/dbt-state/manifest.json, cwd inside reports/.
+        outside = tmp_path / 'dbt-state'
+        outside.mkdir()
+        manifest = outside / 'manifest.json'
+        manifest.write_text('{}')
+        project = tmp_path / 'reports'
+        project.mkdir()
+        (project / 'dbt_project.yml').write_text('name: reports\n')
+        (project / 'target').mkdir()
+        monkeypatch.chdir(project)
+        assert infer_project_root(str(manifest)) == str(project.resolve())
+
+    def test_manifest_walk_wins_over_cwd(self, tmp_path, monkeypatch):
+        # dbt_project.yml above the manifest → step 1 short-circuits; cwd
+        # (a different project) must NOT be consulted.
+        proj = tmp_path / 'proj'
+        (proj / 'target').mkdir(parents=True)
+        (proj / 'dbt_project.yml').write_text('name: proj\n')
+        manifest = proj / 'target' / 'manifest.json'
+        manifest.write_text('{}')
+        other = tmp_path / 'other'
+        (other / 'target').mkdir(parents=True)
+        (other / 'dbt_project.yml').write_text('name: other\n')
+        monkeypatch.chdir(other)
+        assert infer_project_root(str(manifest)) == str(proj.resolve())
+
+
+class TestFindDbtExecutable:
+    def test_prefers_project_dot_venv(self, tmp_path, monkeypatch):
+        monkeypatch.delenv('VIRTUAL_ENV', raising=False)
+        dbt = tmp_path / '.venv' / 'bin' / 'dbt'
+        dbt.parent.mkdir(parents=True)
+        dbt.write_text('#!/bin/sh\n')
+        assert find_dbt_executable(str(tmp_path)) == str(dbt)
+
+    def test_prefers_project_venv_dir(self, tmp_path, monkeypatch):
+        monkeypatch.delenv('VIRTUAL_ENV', raising=False)
+        dbt = tmp_path / 'venv' / 'bin' / 'dbt'
+        dbt.parent.mkdir(parents=True)
+        dbt.write_text('#!/bin/sh\n')
+        assert find_dbt_executable(str(tmp_path)) == str(dbt)
+
+    def test_uses_virtual_env_when_no_project_venv(self, tmp_path, monkeypatch):
+        venv = tmp_path / 'active'
+        dbt = venv / 'bin' / 'dbt'
+        dbt.parent.mkdir(parents=True)
+        dbt.write_text('#!/bin/sh\n')
+        monkeypatch.setenv('VIRTUAL_ENV', str(venv))
+        # project_root without a local venv → falls through to VIRTUAL_ENV.
+        empty = tmp_path / 'empty'
+        empty.mkdir()
+        assert find_dbt_executable(str(empty)) == str(dbt)
+
+    def test_falls_back_to_path(self, tmp_path, monkeypatch):
+        monkeypatch.delenv('VIRTUAL_ENV', raising=False)
+        monkeypatch.setattr(
+            'dbt_meta.utils.compiled_sql.shutil.which', lambda _: '/usr/bin/dbt'
+        )
+        empty = tmp_path / 'empty'
+        empty.mkdir()
+        assert find_dbt_executable(str(empty)) == '/usr/bin/dbt'
+
+    def test_returns_none_when_nowhere(self, monkeypatch):
+        monkeypatch.delenv('VIRTUAL_ENV', raising=False)
+        monkeypatch.setattr('dbt_meta.utils.compiled_sql.shutil.which', lambda _: None)
+        assert find_dbt_executable(None) is None
+
+
+class TestRunDbtCompile:
+    """The one unified dbt-compile runner: argv shape per mode + failure paths."""
+
+    def _capture(self, monkeypatch):
+        monkeypatch.delenv('VIRTUAL_ENV', raising=False)
+        monkeypatch.setattr(
+            'dbt_meta.utils.compiled_sql.shutil.which', lambda _: '/usr/bin/dbt'
+        )
+        calls = {}
+
+        def fake_run(argv, **kwargs):
+            calls['argv'] = argv
+            calls['kwargs'] = kwargs
+
+            class R:
+                returncode = 0
+                stdout = ''
+                stderr = ''
+
+            return R()
+
+        monkeypatch.setattr('dbt_meta.utils.compiled_sql.subprocess.run', fake_run)
+        return calls
+
+    def test_single_mode_argv(self, tmp_path, monkeypatch):
+        calls = self._capture(monkeypatch)
+        ok, err = run_dbt_compile(str(tmp_path), select=['events'], target='dev')
+        assert ok is True and err is None
+        assert calls['argv'] == ['/usr/bin/dbt', 'compile', '--select', 'events', '--target', 'dev']
+
+    def test_bulk_mode_argv(self, tmp_path, monkeypatch):
+        calls = self._capture(monkeypatch)
+        run_dbt_compile(str(tmp_path), select=['a', 'b'], timeout=300)
+        assert calls['argv'] == ['/usr/bin/dbt', 'compile', '--select', 'a', 'b']
+        assert calls['kwargs']['timeout'] == 300
+
+    def test_whole_mode_argv_with_profiles_dir(self, tmp_path, monkeypatch):
+        calls = self._capture(monkeypatch)
+        run_dbt_compile(str(tmp_path), profiles_dir=str(tmp_path))
+        assert calls['argv'] == ['/usr/bin/dbt', 'compile', '--profiles-dir', str(tmp_path)]
+
+    def test_dbt_not_found(self, tmp_path, monkeypatch):
+        monkeypatch.delenv('VIRTUAL_ENV', raising=False)
+        monkeypatch.setattr('dbt_meta.utils.compiled_sql.shutil.which', lambda _: None)
+        ok, err = run_dbt_compile(str(tmp_path))
+        assert ok is False
+        assert 'dbt CLI not found' in (err or '')
+
+    def test_nonzero_returns_output(self, tmp_path, monkeypatch):
+        monkeypatch.delenv('VIRTUAL_ENV', raising=False)
+        monkeypatch.setattr(
+            'dbt_meta.utils.compiled_sql.shutil.which', lambda _: '/usr/bin/dbt'
+        )
+
+        def fail_run(argv, **kwargs):
+            class R:
+                returncode = 1
+                stdout = 'boom'
+                stderr = ''
+
+            return R()
+
+        monkeypatch.setattr('dbt_meta.utils.compiled_sql.subprocess.run', fail_run)
+        ok, err = run_dbt_compile(str(tmp_path))
+        assert ok is False and err == 'boom'
+
+    def test_timeout(self, tmp_path, monkeypatch):
+        import subprocess as _sp
+
+        monkeypatch.delenv('VIRTUAL_ENV', raising=False)
+        monkeypatch.setattr(
+            'dbt_meta.utils.compiled_sql.shutil.which', lambda _: '/usr/bin/dbt'
+        )
+
+        def timeout_run(argv, **kwargs):
+            raise _sp.TimeoutExpired(cmd='dbt', timeout=1)
+
+        monkeypatch.setattr('dbt_meta.utils.compiled_sql.subprocess.run', timeout_run)
+        ok, err = run_dbt_compile(str(tmp_path))
+        assert ok is False and 'timed out' in (err or '')
+
+    def test_oserror(self, tmp_path, monkeypatch):
+        monkeypatch.delenv('VIRTUAL_ENV', raising=False)
+        monkeypatch.setattr(
+            'dbt_meta.utils.compiled_sql.shutil.which', lambda _: '/usr/bin/dbt'
+        )
+
+        def raise_os(argv, **kwargs):
+            raise OSError('nope')
+
+        monkeypatch.setattr('dbt_meta.utils.compiled_sql.subprocess.run', raise_os)
+        ok, err = run_dbt_compile(str(tmp_path))
+        assert ok is False and 'failed to launch dbt' in (err or '')
 
 
 class TestRareErrorPaths:
@@ -398,9 +583,9 @@ class TestRareErrorPaths:
             raise OSError('nope')
 
         monkeypatch.setattr(Path, 'resolve', raise_oserror, raising=True)
-        assert _infer_project_root('/some/path') is None
+        assert infer_project_root('/some/path') is None
 
-    def test_read_compiled_file_handles_os_error(self, dbt_project, monkeypatch):
+    def test_read_disk_compiled_handles_os_error(self, dbt_project, monkeypatch):
         compiled = dbt_project['compiled_dir'] / 'events.sql'
         compiled.write_text('SELECT 1')
 
@@ -408,12 +593,11 @@ class TestRareErrorPaths:
             raise OSError('read failed')
 
         monkeypatch.setattr(Path, 'read_text', raise_oserror, raising=True)
-        result = _read_compiled_file(
-            project_root=str(dbt_project['root']),
-            package_name='my_pkg',
-            original_file_path='models/events.sql',
+        result = read_disk_compiled(
+            str(dbt_project['root']),
+            {'package_name': 'my_pkg', 'original_file_path': 'models/events.sql'},
         )
-        assert result is None
+        assert result == ''
 
     def test_auto_compile_handles_os_error_launching_dbt(self, dbt_project, monkeypatch):
         def raise_oserror(*args, **kwargs):
@@ -430,39 +614,50 @@ class TestRareErrorPaths:
             use_dev=True,
         )
         assert sql is None
-        assert 'Failed to launch dbt' in error
+        assert 'failed to launch dbt' in error
 
 
-class TestReadCompiledFile:
+class TestReadDiskCompiled:
     def test_reads_existing_file(self, dbt_project):
         compiled = dbt_project['compiled_dir'] / 'x.sql'
         compiled.write_text('SELECT 2')
 
-        result = _read_compiled_file(
-            project_root=str(dbt_project['root']),
-            package_name='my_pkg',
-            original_file_path='models/x.sql',
+        result = read_disk_compiled(
+            str(dbt_project['root']),
+            {'package_name': 'my_pkg', 'original_file_path': 'models/x.sql'},
         )
         assert result == 'SELECT 2'
 
-    def test_returns_none_when_missing(self, dbt_project):
-        result = _read_compiled_file(
-            project_root=str(dbt_project['root']),
-            package_name='my_pkg',
-            original_file_path='models/nope.sql',
+    def test_returns_empty_when_missing(self, dbt_project):
+        result = read_disk_compiled(
+            str(dbt_project['root']),
+            {'package_name': 'my_pkg', 'original_file_path': 'models/nope.sql'},
         )
-        assert result is None
+        assert result == ''
 
-    def test_returns_none_for_empty_file(self, dbt_project):
+    def test_returns_empty_for_empty_file(self, dbt_project):
         compiled = dbt_project['compiled_dir'] / 'blank.sql'
         compiled.write_text('')
 
-        result = _read_compiled_file(
-            project_root=str(dbt_project['root']),
-            package_name='my_pkg',
-            original_file_path='models/blank.sql',
+        result = read_disk_compiled(
+            str(dbt_project['root']),
+            {'package_name': 'my_pkg', 'original_file_path': 'models/blank.sql'},
         )
-        assert result is None
+        assert result == ''
+
+    def test_returns_empty_when_package_or_path_missing(self):
+        assert read_disk_compiled('/root', {'package_name': '', 'original_file_path': ''}) == ''
+        assert read_disk_compiled('/root', {'unique_id': 'model.p.m'}) == ''  # no path
+
+    def test_derives_package_from_unique_id(self, dbt_project):
+        compiled = dbt_project['compiled_dir'] / 'events.sql'
+        compiled.write_text('SELECT 9')
+        # No package_name — must derive 'my_pkg' from unique_id.
+        result = read_disk_compiled(
+            str(dbt_project['root']),
+            {'unique_id': 'model.my_pkg.events', 'original_file_path': 'models/events.sql'},
+        )
+        assert result == 'SELECT 9'
 
 
 # =============================================================================
