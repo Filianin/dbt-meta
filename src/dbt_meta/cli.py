@@ -8,6 +8,7 @@ Provides dbt-meta CLI with:
 - Auto-discovery of manifest.json
 """
 
+import functools
 import json
 from pathlib import Path
 from typing import Any, Callable, NoReturn, Optional
@@ -744,7 +745,66 @@ def handle_command_output(
         print(result)
 
 
+def meta_command(func: Callable[..., None]) -> Callable[..., None]:
+    """Wrap a CLI command body so a raised ``DbtMetaError`` is routed through
+    ``handle_error`` (respecting the command's ``json_output`` flag) instead of
+    being repeated as an inline ``try/except`` in every command.
+
+    ``functools.wraps`` preserves the wrapped function's signature, so Typer
+    still introspects the original options. Applied only to commands whose whole
+    body was a single ``try: ... except DbtMetaError`` block — behaviour identical.
+    """
+
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> None:
+        try:
+            func(*args, **kwargs)
+        except DbtMetaError as e:
+            handle_error(e, bool(kwargs.get("json_output", False)))
+
+    return wrapper
+
+
+# Direction metadata for parents/children lineage rendering: (tree emoji, arrow, noun).
+_LINEAGE_META = {
+    "parents": ("👴", "⬆️", "parents"),
+    "children": ("👶", "⬇️", "children"),
+}
+
+
+def _render_lineage_result(
+    result: list[dict[str, Any]],
+    model_name: str,
+    direction: str,
+    recursive: bool,
+) -> None:
+    """Render parents/children lineage to the console (shared by both commands).
+
+    Hierarchical (recursive tree) output when the result carries nested
+    'children'; otherwise a flat tree-style listing. ``direction`` selects the
+    emoji/arrow/noun via ``_LINEAGE_META``.
+    """
+    tree_emoji, arrow, noun = _LINEAGE_META[direction]
+    print()
+    if recursive and result and isinstance(result[0], dict) and 'children' in result[0]:
+        tree = Tree(f"[bold green]{tree_emoji} All {noun}: {model_name}[/bold green]")
+        _build_tree_recursive(tree, result)
+        console.print(tree)
+    else:
+        mode = f"All {noun}" if recursive else f"Direct {noun}"
+        console.print(f"[bold green]{arrow} {mode}: {model_name} ({len(result)})[/bold green]")
+        for i, node in enumerate(result):
+            is_last = (i == len(result) - 1)
+            branch = "└── " if is_last else "├── "
+            cont = "    " if is_last else "│   "
+            ntype = node.get('type', '')
+            type_badge = f" [{STYLE_DIM}]{ntype}[/{STYLE_DIM}]" if ntype else ""
+            console.print(f"[{STYLE_DIM}]{branch}[/{STYLE_DIM}][{STYLE_COMMAND}]{node['path']}[/{STYLE_COMMAND}]{type_badge}")
+            console.print(f"[{STYLE_DIM}]{cont}[/{STYLE_DIM}]{node['table']}")
+
+
 @app.command()
+@meta_command
 def schema(
     model_name: str = typer.Argument(..., help="Model name"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
@@ -758,27 +818,25 @@ def schema(
         meta schema jaffle_shop__orders            # Production
         meta schema --dev jaffle_shop__orders      # Dev (personal_USERNAME)
     """
-    try:
-        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-        result = SchemaCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output).execute()
+    manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+    result = SchemaCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output).execute()
 
-        if not result or not result.get('full_name'):
-            _not_found_error(model_name, json_output)
+    if not result or not result.get('full_name'):
+        _not_found_error(model_name, json_output)
 
-        if json_output:
-            output = {
-                "model_name": model_name,
-                "full_name": result['full_name']
-            }
-            print(json.dumps(output, indent=2))
-        else:
-            print(result['full_name'])
+    if json_output:
+        output = {
+            "model_name": model_name,
+            "full_name": result['full_name']
+        }
+        print(json.dumps(output, indent=2))
+    else:
+        print(result['full_name'])
 
-    except DbtMetaError as e:
-        handle_error(e, json_output)
 
 
 @app.command()
+@meta_command
 def columns(
     model_name: str = typer.Argument(..., help="Model name"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
@@ -792,32 +850,30 @@ def columns(
         meta columns -j customers                # Production
         meta columns --dev -j customers          # Dev
     """
-    try:
-        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-        result = ColumnsCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output).execute()
+    manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+    result = ColumnsCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output).execute()
 
-        if not result:
-            _not_found_error(model_name, json_output)
+    if not result:
+        _not_found_error(model_name, json_output)
 
-        if json_output:
-            print(json.dumps(result, indent=2))
-        else:
-            # Rich table output with blank line first
-            print()
-            table = Table(title=f"[bold green not italic]Columns: {model_name}[/bold green not italic]", header_style="bold green")
-            table.add_column("Name", style=STYLE_COMMAND, no_wrap=True)
-            table.add_column("Type", style="white")
+    if json_output:
+        print(json.dumps(result, indent=2))
+    else:
+        # Rich table output with blank line first
+        print()
+        table = Table(title=f"[bold green not italic]Columns: {model_name}[/bold green not italic]", header_style="bold green")
+        table.add_column("Name", style=STYLE_COMMAND, no_wrap=True)
+        table.add_column("Type", style="white")
 
-            for col in result:
-                table.add_row(col['name'], col['data_type'])
+        for col in result:
+            table.add_row(col['name'], col['data_type'])
 
-            console.print(table)
+        console.print(table)
 
-    except DbtMetaError as e:
-        handle_error(e, json_output)
 
 
 @app.command()
+@meta_command
 def config(
     model_name: str = typer.Argument(..., help="Model name"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
@@ -831,32 +887,30 @@ def config(
         meta config -j model_name              # Production
         meta config --dev -j model_name        # Dev (personal_USERNAME)
     """
-    try:
-        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-        result = ConfigCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output).execute()
+    manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+    result = ConfigCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output).execute()
 
-        if result is None:
-            _not_found_error(model_name, json_output)
+    if result is None:
+        _not_found_error(model_name, json_output)
 
-        if json_output:
-            print(json.dumps(result, indent=2))
-        else:
-            # Rich table output with blank line first
-            print()
-            table = Table(title=f"[bold green not italic]Config: {model_name}[/bold green not italic]", header_style="bold green")
-            table.add_column("Key", style=STYLE_COMMAND, no_wrap=True)
-            table.add_column("Value", style="white")
+    if json_output:
+        print(json.dumps(result, indent=2))
+    else:
+        # Rich table output with blank line first
+        print()
+        table = Table(title=f"[bold green not italic]Config: {model_name}[/bold green not italic]", header_style="bold green")
+        table.add_column("Key", style=STYLE_COMMAND, no_wrap=True)
+        table.add_column("Value", style="white")
 
-            for key, value in result.items():
-                table.add_row(key, str(value))
+        for key, value in result.items():
+            table.add_row(key, str(value))
 
-            console.print(table)
+        console.print(table)
 
-    except DbtMetaError as e:
-        handle_error(e, json_output)
 
 
 @app.command()
+@meta_command
 def sql(
     model_name: str = typer.Argument(..., help="Model name"),
     jinja: bool = typer.Option(False, "--jinja", help="Show raw SQL with Jinja"),
@@ -873,34 +927,32 @@ def sql(
         meta sql --dev model_name            # Dev (personal_USERNAME)
         meta sql --jinja model_name          # Raw SQL with Jinja
     """
-    try:
-        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-        # Compiled SQL is the whole point of this command — make sure the
-        # manifest has it. ``jinja`` mode is exempt (it reads raw SQL).
-        if not jinja:
-            _preflight_compiled_sql_by_path(manifest_path, manifest, no_compile, json_output)
-        result = SqlCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output, raw=jinja).execute()
+    manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+    # Compiled SQL is the whole point of this command — make sure the
+    # manifest has it. ``jinja`` mode is exempt (it reads raw SQL).
+    if not jinja:
+        _preflight_compiled_sql_by_path(manifest_path, manifest, no_compile, json_output)
+    result = SqlCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output, raw=jinja).execute()
 
-        if result is None:
-            _not_found_error(model_name, json_output)
+    if result is None:
+        _not_found_error(model_name, json_output)
 
-        # Empty string is valid result (e.g., compiled_code missing from manifest)
-        # SqlCommand will print informational messages to stderr if needed
-        if json_output:
-            output = {
-                "model_name": model_name,
-                "sql": result,
-                "type": "raw" if jinja else "compiled"
-            }
-            print(json.dumps(output, indent=2))
-        else:
-            print(result)
+    # Empty string is valid result (e.g., compiled_code missing from manifest)
+    # SqlCommand will print informational messages to stderr if needed
+    if json_output:
+        output = {
+            "model_name": model_name,
+            "sql": result,
+            "type": "raw" if jinja else "compiled"
+        }
+        print(json.dumps(output, indent=2))
+    else:
+        print(result)
 
-    except DbtMetaError as e:
-        handle_error(e, json_output)
 
 
 @app.command()
+@meta_command
 def validate(
     model_name: str = typer.Argument(..., help="Model name"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
@@ -915,27 +967,25 @@ def validate(
         meta validate model_name          # Validate production SQL
         meta validate --dev model_name    # Validate dev SQL
     """
-    try:
-        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-        _preflight_compiled_sql_by_path(manifest_path, manifest, no_compile, json_output)
-        result = ValidateCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output).execute()
+    manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+    _preflight_compiled_sql_by_path(manifest_path, manifest, no_compile, json_output)
+    result = ValidateCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output).execute()
 
-        if result is None:
-            _not_found_error(model_name, json_output)
+    if result is None:
+        _not_found_error(model_name, json_output)
 
-        if json_output:
-            print(json.dumps(result, indent=2))
-        elif result['valid']:
-            console.print("[green]✅ Valid[/green]")
-        else:
-            console.print(f"[{STYLE_ERROR}]❌ Error:[/{STYLE_ERROR}] {result['error']}")
-            raise typer.Exit(code=1)
+    if json_output:
+        print(json.dumps(result, indent=2))
+    elif result['valid']:
+        console.print("[green]✅ Valid[/green]")
+    else:
+        console.print(f"[{STYLE_ERROR}]❌ Error:[/{STYLE_ERROR}] {result['error']}")
+        raise typer.Exit(code=1)
 
-    except DbtMetaError as e:
-        handle_error(e, json_output)
 
 
 @app.command()
+@meta_command
 def scan(
     model_name: str = typer.Argument(..., help="Model name"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
@@ -950,36 +1000,34 @@ def scan(
         meta scan model_name              # Show scan size for production SQL
         meta scan --dev model_name        # Show scan size for dev SQL
     """
-    try:
-        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-        _preflight_compiled_sql_by_path(manifest_path, manifest, no_compile, json_output)
-        result = ScanCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output).execute()
+    manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+    _preflight_compiled_sql_by_path(manifest_path, manifest, no_compile, json_output)
+    result = ScanCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output).execute()
 
-        if result is None:
-            _not_found_error(model_name, json_output)
+    if result is None:
+        _not_found_error(model_name, json_output)
 
-        if json_output:
-            print(json.dumps(result, indent=2))
-        elif result.get('error'):
-            console.print(f"[{STYLE_ERROR}]❌ Error:[/{STYLE_ERROR}] {result['error']}")
-            raise typer.Exit(code=1)
+    if json_output:
+        print(json.dumps(result, indent=2))
+    elif result.get('error'):
+        console.print(f"[{STYLE_ERROR}]❌ Error:[/{STYLE_ERROR}] {result['error']}")
+        raise typer.Exit(code=1)
+    else:
+        # Color by size: <1GB green, <10GB yellow, >=10GB red
+        bytes_val = result.get('bytes', 0) or 0
+        gb = bytes_val / (1024 ** 3)
+        if gb < 1:
+            color = "green"
+        elif gb < 10:
+            color = "yellow"
         else:
-            # Color by size: <1GB green, <10GB yellow, >=10GB red
-            bytes_val = result.get('bytes', 0) or 0
-            gb = bytes_val / (1024 ** 3)
-            if gb < 1:
-                color = "green"
-            elif gb < 10:
-                color = "yellow"
-            else:
-                color = "red"
-            console.print(f"Scan size: [bold {color}]{result['formatted']}[/bold {color}]")
+            color = "red"
+        console.print(f"Scan size: [bold {color}]{result['formatted']}[/bold {color}]")
 
-    except DbtMetaError as e:
-        handle_error(e, json_output)
 
 
 @app.command()
+@meta_command
 def path(
     model_name: str = typer.Argument(..., help="Model name"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
@@ -993,27 +1041,25 @@ def path(
         meta path model_name              # Production
         meta path --dev model_name        # Dev (personal_USERNAME)
     """
-    try:
-        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-        result = PathCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output).execute()
+    manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+    result = PathCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output).execute()
 
-        if result is None:
-            _not_found_error(model_name, json_output)
+    if result is None:
+        _not_found_error(model_name, json_output)
 
-        if json_output:
-            output = {
-                "model_name": model_name,
-                "path": result
-            }
-            print(json.dumps(output, indent=2))
-        else:
-            print(result)
+    if json_output:
+        output = {
+            "model_name": model_name,
+            "path": result
+        }
+        print(json.dumps(output, indent=2))
+    else:
+        print(result)
 
-    except DbtMetaError as e:
-        handle_error(e, json_output)
 
 
 @app.command("models")
+@meta_command
 def models_cmd(
     pattern: Optional[str] = typer.Argument(None, help="Filter pattern"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
@@ -1024,32 +1070,30 @@ def models_cmd(
 
     Example: meta models jaffle_shop
     """
-    try:
-        manifest_path, _ = get_manifest_path(manifest)
-        result = ListModelsCommand(manifest_path, pattern).execute()
+    manifest_path, _ = get_manifest_path(manifest)
+    result = ListModelsCommand(manifest_path, pattern).execute()
 
-        if json_output:
-            print(json.dumps(result, indent=2))
-        else:
-            # Rich table output with blank line first
-            print()
-            title = f"Models ({len(result)})"
-            if pattern:
-                title = f"Models matching '{pattern}' ({len(result)})"
+    if json_output:
+        print(json.dumps(result, indent=2))
+    else:
+        # Rich table output with blank line first
+        print()
+        title = f"Models ({len(result)})"
+        if pattern:
+            title = f"Models matching '{pattern}' ({len(result)})"
 
-            table = Table(title=f"[bold green not italic]{title}[/bold green not italic]", header_style="bold green")
-            table.add_column("Model", style=STYLE_COMMAND)
+        table = Table(title=f"[bold green not italic]{title}[/bold green not italic]", header_style="bold green")
+        table.add_column("Model", style=STYLE_COMMAND)
 
-            for model in result:
-                table.add_row(model)
+        for model in result:
+            table.add_row(model)
 
-            console.print(table)
+        console.print(table)
 
-    except DbtMetaError as e:
-        handle_error(e, json_output)
 
 
 @app.command()
+@meta_command
 def search(
     query: str = typer.Argument(..., help="Search query"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
@@ -1060,30 +1104,28 @@ def search(
 
     Example: meta search "customers" --json
     """
-    try:
-        manifest_path, _ = get_manifest_path(manifest)
-        result = SearchCommand(manifest_path, query).execute()
+    manifest_path, _ = get_manifest_path(manifest)
+    result = SearchCommand(manifest_path, query).execute()
 
-        if json_output:
-            print(json.dumps(result, indent=2))
-        else:
-            # Rich table output with blank line first
-            print()
-            table = Table(title=f"[bold green not italic]Search results for '{query}' ({len(result)})[/bold green not italic]", header_style="bold green")
-            table.add_column("Model", style=STYLE_COMMAND, no_wrap=True)
-            table.add_column("Description", style="white")
+    if json_output:
+        print(json.dumps(result, indent=2))
+    else:
+        # Rich table output with blank line first
+        print()
+        table = Table(title=f"[bold green not italic]Search results for '{query}' ({len(result)})[/bold green not italic]", header_style="bold green")
+        table.add_column("Model", style=STYLE_COMMAND, no_wrap=True)
+        table.add_column("Description", style="white")
 
-            for model in result:
-                desc = model['description'] or ""
-                table.add_row(model['name'], desc)
+        for model in result:
+            desc = model['description'] or ""
+            table.add_row(model['name'], desc)
 
-            console.print(table)
+        console.print(table)
 
-    except DbtMetaError as e:
-        handle_error(e, json_output)
 
 
 @app.command("list")
+@meta_command
 def list_cmd(
     selectors: Optional[list[str]] = typer.Argument(None, help="Selectors: tag:name config.key:val path:dir package:name"),
     domain: Optional[str] = typer.Option(None, "--domain", help="Filter by domain (membership; sugar for config.meta.domain:X)"),
@@ -1135,57 +1177,55 @@ def list_cmd(
     instead of the naïve "everything downstream" listing this command used
     to do via the now-removed --full-refresh flag.
     """
-    try:
-        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-        collected: list[str] = list(selectors) if selectors else []
-        if domain:
-            collected.append(f"config.meta.domain:{domain}")
-        selector_list = collected or None
+    manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+    collected: list[str] = list(selectors) if selectors else []
+    if domain:
+        collected.append(f"config.meta.domain:{domain}")
+    selector_list = collected or None
 
-        result = LsCommand(
-            manifest_path,
-            selectors=selector_list,
-            modified=modified,
-            and_logic=and_logic,
-            group=group,
-            use_dev=effective_use_dev,
-            json_output=json_output,
-        ).execute()
+    result = LsCommand(
+        manifest_path,
+        selectors=selector_list,
+        modified=modified,
+        and_logic=and_logic,
+        group=group,
+        use_dev=effective_use_dev,
+        json_output=json_output,
+    ).execute()
 
-        # Check for empty results (handles both list and dict formats)
-        is_empty = (
-            not result or
-            (isinstance(result, list) and len(result) == 0) or
-            (isinstance(result, dict) and len(result.get('models', [])) == 0)
-        )
+    # Check for empty results (handles both list and dict formats)
+    is_empty = (
+        not result or
+        (isinstance(result, list) and len(result) == 0) or
+        (isinstance(result, dict) and len(result.get('models', [])) == 0)
+    )
 
-        if is_empty:
-            if json_output:
-                # Return empty dict format for consistency
-                print(json.dumps({"models": [], "tables": []}))
-            else:
-                # Show header even for empty results (only in TTY)
-                import sys
-                if sys.stdout.isatty():
-                    console.print()
-                    console.print("[bold green]Models:[/]")
-            return
-
+    if is_empty:
         if json_output:
-            print(json.dumps(result, indent=2))
+            # Return empty dict format for consistency
+            print(json.dumps({"models": [], "tables": []}))
         else:
-            # Add header and empty line ONLY if output is to TTY (not piped)
+            # Show header even for empty results (only in TTY)
             import sys
             if sys.stdout.isatty():
                 console.print()
                 console.print("[bold green]Models:[/]")
-            print(result)
+        return
 
-    except DbtMetaError as e:
-        handle_error(e, json_output)
+    if json_output:
+        print(json.dumps(result, indent=2))
+    else:
+        # Add header and empty line ONLY if output is to TTY (not piped)
+        import sys
+        if sys.stdout.isatty():
+            console.print()
+            console.print("[bold green]Models:[/]")
+        print(result)
+
 
 
 @app.command()
+@meta_command
 def parents(
     model_name: str = typer.Argument(..., help="Model name"),
     all_ancestors: bool = typer.Option(False, "-a", "--all", help="Get all ancestors (recursive)"),
@@ -1201,40 +1241,21 @@ def parents(
         meta parents -a model_name                    # Tree view
         meta parents -a -j model_name                 # Nested JSON (<=20) or flat array (>20)
     """
-    try:
-        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-        result = ParentsCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output, recursive=all_ancestors).execute()
+    manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+    result = ParentsCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output, recursive=all_ancestors).execute()
 
-        if result is None:
-            _not_found_error(model_name, json_output)
+    if result is None:
+        _not_found_error(model_name, json_output)
 
-        if json_output:
-            print(json.dumps(result, indent=2))
-        else:
-            print()
-            if all_ancestors and result and isinstance(result[0], dict) and 'children' in result[0]:
-                # Hierarchical tree output
-                tree = Tree(f"[bold green]👴 All parents: {model_name}[/bold green]")
-                _build_tree_recursive(tree, result)
-                console.print(tree)
-            else:
-                # Tree-style output (no truncation)
-                mode = "All parents" if all_ancestors else "Direct parents"
-                console.print(f"[bold green]⬆️ {mode}: {model_name} ({len(result)})[/bold green]")
-                for i, parent in enumerate(result):
-                    is_last = (i == len(result) - 1)
-                    branch = "└── " if is_last else "├── "
-                    cont = "    " if is_last else "│   "
-                    ptype = parent.get('type', '')
-                    type_badge = f" [{STYLE_DIM}]{ptype}[/{STYLE_DIM}]" if ptype else ""
-                    console.print(f"[{STYLE_DIM}]{branch}[/{STYLE_DIM}][{STYLE_COMMAND}]{parent['path']}[/{STYLE_COMMAND}]{type_badge}")
-                    console.print(f"[{STYLE_DIM}]{cont}[/{STYLE_DIM}]{parent['table']}")
+    if json_output:
+        print(json.dumps(result, indent=2))
+    else:
+        _render_lineage_result(result, model_name, "parents", all_ancestors)
 
-    except DbtMetaError as e:
-        handle_error(e, json_output)
 
 
 @app.command()
+@meta_command
 def children(
     model_name: str = typer.Argument(..., help="Model name"),
     all_descendants: bool = typer.Option(False, "-a", "--all", help="Get all descendants (recursive)"),
@@ -1250,37 +1271,17 @@ def children(
         meta children -a model_name                 # Tree view
         meta children -a -j model_name              # Nested JSON (<=20) or flat array (>20)
     """
-    try:
-        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
-        result = ChildrenCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output, recursive=all_descendants).execute()
+    manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+    result = ChildrenCommand(Config.from_config_or_env(), manifest_path, model_name, effective_use_dev, json_output, recursive=all_descendants).execute()
 
-        if result is None:
-            _not_found_error(model_name, json_output)
+    if result is None:
+        _not_found_error(model_name, json_output)
 
-        if json_output:
-            print(json.dumps(result, indent=2))
-        else:
-            print()
-            if all_descendants and result and isinstance(result[0], dict) and 'children' in result[0]:
-                # Hierarchical tree output
-                tree = Tree(f"[bold green]👶 All children: {model_name}[/bold green]")
-                _build_tree_recursive(tree, result)
-                console.print(tree)
-            else:
-                # Tree-style output (no truncation)
-                mode = "All children" if all_descendants else "Direct children"
-                console.print(f"[bold green]⬇️ {mode}: {model_name} ({len(result)})[/bold green]")
-                for i, child in enumerate(result):
-                    is_last = (i == len(result) - 1)
-                    branch = "└── " if is_last else "├── "
-                    cont = "    " if is_last else "│   "
-                    ctype = child.get('type', '')
-                    type_badge = f" [{STYLE_DIM}]{ctype}[/{STYLE_DIM}]" if ctype else ""
-                    console.print(f"[{STYLE_DIM}]{branch}[/{STYLE_DIM}][{STYLE_COMMAND}]{child['path']}[/{STYLE_COMMAND}]{type_badge}")
-                    console.print(f"[{STYLE_DIM}]{cont}[/{STYLE_DIM}]{child['table']}")
+    if json_output:
+        print(json.dumps(result, indent=2))
+    else:
+        _render_lineage_result(result, model_name, "children", all_descendants)
 
-    except DbtMetaError as e:
-        handle_error(e, json_output)
 
 
 @app.command()
@@ -1326,6 +1327,7 @@ def _format_size(num_bytes: int) -> str:
 
 
 @app.command()
+@meta_command
 def context(
     model_names: list[str] = typer.Argument(..., help="One or more model names"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
@@ -1345,31 +1347,28 @@ def context(
         meta context -j model_a model_b model_c             # batch in one JSON
         meta context --dev -j customers                     # dev schema
     """
-    try:
-        manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
+    manifest_path, effective_use_dev = get_manifest_path(manifest, use_dev)
 
-        # Dedup preserving order.
-        ordered_names = list(dict.fromkeys(model_names))
+    # Dedup preserving order.
+    ordered_names = list(dict.fromkeys(model_names))
 
-        results: dict[str, Optional[dict[str, Any]]] = {}
-        for name in ordered_names:
-            bundle = ContextCommand(
-                Config.from_config_or_env(), manifest_path, name, effective_use_dev, json_output
-            ).execute()
-            results[name] = bundle
-            if bundle is None and not json_output:
-                console.print(f"[{STYLE_ERROR}]Model not found:[/{STYLE_ERROR}] {name}")
+    results: dict[str, Optional[dict[str, Any]]] = {}
+    for name in ordered_names:
+        bundle = ContextCommand(
+            Config.from_config_or_env(), manifest_path, name, effective_use_dev, json_output
+        ).execute()
+        results[name] = bundle
+        if bundle is None and not json_output:
+            console.print(f"[{STYLE_ERROR}]Model not found:[/{STYLE_ERROR}] {name}")
 
-        if json_output:
-            print(json.dumps(results, indent=2))
-        else:
-            for bundle in results.values():
-                if bundle is None:
-                    continue
-                _render_context_bundle(bundle)
+    if json_output:
+        print(json.dumps(results, indent=2))
+    else:
+        for bundle in results.values():
+            if bundle is None:
+                continue
+            _render_context_bundle(bundle)
 
-    except DbtMetaError as e:
-        handle_error(e, json_output)
 
 
 def _render_context_bundle(bundle: dict[str, Any]) -> None:
@@ -1415,6 +1414,7 @@ def _render_context_bundle(bundle: dict[str, Any]) -> None:
 
 
 @app.command()
+@meta_command
 def analyze(
     model_name: str = typer.Argument(..., help="Model name"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
@@ -1430,20 +1430,17 @@ def analyze(
         meta analyze core_client__events          # Full analysis
         meta analyze -j core_client__events       # JSON output
     """
-    try:
-        manifest_path, _ = get_manifest_path(manifest, False)
-        result = AnalyzeCommand(Config.from_config_or_env(), manifest_path, model_name, False, json_output).execute()
+    manifest_path, _ = get_manifest_path(manifest, False)
+    result = AnalyzeCommand(Config.from_config_or_env(), manifest_path, model_name, False, json_output).execute()
 
-        if result is None:
-            _not_found_error(model_name, json_output)
+    if result is None:
+        _not_found_error(model_name, json_output)
 
-        if json_output:
-            print(json.dumps(result, indent=2))
-        else:
-            _print_analyze_result(result)
+    if json_output:
+        print(json.dumps(result, indent=2))
+    else:
+        _print_analyze_result(result)
 
-    except DbtMetaError as e:
-        handle_error(e, json_output)
 
 
 def _print_analyze_result(result: dict[str, Any]) -> None:
@@ -1512,6 +1509,7 @@ def _print_analyze_result(result: dict[str, Any]) -> None:
 
 
 @app.command()
+@meta_command
 def hotspots(
     limit: int = typer.Option(10, "-n", "--limit", help="Number of hotspots to show"),
     min_gb: float = typer.Option(1.0, "--min-gb", help="Minimum table size in GB"),
@@ -1530,17 +1528,14 @@ def hotspots(
         meta hotspots --min-gb 10         # Only tables > 10 GB
         meta hotspots -j                  # JSON output
     """
-    try:
-        manifest_path, _ = get_manifest_path(manifest, False)
-        result = HotspotsCommand(Config.from_config_or_env(), manifest_path, limit, min_gb, json_output).execute()
+    manifest_path, _ = get_manifest_path(manifest, False)
+    result = HotspotsCommand(Config.from_config_or_env(), manifest_path, limit, min_gb, json_output).execute()
 
-        if json_output:
-            print(json.dumps(result, indent=2))
-        else:
-            _print_hotspots_result(result, limit)
+    if json_output:
+        print(json.dumps(result, indent=2))
+    else:
+        _print_hotspots_result(result, limit)
 
-    except DbtMetaError as e:
-        handle_error(e, json_output)
 
 
 def _print_hotspots_result(result: dict[str, Any], limit: int) -> None:
@@ -1660,6 +1655,7 @@ def _print_hotspots_result(result: dict[str, Any], limit: int) -> None:
 
 
 @app.command()
+@meta_command
 def branch(
     model_name: str = typer.Argument(..., help="Model name"),
     json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
@@ -1676,25 +1672,22 @@ def branch(
         meta branch core_client__events          # Branch analysis
         meta branch -j core_client__events       # JSON output
     """
-    try:
-        manifest_path, _ = get_manifest_path(manifest, False)
-        # Branch reads root's compiled_code to extract filter patterns
-        # for upstream/downstream alignment — without it the output is
-        # heavily degraded (no filter analysis), so apply the same
-        # pre-flight as the optimize advisors.
-        _preflight_compiled_sql_by_path(manifest_path, manifest, no_compile, json_output)
-        result = BranchCommand(Config.from_config_or_env(), manifest_path, model_name, False, json_output).execute()
+    manifest_path, _ = get_manifest_path(manifest, False)
+    # Branch reads root's compiled_code to extract filter patterns
+    # for upstream/downstream alignment — without it the output is
+    # heavily degraded (no filter analysis), so apply the same
+    # pre-flight as the optimize advisors.
+    _preflight_compiled_sql_by_path(manifest_path, manifest, no_compile, json_output)
+    result = BranchCommand(Config.from_config_or_env(), manifest_path, model_name, False, json_output).execute()
 
-        if result is None:
-            _not_found_error(model_name, json_output)
+    if result is None:
+        _not_found_error(model_name, json_output)
 
-        if json_output:
-            print(json.dumps(result, indent=2))
-        else:
-            _print_branch_result(result)
+    if json_output:
+        print(json.dumps(result, indent=2))
+    else:
+        _print_branch_result(result)
 
-    except DbtMetaError as e:
-        handle_error(e, json_output)
 
 
 def _print_branch_result(result: dict[str, Any]) -> None:

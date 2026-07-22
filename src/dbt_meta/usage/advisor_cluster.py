@@ -27,12 +27,10 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 from dbt_meta.usage._common import (
-    collect_events,
-    column_types,
-    diagnose_no_extraction,
-    direct_downstream,
-    find_target_node,
+    base_type,
     model_partition_columns,
+    no_extraction_warnings,
+    resolve_advisor_context,
 )
 from dbt_meta.usage.extractor import ColumnUsageExtractor, UsageEvent
 
@@ -41,22 +39,6 @@ BQ_MAX_CLUSTER_KEYS = 4
 
 # Column types not usable as cluster keys in BigQuery
 CLUSTER_DISALLOWED_TYPES = {"STRUCT", "ARRAY", "GEOGRAPHY", "JSON"}
-
-
-def _base_type(dtype: str) -> str:
-    """Extract the BigQuery base type name from a catalog type string.
-
-    Handles both ``STRING(100)`` and ``STRUCT<x INT64>`` / ``ARRAY<INT64>`` /
-    ``RECORD<...>``.
-    """
-    if not dtype:
-        return ""
-    # Trim either parenthesised or angle-bracketed parameter list
-    base = dtype
-    for sep in ("(", "<"):
-        if sep in base:
-            base = base.split(sep, 1)[0]
-    return base.strip().upper()
 
 
 @dataclass
@@ -123,8 +105,10 @@ class ClusterAdvisor:
         self.top_n = max(1, min(top_n, BQ_MAX_CLUSTER_KEYS))
 
     def recommend(self, target_model_short: str) -> ClusterAdvisorResult:
-        target = find_target_node(self.manifest, target_model_short)
-        if target is None:
+        ctx = resolve_advisor_context(
+            self.manifest, self.catalog, self.extractor, target_model_short
+        )
+        if ctx is None:
             return ClusterAdvisorResult(
                 target_model=target_model_short,
                 target_partition_by=[],
@@ -135,30 +119,22 @@ class ClusterAdvisor:
                 excluded=[],
                 warnings=[f"Model '{target_model_short}' not found in manifest"],
             )
-        unique_id, model = target
-        partition_cols = model_partition_columns(model)
+        partition_cols = model_partition_columns(ctx.model)
         from dbt_meta.usage._common import model_cluster_columns
 
-        current_cluster = sorted(model_cluster_columns(model))
         # Only DIRECT children matter for clustering: grandchildren read
         # the intermediate model's storage, not the original table.
-        downstream_ids = direct_downstream(self.manifest, unique_id)
+        current_cluster = sorted(model_cluster_columns(ctx.model))
 
-        events = collect_events(self.manifest, model, self.extractor, downstream_ids)
-        analysed_downstream = {e.downstream_model for e in events}
-
-        scores = self._score(events)
-        col_types = column_types(self.catalog, unique_id)
+        scores = self._score(ctx.events)
 
         recommendations, excluded = self._rank(
-            scores, col_types, partition_cols, analysed_downstream
+            scores, ctx.col_types, partition_cols, ctx.analysed_downstream
         )
 
-        warnings: list[str] = []
-        if not analysed_downstream and downstream_ids:
-            diag = diagnose_no_extraction(self.manifest, downstream_ids)
-            if diag:
-                warnings.append(diag)
+        warnings = no_extraction_warnings(
+            self.manifest, ctx.analysed_downstream, ctx.downstream_ids
+        )
 
         # Match by set equality (order doesn't matter for cluster_by;
         # BigQuery does prefix-match pruning but the dbt config is just
@@ -174,8 +150,8 @@ class ClusterAdvisor:
             target_model=target_model_short,
             target_partition_by=sorted(partition_cols),
             current_cluster_by=current_cluster,
-            direct_downstream_count=len(downstream_ids),
-            analysed_downstream_count=len(analysed_downstream),
+            direct_downstream_count=len(ctx.downstream_ids),
+            analysed_downstream_count=len(ctx.analysed_downstream),
             recommendations=recommendations,
             excluded=excluded,
             matches_current=matches_current,
@@ -247,7 +223,7 @@ class ClusterAdvisor:
             if cs.score <= 0:
                 continue
             dtype = col_types.get(col, "")
-            base = _base_type(dtype)
+            base = base_type(dtype)
             if col in partition_cols:
                 excluded.append({"column": col, "reason": "is partition column"})
                 continue

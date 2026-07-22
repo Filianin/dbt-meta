@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.8] - 2026-07-21
+## [0.3.8] - 2026-07-22
 
 ### Added
 
@@ -31,6 +31,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runner now live in one module (`utils/compiled_sql.py`), shared by `validate`,
   `scan` and `optimize refresh`. `validate`/`scan` gain the stronger discovery
   (cwd fallback for project root + project-venv `dbt` preference).
+- **`meta analyze` downstream-filter detection** now uses the scope-aware
+  `ColumnUsageExtractor` (shared with the optimize advisors) instead of a
+  WHERE-regex over child SQL. It resolves aliases and function-wrapping, counts
+  only columns belonging to the analysed model, ranks every direct child by
+  filter frequency, and drops the old 10-child / top-5 caps — the clustering
+  suggestion (`consider: …`) is now more precise.
+- **Advisor internals unified** — the cluster and partition advisors share one
+  `resolve_advisor_context` preamble, one `no_extraction_warnings` tail and one
+  `base_type` helper (`usage/_common.py`), replacing byte-identical duplication.
+- **CLI error handling** — the 16 model-metadata commands route `DbtMetaError`
+  through a single `meta_command` decorator, and `parents`/`children` share one
+  `_render_lineage_result` renderer (behaviour unchanged).
 
 ### Fixed
 

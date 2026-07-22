@@ -38,12 +38,10 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 from dbt_meta.usage._common import (
-    collect_events,
-    column_types,
-    diagnose_no_extraction,
-    direct_downstream,
+    base_type,
     downstream_short_to_materialized,
-    find_target_node,
+    no_extraction_warnings,
+    resolve_advisor_context,
 )
 from dbt_meta.usage.extractor import ColumnUsageExtractor, UsageEvent
 
@@ -73,16 +71,6 @@ PARTITION_PRUNING_FRIENDLY_FNS = {
 
 TIME_TYPES = {"TIMESTAMP", "DATE", "DATETIME"}
 INT_TYPES = {"INT64", "INTEGER", "INT", "BIGINT"}
-
-
-def _base_type(dtype: str) -> str:
-    if not dtype:
-        return ""
-    base = dtype
-    for sep in ("(", "<"):
-        if sep in base:
-            base = base.split(sep, 1)[0]
-    return base.strip().upper()
 
 
 @dataclass
@@ -164,8 +152,10 @@ class PartitionAdvisor:
         self.extractor = extractor or ColumnUsageExtractor(dialect="bigquery")
 
     def recommend(self, target_model_short: str) -> PartitionAdvisorResult:
-        target = find_target_node(self.manifest, target_model_short)
-        if target is None:
+        ctx = resolve_advisor_context(
+            self.manifest, self.catalog, self.extractor, target_model_short
+        )
+        if ctx is None:
             return PartitionAdvisorResult(
                 target_model=target_model_short,
                 current_partition_by=[],
@@ -173,13 +163,17 @@ class PartitionAdvisor:
                 analysed_downstream_count=0,
                 warnings=[f"Model '{target_model_short}' not found in manifest"],
             )
-        unique_id, model = target
         from dbt_meta.usage._common import model_partition_columns
 
-        current_part = sorted(model_partition_columns(model))
         # Only direct readers can benefit from partition pruning; deeper
         # descendants read the intermediate model's storage.
-        downstream_ids = direct_downstream(self.manifest, unique_id)
+        model = ctx.model
+        downstream_ids = ctx.downstream_ids
+        events = ctx.events
+        analysed_downstream = ctx.analysed_downstream
+        col_types = ctx.col_types
+
+        current_part = sorted(model_partition_columns(model))
         materialized_map = downstream_short_to_materialized(self.manifest, downstream_ids)
         # Pre-compute the incremental/non-incremental split across ALL
         # direct downstream — not just the analyzed ones — so the
@@ -194,10 +188,6 @@ class PartitionAdvisor:
             if mat and mat not in INCREMENTAL_MATERIALIZATIONS
         )
 
-        events = collect_events(self.manifest, model, self.extractor, downstream_ids)
-        analysed_downstream = {e.downstream_model for e in events}
-
-        col_types = column_types(self.catalog, unique_id)
         candidates = self._score(events, col_types)
 
         # The full universe of downstream "without pruning" for any
@@ -215,7 +205,7 @@ class PartitionAdvisor:
             if cand.score <= 0:
                 continue
             dtype = col_types.get(col, "")
-            base = _base_type(dtype)
+            base = base_type(dtype)
             granularity = self._pick_granularity(base)
             pruning_pct = (
                 100.0 * len(cand.downstream_set) / len(analysed_downstream)
@@ -263,11 +253,9 @@ class PartitionAdvisor:
 
         primary = recs[0] if recs else None
         alts = recs[1:5]
-        warnings: list[str] = []
-        if not analysed_downstream and downstream_ids:
-            diag = diagnose_no_extraction(self.manifest, downstream_ids)
-            if diag:
-                warnings.append(diag)
+        warnings = no_extraction_warnings(
+            self.manifest, analysed_downstream, downstream_ids
+        )
 
         matches_current = bool(
             primary
@@ -303,7 +291,7 @@ class PartitionAdvisor:
                 # the visible reasoning.
                 continue
             dtype = col_types.get(ev.column, "")
-            base = _base_type(dtype)
+            base = base_type(dtype)
             if base not in TIME_TYPES and base not in INT_TYPES:
                 continue
 
