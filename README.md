@@ -19,6 +19,7 @@
 - **✅ SQL validation** — Validate SQL syntax using BigQuery dry run
 - **📏 Scan estimation** — Estimate query scan size before running (MB / GB)
 - **📊 Optimization analysis** — Find hotspots, analyze single models, branch-level alignment
+- **🛡️ Trust contour** — Check that no reviewed model stands on an unreviewed ancestor
 - **🧬 Column-level lineage** — `meta lineage build/column/downstream/stats` with rustworkx graph (sub-10ms queries)
 - **🎯 Column-usage-aware advisors** — `meta optimize cluster/partition/refresh` recommends BigQuery clustering/partition keys and minimal `--full-refresh` plan based on real downstream WHERE/JOIN usage
 - **🔗 Power BI integration** — Extract BigQuery tables (+ DAX measures & column schemas) from dashboards
@@ -302,6 +303,33 @@ Uses BigQuery dry run (no rows processed, no charge for dry run itself). Both co
 **`hotspots` flags:**
 - `-n, --limit N` — number of hotspots to display (default: 10)
 - `--min-gb GB` — minimum table size in GB (default: 1.0)
+
+### Trust contour
+
+| Command | Description | Key flags | Example |
+|---------|-------------|-----------|---------|
+| `contour` | Whole-project check of the trust contour invariant (exit 1 on a violation) | `-j`, `-w/--warnings`, `--min-tests N`, `-d`, `--manifest` | `meta contour -w` |
+
+The trust tag lives in `config.meta.tier`: `primary` (a significant read point,
+reviewed and endorsed), `verified` (reviewed and trusted, feeds other models),
+`review` (queued, not yet checked), `deprecating` (reviewed and rejected, still
+built for its last consumers), `mirror` (an unprocessed 1:1 copy — outside the
+ordered rungs).
+
+**Violation:** a model tagged `primary` or `verified` has an ancestor that is
+untagged or tagged `review` / `deprecating`. `staging` models and `mirror`
+models are exempt — a staging wrapper is reviewed together with the `core`
+model that reads it, and a mirror has nothing in it to review.
+
+**Warning, never a violation:** a trusted model with no decision doc
+(`<model dir>/docs/<model>.md`) or with fewer than `--min-tests` tests
+(default 1). Otherwise a contour under construction would report as empty.
+Warnings are hidden in text output unless `-w` is given; JSON always carries
+both lists.
+
+**`contour` flags:**
+- `-w, --warnings` — include warnings in text output
+- `--min-tests N` — minimum tests before a warning is raised (default: 1)
 
 ### Integration — Power BI
 

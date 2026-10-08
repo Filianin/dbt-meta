@@ -106,6 +106,7 @@ src/dbt_meta/
 │   ├── parents.py, children.py, lineage_utils.py
 │   ├── validate.py, scan.py
 │   ├── analyze.py, hotspots.py, branch.py
+│   ├── contour.py         # trust-contour invariant across the whole project
 │   ├── lineage.py         # column-level lineage queries
 │   └── powerbi.py
 ├── lineage/               # column-level lineage core
@@ -125,6 +126,28 @@ src/dbt_meta/
 │   └── state_detector.py  # ModelStateDetector: manifest + git → DetectedState
 └── templates/dbt-meta.toml
 ```
+
+## Trust Contour (`meta contour`)
+
+Trust tag = `config.meta.tier`: `primary` (significant read point, reviewed and
+endorsed), `verified` (reviewed, feeds other models), `review` (queued),
+`deprecating` (reviewed and rejected, still built), `mirror` (unprocessed 1:1
+copy, outside the ordered rungs).
+
+**Invariant (violation):** a `primary`/`verified` model has a transitive model
+ancestor that is untagged or tagged `review`/`deprecating`. Exempt ancestors:
+models whose `path` starts with `staging` (reviewed together with the `core`
+model reading them) and `mirror`-tagged models (nothing in them to review).
+Ancestor walk is iterative + cycle-safe, memoized in `_ancestor_cache`.
+
+**Warnings, never violations:** trusted model without a decision doc
+(`<model dir>/docs/<model>.md`, resolved against `infer_project_root`) or with
+fewer than `--min-tests` manifest tests. The split is load-bearing: without it
+a contour under construction reports as empty and an agent has nowhere to go.
+
+Exit code 1 on any violation (pipeline gate). Text output hides warnings
+unless `-w`; JSON always carries `violations` **and** `warnings` plus a
+`summary` with per-tier counts.
 
 ## Optimization Advisors — Algorithms
 

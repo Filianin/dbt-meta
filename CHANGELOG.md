@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.9] - 2026-09-10
+
+### Added
+
+- **`meta contour`** — whole-project check of the trust contour invariant: a
+  model tagged `primary` or `verified` must not have an ancestor that is
+  untagged or tagged `review` / `deprecating`. `staging` models and `mirror`
+  models are exempt — a staging wrapper is reviewed together with the `core`
+  model that reads it, and a mirror is an unprocessed 1:1 copy with nothing in
+  it to review. A missing decision doc or fewer than `--min-tests` tests is a
+  warning, never a violation, so a contour under construction is not reported
+  as empty. Exits 1 on a violation, so it can gate a pipeline. Flags:
+  `-w/--warnings`, `--min-tests N`, `-j/--json`, `-d/--dev`, `--manifest`.
+
 ## [0.3.8] - 2026-07-22
 
 ### Added

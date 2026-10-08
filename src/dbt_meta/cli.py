@@ -26,6 +26,7 @@ from dbt_meta.command_impl.children import ChildrenCommand
 from dbt_meta.command_impl.columns import ColumnsCommand
 from dbt_meta.command_impl.config import ConfigCommand
 from dbt_meta.command_impl.context import ContextCommand
+from dbt_meta.command_impl.contour import ContourCommand
 from dbt_meta.command_impl.hotspots import HotspotsCommand
 from dbt_meta.command_impl.ls import ListModelsCommand, LsCommand
 from dbt_meta.command_impl.parents import ParentsCommand
@@ -168,6 +169,7 @@ def _build_commands_panel() -> Panel:
     # Optimization & Analysis (yellow)
     table.add_row("[bold yellow]Optimization:[/bold yellow]", "")
     table.add_row("  [yellow]hotspots[/yellow]", "Find optimization opportunities (-n LIMIT, --min-gb GB)")
+    table.add_row("  [yellow]contour[/yellow]", "Check the trust contour invariant (-w, --min-tests N)")
     table.add_row("  [yellow]analyze[/yellow]", "Deep analysis of single model")
     table.add_row("  [yellow]branch[/yellow]", "Branch-level optimization impact")
     table.add_row("  [yellow]optimize cluster[/yellow]", "Recommend cluster keys from downstream WHERE/JOIN")
@@ -295,6 +297,7 @@ def _build_examples_panel() -> Panel:
     table.add_row("[bold]Optimization:[/bold]", "")
     table.add_row("  meta hotspots", "Top 10 optimization candidates")
     table.add_row("  meta hotspots -n 20 --min-gb 10", "Top 20, tables >10 GB")
+    table.add_row("  meta contour -w", "Trust contour check, warnings included")
     table.add_row("  meta analyze customers", "Deep analysis of one model")
     table.add_row("  meta branch customers", "Upstream/downstream alignment")
     table.add_row("", "")
@@ -1536,6 +1539,80 @@ def hotspots(
     else:
         _print_hotspots_result(result, limit)
 
+
+
+@app.command()
+@meta_command
+def contour(
+    min_tests: int = typer.Option(1, "--min-tests", help="Minimum tests before a warning is raised"),
+    warnings_only: bool = typer.Option(False, "-w", "--warnings", help="Show warnings too in text output"),
+    json_output: bool = typer.Option(False, "-j", "--json", help="Output as JSON"),
+    dev: bool = typer.Option(False, "-d", "--dev", help="Use local target/manifest.json"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to manifest.json"),
+) -> None:
+    """
+    Check the trust contour invariant
+
+    A model tagged primary or verified must not stand on an ancestor that is
+    untagged or tagged review/deprecating. staging models and mirror models
+    are exempt. Missing decision docs and thin tests are warnings, not
+    violations. Exit code 1 when a violation is found.
+
+    Examples:
+        meta contour                      # whole-project check
+        meta contour -w                   # include warnings
+        meta contour -j                   # JSON for scripting
+    """
+    manifest_path, _ = get_manifest_path(manifest, dev)
+    result = ContourCommand(Config.from_config_or_env(), manifest_path, min_tests, json_output).execute()
+
+    if json_output:
+        print(json.dumps(result, indent=2))
+    else:
+        _print_contour_result(result, warnings_only)
+
+    if not result['ok']:
+        raise typer.Exit(code=1)
+
+
+def _print_contour_result(result: dict[str, Any], show_warnings: bool) -> None:
+    """Pretty print contour command result."""
+    summary = result['summary']
+    print()
+    console.print("[bold green]Trust contour[/bold green]")
+    tiers = ", ".join(f"{name} {count}" for name, count in summary['tiers'].items()) or "no tagged models"
+    console.print(f"  {tiers}")
+    console.print(
+        f"  {summary['models_checked']} trusted models checked, "
+        f"{summary['violations']} violations, {summary['warnings']} warnings"
+    )
+    print()
+
+    if result['violations']:
+        console.print("[bold red]Violations[/bold red] - trusted model on an unreviewed ancestor")
+        for violation in result['violations']:
+            print()
+            console.print(
+                f"  [cyan]{violation['model']}[/cyan] ({violation['tier']}) - "
+                f"[red]{violation['unreviewed_ancestors']}[/red] unreviewed ancestors"
+            )
+            for ancestor in violation['ancestors'][:5]:
+                console.print(f"      {ancestor['model']} ({ancestor['tier']})")
+            remaining = violation['unreviewed_ancestors'] - 5
+            if remaining > 0:
+                console.print(f"      ... and {remaining} more")
+    else:
+        console.print("[green]No violations.[/green]")
+
+    if show_warnings and result['warnings']:
+        print()
+        console.print("[bold yellow]Warnings[/bold yellow] - trusted model missing documentation or tests")
+        for warning in result['warnings']:
+            console.print(
+                f"  [cyan]{warning['model']}[/cyan] ({warning['tier']}): "
+                + "; ".join(warning['missing'])
+            )
+    print()
 
 
 def _print_hotspots_result(result: dict[str, Any], limit: int) -> None:
