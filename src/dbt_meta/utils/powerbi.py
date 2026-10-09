@@ -240,24 +240,136 @@ def _fabric_call(
     return code, headers, body_part
 
 
-def _decode_report_json(definition: dict[str, Any]) -> Optional[dict[str, Any]]:
-    """Pull the base64 ``report.json`` part out of a getDefinition payload."""
-    part = next(
-        (
-            p
-            for p in definition.get("parts", [])
-            if (p.get("path") or "").endswith("report.json")
-        ),
-        None,
-    )
-    if not part or not part.get("payload"):
-        return None
+def _decode_parts(definition: dict[str, Any]) -> dict[str, Any]:
+    """Decode every base64 JSON part of a getDefinition payload, keyed by path.
+
+    Parts that are not valid base64 JSON (images, malformed payloads) are
+    dropped; the layout only ever needs the JSON ones.
+    """
+    out: dict[str, Any] = {}
+    for p in definition.get("parts") or []:
+        path = p.get("path") or ""
+        payload = p.get("payload")
+        if not path.endswith(".json") or not payload:
+            continue
+        try:
+            raw = base64.b64decode(payload).decode("utf-8", "replace")
+            out[path] = json.loads(raw)
+        except (ValueError, json.JSONDecodeError):
+            continue
+    return out
+
+
+def _decode_report_json(definition: dict[str, Any]) -> tuple[Optional[dict[str, Any]], str]:
+    """Turn a getDefinition payload into the classic ``report.json`` shape.
+
+    PBIR-Legacy carries one ``report.json`` at the root. PBIR splits the
+    report into ``definition/pages/<page>/page.json`` and
+    ``.../visuals/<visual>/visual.json``; those are folded into the same shape
+    by :func:`~dbt_meta.powerbi.pbir_parser.pbir_parts_to_legacy`, so one parser
+    serves both formats. Returns ``(report_json, "")`` or ``(None, reason)``.
+    """
+    from dbt_meta.powerbi.pbir_parser import pbir_parts_to_legacy
+
+    parts = _decode_parts(definition)
+    legacy = parts.get("report.json")
+    if isinstance(legacy, dict):
+        return legacy, ""
+    if any(path.startswith("definition/pages/") for path in parts):
+        return pbir_parts_to_legacy(parts), ""
+    paths = sorted(p.get("path") or "" for p in definition.get("parts") or [])
+    shown = ", ".join(paths[:5]) + (", ..." if len(paths) > 5 else "")
+    return None, f"no report.json or PBIR pages in the definition (parts: {shown or 'none'})"
+
+
+def _error_reason(prefix: str, body: str) -> str:
+    """``prefix`` plus the Fabric ``errorCode`` / ``message`` when the body has one."""
     try:
-        raw = base64.b64decode(part["payload"]).decode("utf-8", "replace")
-        parsed: dict[str, Any] = json.loads(raw)
-        return parsed
-    except (ValueError, json.JSONDecodeError):
-        return None
+        data = json.loads(body or "{}")
+    except json.JSONDecodeError:
+        data = {}
+    if not isinstance(data, dict):
+        return prefix
+    err = data["error"] if isinstance(data.get("error"), dict) else data
+    code = err.get("errorCode") or err.get("code")
+    message = str(err.get("message") or "")[:200]
+    detail = ": ".join(str(x) for x in (code, message) if x)
+    return f"{prefix} ({detail})" if detail else prefix
+
+
+def fetch_report_layout(
+    token: str,
+    workspace_id: str,
+    report_id: str,
+    fmt: str = "PBIR-Legacy",
+    timeout: int = 90,
+    max_polls: int = 15,
+    poll_interval: int = 8,
+) -> tuple[Optional[dict[str, Any]], str]:
+    """Fetch a report definition via Fabric getDefinition.
+
+    Returns ``(report_json, "")`` in the classic ``report.json`` shape, or
+    ``(None, reason)`` where ``reason`` says why the layout is missing (HTTP
+    status with the Fabric error code, LRO failure/timeout, no layout part).
+    Never raises — a failed report is a skipped report, not a fatal error, so
+    the caller's scan path stays intact.
+
+    Drives the long-running operation (``202`` → poll ``Location`` →
+    ``/result``). ``token`` must carry the Fabric audience (see
+    :func:`get_fabric_token`), and the service principal must be a *member*
+    (Contributor) of the workspace. ``fmt`` must match how the report is
+    stored (the Scanner's ``format`` field): classic reports reject ``PBIR``,
+    so ``PBIR-Legacy`` is the default and ``PBIR`` is passed for reports the
+    Scanner marks ``format: PBIR``.
+    """
+    url = (
+        f"{_FABRIC_BASE}/workspaces/{workspace_id}/reports/{report_id}"
+        f"/getDefinition?format={urllib.parse.quote(fmt)}"
+    )
+    code, headers, body = _fabric_call(token, url, method="POST", body={}, timeout=timeout)
+
+    definition: Optional[dict[str, Any]] = None
+    if code == 200:
+        try:
+            definition = json.loads(body or "{}").get("definition")
+        except json.JSONDecodeError:
+            return None, "getDefinition returned malformed JSON"
+    elif code == 202:
+        location = headers.get("location")
+        retry = poll_interval
+        with contextlib.suppress(ValueError):
+            retry = min(int(headers.get("retry-after", str(poll_interval))), poll_interval)
+        if not location:
+            return None, "getDefinition 202 without a Location header"
+        for _ in range(max_polls):
+            time.sleep(retry)
+            _, _, sbody = _fabric_call(token, location, timeout=timeout)
+            try:
+                data = json.loads(sbody or "{}")
+            except json.JSONDecodeError:
+                return None, "operation status returned malformed JSON"
+            status = data.get("status", "?")
+            if status == "Succeeded":
+                _, _, rbody = _fabric_call(
+                    token, location.rstrip("/") + "/result", timeout=timeout
+                )
+                try:
+                    definition = json.loads(rbody or "{}").get("definition")
+                except json.JSONDecodeError:
+                    return None, "operation result returned malformed JSON"
+                break
+            if status == "Failed":
+                return None, _error_reason("operation failed", sbody)
+        else:
+            return None, f"operation still running after {max_polls} polls"
+    elif code == 0:
+        return None, "request failed (curl missing, timeout or network error)"
+    else:
+        return None, _error_reason(f"HTTP {code}", body)
+
+    if not definition:
+        return None, "getDefinition returned no definition"
+    return _decode_report_json(definition)
 
 
 def get_report_definition(
@@ -267,60 +379,10 @@ def get_report_definition(
     timeout: int = 90,
     max_polls: int = 15,
     poll_interval: int = 8,
+    fmt: str = "PBIR-Legacy",
 ) -> Optional[dict[str, Any]]:
-    """Fetch a report's PBIR-Legacy ``report.json`` via Fabric getDefinition.
-
-    Drives the long-running operation (``202`` → poll ``Location`` →
-    ``/result``) and returns the decoded classic layout dict, or ``None`` on any
-    failure (HTTP error, LRO failure/timeout, no ``report.json`` part). Never
-    raises — a failed report is a skipped report, not a fatal error, so the
-    caller's scan path stays intact.
-
-    ``token`` must carry the Fabric audience (see :func:`get_fabric_token`).
-    """
-    url = (
-        f"{_FABRIC_BASE}/workspaces/{workspace_id}/reports/{report_id}"
-        f"/getDefinition?format=PBIR-Legacy"
+    """:func:`fetch_report_layout` without the reason: the layout dict or ``None``."""
+    report_json, _ = fetch_report_layout(
+        token, workspace_id, report_id, fmt, timeout, max_polls, poll_interval
     )
-    code, headers, body = _fabric_call(token, url, method="POST", body={}, timeout=timeout)
-
-    definition: Optional[dict[str, Any]] = None
-    if code == 200:
-        try:
-            definition = json.loads(body or "{}").get("definition")
-        except json.JSONDecodeError:
-            return None
-    elif code == 202:
-        location = headers.get("location")
-        retry = poll_interval
-        with contextlib.suppress(ValueError):
-            retry = min(int(headers.get("retry-after", str(poll_interval))), poll_interval)
-        if not location:
-            return None
-        for _ in range(max_polls):
-            time.sleep(retry)
-            _, _, sbody = _fabric_call(token, location, timeout=timeout)
-            try:
-                data = json.loads(sbody or "{}")
-            except json.JSONDecodeError:
-                return None
-            status = data.get("status", "?")
-            if status == "Succeeded":
-                _, _, rbody = _fabric_call(
-                    token, location.rstrip("/") + "/result", timeout=timeout
-                )
-                try:
-                    definition = json.loads(rbody or "{}").get("definition")
-                except json.JSONDecodeError:
-                    return None
-                break
-            if status == "Failed":
-                return None
-        else:
-            return None
-    else:
-        return None
-
-    if not definition:
-        return None
-    return _decode_report_json(definition)
+    return report_json

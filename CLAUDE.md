@@ -1,322 +1,96 @@
 # CLAUDE.md
 
-## Project Overview
-
-**dbt-meta** — AI-first CLI для извлечения метаданных из dbt `manifest.json`. Performance-first (LRU + orjson + lazy), production-first (prod manifest по умолчанию), fallback-enabled (prod → dev → BigQuery).
-
-## Quick Reference
-
-- Полный список команд и флагов: `README.md` (Commands Reference) или `meta --help` / `meta <cmd> -h`.
-- История изменений и breaking changes: `CHANGELOG.md`.
-- Decision-tree источника данных (5 сценариев): `.qa/decision_tree_visual.txt`, `.qa/data_source_logic.md`.
-
-## Hard Invariants
-
-Эти правила load-bearing — нарушение ломает корректность или производительность.
-
-### 1. Parser caching
-
-**Всегда** через `_get_cached_parser(manifest_path)` (`utils/__init__.py`). Прямой `ManifestParser(path)` обходит LRU и роняет производительность с 5-10ms до 30-60ms на каждую команду.
-
-### 2. Manifest discovery — приоритет
-
-```
-1. --manifest PATH      # explicit, highest
-2. DBT_DEV_MANIFEST_PATH    # if --dev
-3. DBT_PROD_MANIFEST_PATH   # default
-```
-
-`--manifest` и `--dev` взаимоисключающие — при совместном использовании `--dev` игнорируется с warning'ом.
-
-**Prod vs dev manifest:** prod использует `config.alias` для имени таблицы, dev — имя SQL-файла. Это критично для `meta schema` и BigQuery fallback.
-
-### 3. Fallback ordering (`fallback.py`)
-
-```
-PROD_MANIFEST → DEV_MANIFEST → BIGQUERY
-```
-
-Управляется `DBT_FALLBACK_TARGET`, `DBT_FALLBACK_BIGQUERY`. BigQuery fallback поддерживается для: `schema`, `columns`, `info`, `config`. **Не** поддерживается для: `deps`, `sql`, `parents`, `children` (dbt-specific).
-
-### 4. Schema resolution rule (BigQuery fallback)
-
-Когда модель найдена в одном manifest, но нужен BigQuery fallback (пустые колонки и т.п.) — **всегда** использовать schema из **найденной** модели:
-
-- Найдена в dev → dev schema (`personal_user`)
-- Найдена в prod → prod schema
-- **Никогда** не делать повторный поиск в prod после нахождения в dev.
-
-Реализация: `utils/state_detector.py` (`ModelStateDetector`), `command_impl/column_source.py` (`ColumnSourceFactory`).
-
-### 5. Catalog staleness — by file mtime, not generated_at
-
-`meta columns` использует `catalog.json` как быстрая альтернатива BigQuery (~10ms vs ~3s).
-
-- File mtime > 24h → fallback в BigQuery (CI/CD сломан).
-- Internal `generated_at` > 7 дней → info-сообщение, но без fallback (catalog синхронизируется при merge to master; если schema не менялась — старый `generated_at` ОК).
-
-Реализация: `catalog/parser.py`, `command_impl/columns.py`.
-
-### 6. Compiled SQL — 3-level lookup
-
-`utils/compiled_sql.py:get_compiled_sql()`:
-
-```
-1. manifest['compiled_code']
-2. {project_root}/target/compiled/{package}/{original_file_path}
-3. dbt compile --select <model> --target dev   # only with --dev, 180s timeout
-```
-
-Project root найден walk-up'ом от manifest по `dbt_project.yml`. Без `--dev` шаг 3 не запускается (предлагается `meta validate --dev <model>`).
-
-**ВАЖНО:** `validate --dev` и `scan --dev` используют **dev** manifest path для определения project root в `get_compiled_sql`. Это критично: без этого disk lookup (`target/compiled/`) и auto-compile работают в prod project root, а не dev.
-
-### 7. Dev schema resolution
-
-```
-1. DBT_DEV_SCHEMA           # explicit
-2. personal_{username}      # default, username sanitized via re.sub(r'[^a-zA-Z0-9_]', '_', ...)
-```
-
-Username из `DBT_USER` или `$USER`. Sanitize обязателен — BigQuery dataset name допускает только `[a-zA-Z0-9_]`.
-
-### 8. File management
-
-- **Никаких** временных файлов в `/tmp/`. Тесты, debug-скрипты, артефакты — в корень проекта (видны в `git status`, легко ревьюить и удалять).
-
-### 9. `context` — стабильная полная схема, `list` — разреженная
-
-`meta context` всегда отдаёт **полный** набор ключей; пустое значение — это сигнал (`partition_by: null` = «не партиционирована», `description: ""` = «не задокументировано», но колонка существует). Не прятать пустые ключи — агент не должен ветвиться по их наличию. `meta list` наоборот: `meta` выводится только когда непустой (отсутствие = «нет model-level meta» для сотен моделей, `{}` был бы шумом).
-
-## Architecture
-
-```
-src/dbt_meta/
-├── cli.py                 # Typer CLI + Rich (help panels, wiring)
-├── errors.py              # DbtMetaError hierarchy
-├── config.py              # TOML + env, XDG, Power BI section
-├── fallback.py            # 3-level fallback strategy
-├── command_impl/
-│   ├── base.py            # Fallback orchestration (get_model_with_fallback)
-│   ├── column_source.py   # ColumnSource strategies: BigQuery/Catalog + ColumnSourceFactory
-│   ├── schema.py, columns.py, config.py, sql.py, path.py
-│   ├── context.py         # queryable-shape bundle (facade over columns/docs/config + catalog stats), 1+ models
-│   ├── docs.py            # column descriptions — no CLI command, used internally by context.py
-│   ├── ls.py, refresh.py, search.py
-│   ├── parents.py, children.py, lineage_utils.py
-│   ├── validate.py, scan.py
-│   ├── analyze.py, hotspots.py, branch.py
-│   ├── contour.py         # trust-contour invariant across the whole project
-│   ├── lineage.py         # column-level lineage queries
-│   └── powerbi.py
-├── lineage/               # column-level lineage core
-│   ├── builder.py         # SQLGlot all-columns mode (v30.7+)
-│   ├── graph.py           # rustworkx wrapper, model.column ids
-│   ├── artifact.py        # JSON save/load + staleness
-│   └── finder.py
-├── usage/                 # column-usage analysis (WHERE/JOIN/GROUP BY)
-│   ├── extractor.py       # ColumnUsageExtractor (SQLGlot AST)
-│   ├── _common.py         # downstream traversal, alias resolution, select_star_from
-│   ├── advisor_cluster.py
-│   ├── advisor_partition.py
-│   └── advisor_refresh.py
-├── manifest/{parser,finder}.py
-├── catalog/parser.py
-├── utils/                 # bigquery, compiled_sql, monitoring, powerbi, git, dev, model_state
-│   └── state_detector.py  # ModelStateDetector: manifest + git → DetectedState
-└── templates/dbt-meta.toml
-```
-
-## Trust Contour (`meta contour`)
-
-Trust tag = `config.meta.tier`: `primary` (significant read point, reviewed and
-endorsed), `verified` (reviewed, feeds other models), `review` (queued),
-`deprecating` (reviewed and rejected, still built), `mirror` (unprocessed 1:1
-copy, outside the ordered rungs).
-
-**Invariant (violation):** a `primary`/`verified` model has a transitive model
-ancestor that is untagged or tagged `review`/`deprecating`. Exempt ancestors:
-models whose `path` starts with `staging` (reviewed together with the `core`
-model reading them) and `mirror`-tagged models (nothing in them to review).
-Ancestor walk is iterative + cycle-safe, memoized in `_ancestor_cache`.
-
-**Warnings, never violations:** trusted model without a decision doc
-(`<model dir>/docs/<model>.md`, resolved against `infer_project_root`) or with
-fewer than `--min-tests` manifest tests. The split is load-bearing: without it
-a contour under construction reports as empty and an agent has nowhere to go.
-
-Exit code 1 on any violation (pipeline gate). Text output hides warnings
-unless `-w`; JSON always carries `violations` **and** `warnings` plus a
-`summary` with per-tier counts.
-
-## Optimization Advisors — Algorithms
-
-Чистый AST-walk + tunable heuristics. Без `INFORMATION_SCHEMA.JOBS_BY_PROJECT` и без LLM.
-
-### Common pipeline
-
-```
-load manifest.json + catalog.json
-→ resolve target → physical table aliases
-→ collect downstream unique_ids (manifest.child_map BFS)
-→ for each downstream: ColumnUsageExtractor(compiled SQL)
-    → SQLGlot AST: WHERE / JOIN / GROUP BY / ORDER BY / QUALIFY /
-       Window PARTITION BY → UsageEvent list
-→ advisor-specific scoring
-```
-
-**`ColumnUsageExtractor` qualify pass:** перед обходом запускает `sqlglot.optimizer.qualify_tables` + `qualify_columns(infer_schema=True)`. Без этого bare-name references (`WHERE event_type = 1` без `events.` префикса) дают `col.table = ''` и фильтр алиасов их отбрасывает. dbt-compiled SQL часто использует bare refs — без qualify advisor не работает на проде.
-
-### `optimize cluster` heuristic
-
-Per-column score = Σ event_weight × `log2(downstream_count + 1)`:
-
-| Event | Weight |
-|---|---|
-| WHERE eq | 3.0 |
-| WHERE in | 2.5 |
-| WHERE between | 2.0 |
-| WHERE gt/ge/lt/le | 2.0 |
-| WHERE (function-wrapped) | 0.5 |
-| JOIN | 2.0 |
-| GROUP BY | 1.0 |
-
-Исключения: own partition column; типы `STRUCT` / `ARRAY` / `GEOGRAPHY` / `JSON`. Cap = 4 (BigQuery limit).
-
-### `optimize partition` heuristic
-
-Per-column score = Σ event_weight × type_bonus × `log2(downstream_count + 1)`:
-
-| Operator | Weight |
-|---|---|
-| between | 3.0 |
-| gt/ge/lt/le | 2.5 |
-| eq | 2.0 |
-| in | 1.5 |
-| function-wrapped | 0.0 |
-
-Type bonus: TIMESTAMP/DATE × 1.5, DATETIME × 1.3, INT64 × 1.0. Granularity: TIME → `DAY`, INT64 → `RANGE_BUCKET`. Output: 1 primary + до 4 alternatives.
-
-### `optimize refresh` — chain-aware propagation
-
-Walks transitive downstream в **топологическом порядке** (Kahn на `depends_on.nodes`) и пропагирует affectedness через цепочку. 3-уровневый descendant, который напрямую не упоминает changed model, всё равно классифицируется правильно — affectedness течёт через промежуточные модели.
-
-**State:** `affected_cols: dict[unique_id, set[str] | None]`. `None` = "whole row" (SELECT * propagation или unknown change).
-
-**Init:** для каждой changed model `affected_cols[changed] = <cols из --cols>` или `None`.
-
-**Propagation step** (downstream `M`, affected parent `U`):
-
-1. `SELECT * FROM <U>` (AST: `exp.Select` со `exp.Star` в projections + matching `from_`) → `M.affected = None`.
-2. `U.affected = None` → любая ссылка на `U` (через aliases или `references_target`) делает `M.affected = None`.
-3. `U.affected = {c1, c2}` → собрать `ColumnUsageExtractor` events на SQL `M`, где `event.column ∈ U.affected`. Имена upstream-колонок аккумулируются в `M.affected` (proxy для output columns — точно для pass-through и same-name renames, over-counts на aliased renames, что безопаснее).
-
-**Per-model classification:**
-
-| Условие | Bucket |
-|---|---|
-| `M.affected == None` | full_refresh |
-| `M.affected ∩ M.unique_key ≠ ∅` | full_refresh (merge сломает историю) |
-| `M.affected ∩ M.partition_by ≠ ∅` | full_refresh (partition pruning промахнётся) |
-| `M.materialized != "incremental"` | full_refresh |
-| иначе | incremental |
-
-**`SELECT *` detection** — AST-level через `select_star_from()` в `usage/_common.py`: проверяет `exp.Select` с `exp.Star` в projections AND matching `from_`. Заменил regex, который ловил false positives в комментариях/CTE.
-
-**Compiled-SQL fallback** (когда `node['compiled_code']` пустой, например local manifest от `dbt parse`):
-
-1. Manifest `compiled_code`.
-2. Disk: `<project_root>/target/compiled/<package>/<original_file_path>.sql`.
-3. **Bulk auto-compile** — один раз за `plan()`: `dbt compile --select <downstream models>`. Триггер: найден project root, `dbt` в PATH, >50% sampled 20-model slice без SQL на (1)+(2). Отключается через `--no-compile`.
-
-### Advisor caveats
-
-- Cardinality-aware scoring не подключён (план: `dbt_bigquery_monitoring`).
-- UDF внутренности opaque — вызов функции скрывает column-level usage внутри тела.
-- Без `--cols` propagation намеренно пессимистичный: любая ссылка на whole-model-changed upstream → downstream affected целиком.
-- Для моделей без `compiled_code` (после всех 3 fallback'ов) advisor классифицирует как `full_refresh` (cannot prove safety).
-- SQLGlot optimizer может бросить на необычном SQL — extractor глотает `SqlglotError` / `RecursionError` / `AttributeError` и трактует модель как zero-event (advisor consequently conservative).
-
-## Hotspots Scoring (calibrated in cents, €0.01 = 1pt)
-
-| Criterion | Points | Threshold |
-|---|---|---|
-| query_cost | cost_7d × 100 | direct spend, €0.01/week = 1pt (PRIMARY) |
-| high_scan | base × log2(freq), max 100 | >10GB/q=20, >1GB=10, >100MB=3 |
-| high_slot | base × log2(freq), max 75 | >10min/q=15, >2min=8, >30sec=3 |
-| no_partition | base × log2(freq), max 75 | >100GB=15, >10GB=8, >1GB=3 |
-| no_clustering | base × log2(freq), max 50 | >100GB=10, >10GB=5, >1GB=2 |
-| low_cache | wasted_cost × 100, max 200 | cache_hit < 30% |
-| unused | storage_cost × 100, max 200 | unused >30 days |
-
-Returns: Top by Score + Top Storage Savings.
-
-## Column-Level Lineage — Caveats
-
-- SQLGlot требует **compiled SQL** (не jinja). Модели без `compiled_code` skip с warning'ом.
-- `SELECT * EXCEPT(...)` требует `catalog.json` для expansion. Без catalog колонки достижимые через `*` теряются.
-- UDF internals opaque (leaf = "derived from input cols", тело UDF не парсится).
-- Build CPU-heavy (per-model `sqlglot.lineage` — pure-Python, GIL-bound). Параллелится через `-J/--jobs` (env `DBT_LINEAGE_JOBS`), дефолт `min(cpus, 3)` (cap низкий — не перегружать shared prod Airflow), `-J1` = sequential. Реализация: module-level `_process_one` (единый для sequential и pool), `spawn`-пул с `initializer`-раздачей read-only индексов, `BrokenProcessPool` → дострой хвоста в sequential. **Без `max_tasks_per_child`** — worker recycling под spawn с большими initargs (`table_index` + sqlglot-схема) дедлочил пул на пороге recycle (пул висел на 0% CPU, воркеры не пересоздавались); воркеры живут на весь пул. Артефакт **byte-stable** независимо от `--jobs` (`LineageGraph.to_dict` сортирует nodes/edges). На ~1000 моделей: полный build ~2 мин при `-J3` (было ~20 мин / зависание). `--timeout` по дефолту **0 (выключен)** — пропуск модели теряет её lineage, а SIGALRM всё равно не прерывает C-level regex sqlglot; медленным моделям дают досчитать. **Column-count guard** (`--max-columns`, env `DBT_LINEAGE_MAX_COLUMNS`, дефолт 400, `0` = off): all-columns lineage на очень широкой таблице (напр. `jira_issues` — 1478 колонок, passthrough `SELECT * EXCEPT` из 1476-колоночного источника) раздувается до ~1.7 ГБ RAM и минут pure-Python работы; такие модели скипаются **до парсинга** (`_SKIP_WIDE`) по числу колонок из catalog (`len(col_types)`). Downstream по-прежнему резолвит рёбра к колонкам скипнутой модели по имени (`add_edge` авто-создаёт узлы) — теряются лишь внутренние passthrough-рёбра самой широкой модели к сырому источнику. Опциональный extra `dbt-meta[lineage]` → `sqlglot[rs]` (Rust-токенизатор, скромный доп. выигрыш). Рекомендация: CI build prod-артефакта, дистрибуция через `~/dbt-state/` sync.
-
-## Adding a New Command
-
-1. **`commands.py`** — функция через `_get_cached_parser(manifest_path)`, возвращает `Optional[Dict]`.
-2. **`cli.py`** — Typer command с `-j/--json`, делегирует в `commands`/`command_impl`.
-3. **`tests/test_commands.py`** — тест с fixtures `prod_manifest`, `test_model`.
-4. **Help panel** — обновить `_build_commands_panel()` в `cli.py` при необходимости.
-
-Type hints обязательны (strict mypy).
-
-## Testing
-
-- Coverage requirement: 90%+ (см. `pyproject.toml`).
-- Markers: `unit`, `integration`, `performance`, `critical`.
-- Запуск: `pytest --cov=dbt_meta`.
-- Excluded from coverage: `cli.py` (UI), `manifest/finder.py` (auto-discovery).
-
-## Environment Variables
-
-**Manifest / catalog / lineage paths:**
-- `DBT_PROD_MANIFEST_PATH` (default `~/dbt-state/manifest.json`)
-- `DBT_DEV_MANIFEST_PATH` (default `./target/manifest.json`)
-- `DBT_PROD_CATALOG_PATH`, `DBT_DEV_CATALOG_PATH`
-- `DBT_PROD_LINEAGE_PATH` (lineage is prod-only — no dev variant; resolution: `--artifact` → `DBT_PROD_LINEAGE_PATH` → `~/dbt-state/lineage.json`)
-- `DBT_LINEAGE_JOBS` — worker processes for `lineage build` (resolution: `-J/--jobs` → `DBT_LINEAGE_JOBS` → `min(cpus, 3)`; `1` = sequential). Pin explicitly in Airflow to the pod's CPU/RAM budget.
-- `DBT_LINEAGE_MAX_COLUMNS` — skip models wider than N columns in `lineage build` (resolution: `--max-columns` → `DBT_LINEAGE_MAX_COLUMNS` → `400`; `0` = disabled). Guards against RAM/time blow-up on very wide `SELECT *` passthrough models.
-
-**Fallback toggles:**
-- `DBT_FALLBACK_TARGET` (dev manifest, default `true`)
-- `DBT_FALLBACK_BIGQUERY` (BQ metadata, default `true`)
-- `DBT_FALLBACK_CATALOG` (catalog.json for columns, default `true`)
-
-**Naming:**
-- `DBT_PROD_TABLE_NAME` — `alias_or_name` (default) | `name` | `alias`
-- `DBT_PROD_SCHEMA_SOURCE` — `config_or_model` (default) | `model` | `config`
-- `DBT_DEV_SCHEMA` — explicit (overrides `personal_{username}`)
-- `DBT_USER` — username override
-
-**Power BI:** `POWERBI_ENABLED`, `POWERBI_TENANT_ID`, `POWERBI_CLIENT_ID`, `POWERBI_CLIENT_SECRET`, `POWERBI_WORKSPACES`, `DBT_PROD_POWERBI_PATH` (index artifact for `powerbi list`/`find`/`show`/`reports`/`cost`/`lineage`/`compliance`; default `~/dbt-state/powerbi_index.json`). `powerbi artifacts` is prod-only: scans workspaces and builds the index in one shot, default outputs land next to the prod manifest (`~/dbt-state/powerbi_raw.json`, `~/dbt-state/powerbi_index.json`); override via `--raw`/`-o`. The scanResult scrub strips user emails (`users[].emailAddress`/`identifier`) and scalar `modifiedBy`/`createdBy`/`configuredBy` so no PII reaches disk; credentials are piped to `curl` over stdin, never via argv.
-
-**Power BI visual layout (SCHEMA_VERSION 1.2):** `powerbi artifacts` runs a second pass calling Fabric Get Report Definition (`getDefinition?format=PBIR-Legacy`, parsed by `powerbi/pbir_parser.py`) per report, attaching `ReportEntry.pages` = `[{name, visuals:[{type, fields:{role:[{table,column,kind}]}}]}]` (raw model names; canonical role map + raw fallback; `kind`=measure|column). `pages` is **sparse** (omitted when no layout). **Visual semantics (1.2):** the same pass also parses each visual's explicit `title` (`vcObjects.title` literal) and `filters` at three scopes — `ReportEntry.filters` (via `parse_report_filters`), `PageEntry.filters`, `VisualEntry.filters` (page/visual via `parse_pbir_legacy`); all sparse. `FilterRef` = `{table, column, kind, op, values:[str], summary:str}`, `op` ∈ `in`|`cmp`|`relative_date`|`top_n`|`advanced` (flat shape, never branches by op). Every filter parse is failure-isolated (a bad filter is dropped, never aborts the layout). `meta powerbi layout <report>` renders pages/visuals/titles/filters and complements `show` (which stays data-lineage: tables/SQL/dbt). The pass needs its **own Fabric-scoped token** (`get_fabric_token`, audience `https://api.fabric.microsoft.com/.default`) — the Scanner's Power BI-scoped token 401s on the Fabric data-plane — and the SP must be a *member* (Contributor) of the workspaces. `get_report_definition` isolates every failure (returns `None`), so one bad report never aborts the scan; summary reports `N/M reports got layouts`. `--no-layouts` skips the pass. `PBIR-Legacy` is mandatory: classic reports reject `format=PBIR`.
-
-**Power BI data-layer compliance:** `meta powerbi compliance` flags dashboards referencing tables outside the curated `core`/`report` dbt layers (or on a `domain=legacy` model). Reads **local** artifacts only — `--index`/`--raw`/`--manifest` (no live scan, no Service Principal) — and writes `{compliant, violations, unverified}` JSON via `-o` (default `<manifest-dir>/powerbi_compliance.json`). **Hybrid classification** (`compliance.classify`): a manifest-resolved `model` is judged by its dbt layer — layer = manifest `fqn[1]` (top model folder; `fqn[0]` is the package name), `domain` = `config.meta.domain` (list-aware); a declared `source` is always `layer:sources`; a table the manifest **cannot** resolve falls back to the physical schema convention. Approved model layers are closed (`core`/`report`); every other layer (`staging`/`intermediate`/`deprecated`/`monitoring`/`information_schema`/…) is a `layer:<name>` violation, legacy approved-layer models are `domain:legacy`. The unresolved-table schema fallback approves `core`/`report` on a **token boundary** — exact name or `<root>_` prefix (`core`, `core_utils`, `report_tableau`), but NOT a bare-prefix collision (`reporting_stale`, `coreanything`) which stays `layer:external` (`_schema_root_approved`). `--exclude-workspace` (repeatable) drops named workspaces entirely (dev sandboxes) — no violations, no unverified. App-published duplicates (`[App] <name>`) are skipped (lost owner metadata, subset mirror). Violation/unverified owner = the last modifier (`modifiedById` resolved via the scan-wide graphId directory), not the padded Owner-access list. Reports with unparsed source → `unverified` (never asserted compliant; negation asymmetry). `compliant=false` iff ≥1 confirmed violation. Consumed by the weekly `powerbi-data-layer-compliance` Airflow DAG (dwh-pipeline, BI-2886).
-
-**Deprecated** (warning при использовании): `DBT_DEV_DATASET`, `DBT_DEV_SCHEMA_TEMPLATE`, `DBT_DEV_SCHEMA_PREFIX` → use `DBT_DEV_SCHEMA`.
-
-## Publishing
+**dbt-meta** is an agent-first CLI (`meta`) that answers dbt metadata
+questions from `manifest.json`: production manifest by default, fallback to the
+dev manifest and then BigQuery, cached so a command costs ~10 ms.
+
+## Where the truth lives
+
+This file holds only what no single source file shows: rules that span
+modules, and the change workflow. Everything else has one home:
+
+- **Commands, flags, env vars, config keys** → `meta <cmd> -h` and the README
+  (Commands Reference, Configuration).
+- **How a command or algorithm works** (advisor weights, refresh propagation,
+  hotspots scoring, lineage build, contour, run-set, Power BI compliance) →
+  the module docstring of the file that implements it. Read it before editing
+  the module, and update it in the same change.
+- **History and breaking changes** → `CHANGELOG.md`.
+- **Data-source decision tree** (prod / dev / BigQuery, 5 scenarios) →
+  `.qa/decision_tree_visual.txt`, `.qa/data_source_logic.md`.
+
+## Cross-module invariants
+
+Each rule below is enforced across several files; breaking one silently
+returns wrong metadata or slows every command.
+
+1. **Parser cache.** Load a manifest only via `get_cached_parser(path)`
+   (`utils/__init__.py`). A direct `ManifestParser(path)` skips the LRU cache:
+   5–10 ms per command becomes 30–60 ms.
+2. **Manifest discovery** (`manifest/finder.py`, `cli.get_manifest_path`):
+   `--manifest PATH` → `DBT_DEV_MANIFEST_PATH` when `--dev` → otherwise
+   `DBT_PROD_MANIFEST_PATH` → `./target/manifest.json` →
+   `~/dbt-state/manifest.json`. `--manifest` wins over `--dev` (warning).
+   `meta run-set` is dev-only and resolves `--manifest` → `Config.dev_manifest_path`.
+3. **Table naming.** The prod manifest names a table by `config.alias`, the
+   dev manifest by the SQL file name. `meta schema` and the BigQuery fallback
+   depend on this.
+4. **Fallback order** (`fallback.py`): prod manifest → dev manifest →
+   BigQuery, toggled by `DBT_FALLBACK_TARGET` / `DBT_FALLBACK_BIGQUERY`.
+   BigQuery fallback serves `schema`, `columns`, `info`, `config` only;
+   `deps`, `sql`, `parents`, `children` are dbt-only.
+5. **Schema follows the manifest that found the model.** Found in dev → dev
+   schema (`personal_<user>`); found in prod → prod schema. Once a model is
+   found in dev, prod is never searched again (`utils/state_detector.py`,
+   `command_impl/column_source.py`).
+6. **Catalog staleness is judged by file mtime.** `catalog.json` file older
+   than 24 h → BigQuery fallback (CI is broken). Internal `generated_at`
+   older than 7 days → info message only: the catalog is rewritten on every
+   merge to master, so an old `generated_at` just means an unchanged schema
+   (`command_impl/column_source.py`).
+7. **Compiled SQL lookup** (`utils/compiled_sql.py:get_compiled_sql`):
+   manifest `compiled_code` → `<project_root>/target/compiled/<package>/<path>`
+   → `dbt compile --target dev` (only with `--dev`). The project root is found
+   by walking up from the manifest to `dbt_project.yml`; `validate --dev` and
+   `scan --dev` pass the **dev** manifest path so the lookup and compile run
+   in the dev project.
+8. **Dev schema** = `DBT_DEV_SCHEMA`, else `personal_<username>` from
+   `DBT_USER` / `$USER`, sanitized with `re.sub(r'[^a-zA-Z0-9_]', '_', ...)`
+   (BigQuery dataset names allow only `[a-zA-Z0-9_]`).
+9. **Output shape contract.** `meta context` always emits the full key set;
+   an empty value is the signal (`partition_by: null` = not partitioned,
+   `description: ""` = undocumented). `meta list` is sparse: `meta` appears
+   only when non-empty. Agents branch on values, never on key presence.
+10. **One dependency graph, one "modified".** Transitive walks (ancestors,
+    descendants, paths, build order) go through `manifest/graph.py::ManifestGraph`
+    (`parser.graph(prefixes)` builds it once per cached parser); never re-walk
+    `depends_on` / `child_map` by hand. What changed on a branch is
+    `manifest/changes.py::detect_modified`, shared by `run-set` and
+    `optimize refresh -m`.
+
+## Adding or changing a command
+
+1. Logic in `command_impl/<name>.py`, manifest via `get_cached_parser`,
+   module docstring describing the algorithm and its invariants.
+2. Typer command in `cli.py` with `@meta_command` and `-j/--json`; add rows to
+   `_build_commands_panel()` and `_build_examples_panel()`.
+3. Tests in `tests/test_<name>.py`; CLI paths via `typer.testing.CliRunner`.
+4. Keep four surfaces in sync: `meta <cmd> -h`, README Commands Reference,
+   `CHANGELOG.md` top entry, and this file when a cross-module rule changes.
+
+## Done gate
 
 ```bash
-pytest && mypy src/dbt_meta && ruff check src/dbt_meta
-# bump version: pyproject.toml + src/dbt_meta/__init__.py
-# update CHANGELOG.md
-pip install -e . && meta --version
-git tag v0.x.0
+pytest --cov=dbt_meta          # coverage bar 90% (pyproject.toml)
+mypy src/dbt_meta              # strict
+ruff check src/dbt_meta
 ```
 
-## Performance Targets
-
-- First command: 30-60ms (manifest parse + cache populate).
-- Subsequent: 5-10ms (cached parser).
-- 865+ models parsed in ~35ms median.
-
-Правила: всегда `_get_cached_parser()`, кэшировать в локальных переменных, generator expressions > list comprehensions для больших коллекций, `@lru_cache` для дорогих helper'ов.
+- Run `ruff format` on new files only. Most of the repo predates the
+  formatter, and formatting an existing file rewrites every line.
+- `cli.py` and `manifest/finder.py` are excluded from coverage. Test them
+  through `CliRunner` anyway.
+- If pytest-cov fails with "Can't combine statement coverage data with branch
+  data", delete the stale `.coverage*` files and rerun.
+- Release: bump the version in both `pyproject.toml` and
+  `src/dbt_meta/__init__.py`, add the CHANGELOG entry, and tag `v0.x.y`.

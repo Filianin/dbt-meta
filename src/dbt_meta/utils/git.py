@@ -17,7 +17,17 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from dbt_meta.manifest.parser import ManifestParser
 
-__all__ = ['GitStatus', 'check_manifest_git_mismatch', 'get_model_git_status', 'is_modified', 'validate_path']
+__all__ = [
+    'BranchChanges',
+    'GitStatus',
+    'branch_changed_files',
+    'check_manifest_git_mismatch',
+    'get_model_git_status',
+    'is_modified',
+    'validate_path',
+]
+
+DEFAULT_BASE_BRANCHES = ("origin/main", "origin/master", "main", "master")
 
 
 def validate_path(path: str) -> str:
@@ -574,3 +584,76 @@ def get_model_git_status(model_name: str, file_path: str | None = None) -> GitSt
             is_deleted=False,
             is_new=False
         )
+
+
+@dataclass
+class BranchChanges:
+    """Files changed on the current branch.
+
+    Attributes:
+        files: path (relative to the repo root) → ``committed`` |
+            ``uncommitted`` | ``untracked``. A later, more local source
+            overrides an earlier one.
+        base: The base branch the committed diff was taken against, or
+            ``None`` when no candidate base exists.
+    """
+    files: dict[str, str]
+    base: str | None
+
+
+def _git_out(cmd: list[str]) -> tuple[int, str]:
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        return r.returncode, r.stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return 1, ""
+
+
+def branch_changed_files(base_branch: str | None = None) -> BranchChanges:
+    """Collect every file the branch touches, from git in the current directory.
+
+    Sources, in order (later overrides earlier): committed vs the merge-base
+    with the base branch (auto-detected origin/main → origin/master → main →
+    master unless ``base_branch`` is given), uncommitted (unstaged + staged),
+    untracked.
+
+    Raises:
+        DbtMetaError: ``base_branch`` was given explicitly and git cannot diff
+            against it.
+    """
+    from dbt_meta.errors import DbtMetaError
+
+    files: dict[str, str] = {}
+    used_base: str | None = None
+
+    bases_to_try = (base_branch,) if base_branch else DEFAULT_BASE_BRANCHES
+    for base in bases_to_try:
+        rc, out = _git_out(["git", "diff", f"{base}...HEAD", "--name-only"])
+        if rc == 0:
+            used_base = base
+            for f in out.splitlines():
+                if f:
+                    files.setdefault(f, "committed")
+            break
+    if base_branch and used_base is None:
+        raise DbtMetaError(f"explicit --base '{base_branch}' not found")
+
+    for cmd in (["git", "diff", "HEAD", "--name-only"], ["git", "diff", "--cached", "--name-only"]):
+        rc, out = _git_out(cmd)
+        if rc == 0:
+            for f in out.splitlines():
+                if f:
+                    files[f] = "uncommitted"
+    # --untracked-files=all so git lists each new file inside untracked
+    # directories instead of collapsing the dir to a single entry (e.g.
+    # ``?? models/intermediate/client/``). Without this flag, models added in
+    # brand-new directories never match any node's ``original_file_path``.
+    rc, out = _git_out(["git", "status", "--porcelain", "--untracked-files=all"])
+    if rc == 0:
+        for line in out.splitlines():
+            if line.startswith("??"):
+                f = line[3:].strip()
+                if f:
+                    files[f] = "untracked"
+
+    return BranchChanges(files=files, base=used_base)

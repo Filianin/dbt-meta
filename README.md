@@ -20,6 +20,7 @@
 - **📏 Scan estimation** — Estimate query scan size before running (MB / GB)
 - **📊 Optimization analysis** — Find hotspots, analyze single models, branch-level alignment
 - **🛡️ Trust contour** — Check that no reviewed model stands on an unreviewed ancestor
+- **🧱 Run set** — Closed `--select` list for `defer run` in dev: branch-modified parents plus the unmodified models between them
 - **🧬 Column-level lineage** — `meta lineage build/column/downstream/stats` with rustworkx graph (sub-10ms queries)
 - **🎯 Column-usage-aware advisors** — `meta optimize cluster/partition/refresh` recommends BigQuery clustering/partition keys and minimal `--full-refresh` plan based on real downstream WHERE/JOIN usage
 - **🔗 Power BI integration** — Extract BigQuery tables (+ DAX measures & column schemas) from dashboards
@@ -140,7 +141,7 @@ meta columns -j orders          # → JSON array of columns
 meta list tag:daily             # → Filter models by tag
 meta search "customer"          # → Find models by description
 
-# Get comprehensive help with examples
+# One-screen overview; `meta <command> -h` for details, `meta examples` for examples
 meta --help
 meta
 ```
@@ -241,7 +242,9 @@ Column-usage-aware advisors. They read each downstream model's compiled SQL via 
 
 **`optimize partition` heuristic:** range/equality filter weights × type bonus (TIMESTAMP/DATE × 1.5, DATETIME × 1.3, INT64 × 1.0). Granularity heuristic: TIMESTAMP/DATE → `DAY`, INT64 → `RANGE_BUCKET`. Returns one primary recommendation + up to 4 alternatives + `pruning_impact_pct` (% of downstream queries that would benefit).
 
-**`optimize refresh` algorithm:** topological BFS over transitive downstream. Affectedness propagates through the chain — a 3-level descendant `C` that never directly mentions changed `A` is still classified correctly when `A → B → C` and `B` consumes `A`'s changed columns. `SELECT *` propagates whole-row affectedness through the chain via SQLGlot AST detection (not regex). Per-model bucket: `full_refresh` (incremental key collision, SELECT *, or non-incremental materialization) / `incremental` (incremental + only safe columns affected) / `skip`.
+**`optimize refresh -m` change detection:** same rule as `run-set` — a model counts as changed when its `.sql` is edited, or when a `.yml` edit changes its build `config` vs the prod manifest. Description and test edits in `.yml` are ignored; changed seeds are not planned.
+
+**`optimize refresh` algorithm:** topological order (Kahn) over the transitive downstream from `ManifestGraph`. Affectedness propagates through the chain — a 3-level descendant `C` that never directly mentions changed `A` is still classified correctly when `A → B → C` and `B` consumes `A`'s changed columns. `SELECT *` propagates whole-row affectedness through the chain via SQLGlot AST detection (not regex). Per-model bucket: `full_refresh` (incremental key collision, SELECT *, or non-incremental materialization) / `incremental` (incremental + only safe columns affected) / `skip`.
 
 **`optimize refresh` flags:**
 - `-m, --modified` — auto-detect changed models from git (committed-vs-base + uncommitted + untracked)
@@ -330,6 +333,45 @@ both lists.
 **`contour` flags:**
 - `-w, --warnings` — include warnings in text output
 - `--min-tests N` — minimum tests before a warning is raised (default: 1)
+
+### Dev run set
+
+| Command | Description | Key flags | Example |
+|---------|-------------|-----------|---------|
+| `run-set` | Closed `--select` list for `defer run` (exit 2 on an incomplete `--check` list) | `--all`, `--check`, `--base`, `-j`, `--manifest`, `--no-parse` | `meta run-set model_1` |
+
+Under `--defer` without `--favor-state`, an unselected `ref()` reads the dev
+table if it exists, else prod — so a parent left out of `--select` is silently
+either prod or a stale dev copy. `run-set` returns every target plus every model
+on a path from a branch-modified ancestor down to it, including unmodified
+intermediates. Modified models that feed no target are left out.
+
+```
+model_2 (modified) → model_x → model_1 (modified)      model_3 (modified, unrelated)
+
+meta run-set model_1          → defer run -s model_2 model_x model_1
+meta run-set --check model_1  → exit 2, missing model_2, model_x
+meta run-set --all            → model_2 model_x model_1 model_3
+```
+
+- **Modified** comes from git: committed vs the merge-base with `--base`
+  (auto: `origin/main` → `origin/master` → `main` → `master`), uncommitted, untracked.
+- A changed `.yml` counts only when the node's `config` differs from the prod
+  manifest; description and test edits never trigger a rebuild.
+- `--all` targets every model and seed modified on the branch. A changed file
+  whose node is disabled (`enabled: false`) only warns; it is never built and
+  never forces `dbt parse`.
+- Changed macros only warn, listing dependent ancestors of the targets.
+- Ephemeral models and snapshots are traversed but never emitted; a snapshot
+  on a path gets a warning (it is not rebuilt in dev, so the upstream change may
+  not reach its children). Modified seeds get their own `defer seed -s …`
+  prefix in `command`.
+- The dev manifest is refreshed with `dbt parse` when a model file is newer
+  than it or a changed model is missing (`--no-parse` to skip).
+- `--check` takes the exact list you intend to pass to `-s`; selector syntax
+  (`tag:`, `+`, `@`, `,`, `*`) is rejected. Exit codes: `0` closed, `2` missing
+  models (each with its reason chain and the corrected command), `1` error —
+  treat as "cannot verify", never as success.
 
 ### Integration — Power BI
 
@@ -588,6 +630,9 @@ meta powerbi artifacts
 # By default a second pass calls Fabric getDefinition per report to attach
 # per-page visual layout: pages[].visuals[].{type, fields{role: [{table,column,kind}]}}.
 # Needs a Fabric-scoped service principal that is a *member* of the workspaces.
+# Classic (PBIR-Legacy) and PBIR reports are both read; an `[App] …` copy takes
+# its original's layout. Every report left without a layout prints
+# `layout skipped: <workspace> / <report>: <reason>` to stderr.
 # Skip it for the fast path:
 meta powerbi artifacts --no-layouts
 

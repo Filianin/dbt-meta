@@ -32,6 +32,7 @@ from dbt_meta.command_impl.ls import ListModelsCommand, LsCommand
 from dbt_meta.command_impl.parents import ParentsCommand
 from dbt_meta.command_impl.path import PathCommand
 from dbt_meta.command_impl.refresh import RefreshCommand
+from dbt_meta.command_impl.run_set import RunSetCommand
 from dbt_meta.command_impl.scan import ScanCommand
 from dbt_meta.command_impl.schema import SchemaCommand
 from dbt_meta.command_impl.search import SearchCommand
@@ -138,118 +139,88 @@ def _build_tree_recursive(parent_tree: Tree, nodes: list[dict[str, Any]]) -> Non
             _build_tree_recursive(child_tree, children)
 
 
-def _build_commands_panel() -> Panel:
-    """Build Commands panel with categorized commands"""
+HELP_NAME_WIDTH = 16
+
+# Top-level help: one row per command, or per subcommand family (subcommand
+# descriptions live in `meta <family> -h`). Every top-level command must
+# appear here; tests/test_cli_help.py enforces it.
+HELP_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
+    ("Model metadata", [
+        ("schema", "BigQuery table name"),
+        ("path", "Relative path to the .sql file"),
+        ("columns", "Column names and types"),
+        ("sql", "Compiled SQL, or raw SQL with Jinja"),
+        ("context", "Queryable-shape bundle for 1+ models before a query"),
+        ("parents", "Upstream dependencies"),
+        ("children", "Downstream dependencies"),
+        ("config", "Full dbt config (partition_by, cluster_by, ...)"),
+    ]),
+    ("Find models", [
+        ("list", "Filter models by selectors (tag:, config., path:)"),
+        ("models", "Substring search in model names"),
+        ("search", "Search by name or description"),
+    ]),
+    ("Branch workflow", [
+        ("run-set", "Closed --select list for defer run"),
+        ("validate", "Validate SQL syntax (BigQuery dry run)"),
+        ("scan", "Estimate query scan size"),
+        ("branch", "Branch-level optimization impact"),
+    ]),
+    ("Quality & optimization", [
+        ("contour", "Check the trust contour invariant"),
+        ("hotspots", "Find optimization opportunities"),
+        ("analyze", "Deep analysis of a single model"),
+        ("optimize", "cluster · partition · refresh"),
+    ]),
+    ("Lineage", [
+        ("lineage", "build · column · downstream · stats"),
+    ]),
+    ("Power BI", [
+        ("powerbi", "artifacts · compliance · list · find · show · layout · "
+                    "reports · cost · lineage · measures · source · owners"),
+    ]),
+    ("Settings & help", [
+        ("refresh", "Sync prod artifacts (or parse local with --dev)"),
+        ("settings", "init · show · validate · path"),
+        ("examples", "Usage examples for all commands"),
+        ("config-help", "Env vars and TOML configuration reference"),
+    ]),
+]
+
+
+def _help_table() -> Table:
     table = Table(show_header=False, box=None, padding=(0, 1))
-    table.add_column(style=STYLE_COMMAND, no_wrap=True, width=28)
+    table.add_column(style=STYLE_COMMAND, no_wrap=True, width=HELP_NAME_WIDTH)
     table.add_column(style=STYLE_DESCRIPTION)
+    return table
 
-    # Core commands (green)
-    table.add_row("[bold green]Core:[/bold green]", "")
-    table.add_row("  [green]schema[/green]", "BigQuery table name (--dev for dev schema)")
-    table.add_row("  [green]path[/green]", "Relative file path to .sql file")
-    table.add_row("  [green]columns[/green]", "Column names and types (--dev for dev schema)")
-    table.add_row("  [green]sql[/green]", "Compiled SQL (default) or raw SQL with --jinja")
-    table.add_row("  [green]context[/green]", "Full queryable-shape bundle (1+ models) before a BigQuery query")
-    table.add_row("  [green]parents[/green]", "Upstream dependencies (direct or -a/--all ancestors)")
-    table.add_row("  [green]children[/green]", "Downstream dependencies (direct or -a/--all descendants)")
-    table.add_row("  [green]config[/green]", "Full dbt config (29 fields: partition_by, cluster_by, etc.)")
-    table.add_row("", "")
 
-    # Utilities (cyan)
-    table.add_row("[bold cyan]Utilities:[/bold cyan]", "")
-    table.add_row("  [cyan]list[/cyan]", "Filter models by selectors (tag:, config., path:)")
-    table.add_row("  [cyan]models[/cyan]", "Simple substring search in model names")
-    table.add_row("  [cyan]search[/cyan]", "Search by name or description")
-    table.add_row("  [cyan]refresh[/cyan]", "Sync prod artifacts (or parse local with --dev)")
-    table.add_row("  [cyan]validate[/cyan]", "Validate SQL syntax (BigQuery dry run)")
-    table.add_row("  [cyan]scan[/cyan]", "Estimate query scan size (MB/GB)")
-    table.add_row("", "")
+def _build_commands_panel() -> Panel:
+    """Build Commands panel: task groups, one row per command or family"""
+    from rich.console import Group
 
-    # Optimization & Analysis (yellow)
-    table.add_row("[bold yellow]Optimization:[/bold yellow]", "")
-    table.add_row("  [yellow]hotspots[/yellow]", "Find optimization opportunities (-n LIMIT, --min-gb GB)")
-    table.add_row("  [yellow]contour[/yellow]", "Check the trust contour invariant (-w, --min-tests N)")
-    table.add_row("  [yellow]analyze[/yellow]", "Deep analysis of single model")
-    table.add_row("  [yellow]branch[/yellow]", "Branch-level optimization impact")
-    table.add_row("  [yellow]optimize cluster[/yellow]", "Recommend cluster keys from downstream WHERE/JOIN")
-    table.add_row("  [yellow]optimize partition[/yellow]", "Recommend partition column from downstream filters")
-    table.add_row("  [yellow]optimize refresh[/yellow]", "Column-aware --full-refresh planner")
-    table.add_row("", "")
-
-    # Column-level lineage (magenta)
-    table.add_row("[bold magenta]Lineage:[/bold magenta]", "")
-    table.add_row("  [magenta]lineage build[/magenta]", "Build column-level lineage artifact (SQLGlot + rustworkx)")
-    table.add_row("  [magenta]lineage column <m.col>[/magenta]", "Upstream lineage for a column")
-    table.add_row("  [magenta]lineage downstream <m.col>[/magenta]", "Downstream impact for a column")
-    table.add_row("  [magenta]lineage stats[/magenta]", "Artifact summary (nodes, edges, generated_at)")
-    table.add_row("", "")
-
-    # Integration — Power BI (blue)
-    table.add_row("[bold blue]Power BI:[/bold blue]", "")
-    table.add_row("  [blue]powerbi artifacts[/blue]", "Scan workspaces + build compact index → ~/dbt-state/")
-    table.add_row("  [blue]powerbi compliance[/blue]", "Flag dashboards using tables outside core/report layers")
-    table.add_row("  [blue]powerbi list[/blue]", "List all reports (workspace | report | dataset)")
-    table.add_row("  [blue]powerbi find <q>[/blue]", "Find reports / metrics behind a dashboard")
-    table.add_row("  [blue]powerbi show <report>[/blue]", "Report breakdown: tables + SQL analysis")
-    table.add_row("  [blue]powerbi layout <report>[/blue]", "Visual semantics: pages, visuals, titles, filters")
-    table.add_row("  [blue]powerbi reports <model>[/blue]", "Reverse lookup: dbt model → PBI reports")
-    table.add_row("  [blue]powerbi cost <report>[/blue]", "Per-table query cost metrics (7-day, live BQ)")
-    table.add_row("  [blue]powerbi lineage <report>[/blue]", "Column-level upstream lineage for report SQL filters")
-    table.add_row("  [blue]powerbi measures <report>[/blue]", "DAX measures + expressions (from raw)")
-    table.add_row("  [blue]powerbi source <report>[/blue]", "Power Query M-expressions (from raw)")
-    table.add_row("  [blue]powerbi owners <report>[/blue]", "Report owners + last modified (from raw)")
-    table.add_row("", "")
-
-    # Settings management (magenta)
-    table.add_row("[bold magenta]Settings:[/bold magenta]", "")
-    table.add_row("  [magenta]settings init[/magenta]", "Create config file from template (-f to overwrite)")
-    table.add_row("  [magenta]settings show[/magenta]", "Display current configuration")
-    table.add_row("  [magenta]settings validate[/magenta]", "Validate config file")
-    table.add_row("  [magenta]settings path[/magenta]", "Show path to active config file")
-    table.add_row("", "")
-
-    # Help on demand (dim)
-    table.add_row("[bold]Help:[/bold]", "")
-    table.add_row("  examples", "Show usage examples for all commands")
-    table.add_row("  config-help", "Show env vars and TOML configuration reference")
-
-    return Panel(table, title="[bold white]🚀 Commands[/bold white]", title_align="left", border_style="white", padding=(0, 1))
+    parts: list[Any] = []
+    for group, rows in HELP_GROUPS:
+        table = _help_table()
+        for name, description in rows:
+            table.add_row(f"  {name}", description)
+        parts += [f"[bold white]{group}[/bold white]", table]
+    return Panel(Group(*parts), title="[bold white]🚀 Commands[/bold white]", title_align="left", border_style="white", padding=(0, 1))
 
 
 def _build_flags_panel() -> Panel:
-    """Build Flags panel"""
-    table = Table(show_header=False, box=None, padding=(0, 1))
-    table.add_column(style=STYLE_COMMAND, no_wrap=True, width=20)
-    table.add_column(style=STYLE_DESCRIPTION)
-
-    table.add_row("[bold cyan]Global flags:[/bold cyan]", "")
+    """Build Flags panel: global flags plus flags shared by several commands"""
+    table = _help_table()
     table.add_row("-h, --help", "Show this help message")
     table.add_row("-v, --version", "Show version and exit")
     table.add_row("--manifest PATH", "Explicit path to manifest.json")
     table.add_row("-d, --dev", "Use dev manifest and schema")
-    table.add_row("", "")
-    table.add_row("[bold cyan]Output flags:[/bold cyan]", "")
-    table.add_row("[green]-j, --json[/green]", "Output as JSON (AI-friendly structured data)")
-    table.add_row("", "")
-    table.add_row("[bold cyan]Lineage flags:[/bold cyan]", "")
-    table.add_row("-a, --all", "Recursive mode (parents, children)")
-    table.add_row("", "")
-    table.add_row("[bold cyan]SQL flags:[/bold cyan]", "")
-    table.add_row("--jinja", "Show raw SQL with Jinja (sql command)")
-    table.add_row("", "")
-    table.add_row("[bold cyan]list flags:[/bold cyan]", "")
-    table.add_row("--and", "Require ALL selectors (default: OR)")
-    table.add_row("--group", "Group by tag combinations")
-    table.add_row("-m, --modified", "Show only git-modified/new models")
-    table.add_row("", "")
-    table.add_row("[bold cyan]hotspots flags:[/bold cyan]", "")
-    table.add_row("-n, --limit N", "Number of hotspots to show (default: 10)")
-    table.add_row("--min-gb GB", "Minimum table size in GB (default: 1.0)")
-    table.add_row("", "")
-    table.add_row("[bold cyan]settings init flags:[/bold cyan]", "")
-    table.add_row("-f, --force", "Overwrite existing config file")
-
+    table.add_row("-j, --json", "Output as JSON (AI-friendly structured data)")
+    table.add_row("-a, --all", "All ancestors / descendants (parents, children)")
+    table.add_row("--all", "Every model and seed modified on the branch (run-set)")
+    table.add_row("-m, --modified", "Only git-modified models (list, optimize refresh)")
+    table.add_row("--base BRANCH", "Base branch for git diff (run-set, optimize refresh)")
+    table.add_row("--no-compile", "Never run dbt compile for missing SQL (sql, scan, ...)")
     return Panel(table, title="[bold white]🚩 Flags[/bold white]", title_align="left", border_style="white", padding=(0, 1))
 
 
@@ -275,7 +246,9 @@ def _build_examples_panel() -> Panel:
     table.add_row("  meta children -a -j customers", "All descendants as nested JSON")
     table.add_row("", "")
     table.add_row("[bold]Dev workflow (with defer):[/bold]", "")
-    table.add_row("  defer run --select customers", "Build dev table first")
+    table.add_row("  meta run-set customers", "Closed set to build: changed parents + intermediates")
+    table.add_row("  meta run-set --check m2 x customers", "Exit 2 if the list misses a node")
+    table.add_row("  meta run-set --all", "Every branch change + intermediates")
     table.add_row("  meta schema --dev customers", "personal_USERNAME.customers")
     table.add_row("  meta columns --dev -j customers", "Get dev table columns")
     table.add_row("  meta refresh", "Sync prod artifacts from remote storage")
@@ -397,25 +370,12 @@ def show_help_with_examples(ctx: typer.Context) -> None:
     rprint("AI-first CLI for dbt metadata extraction")
     rprint()
 
-    # Usage block (like glab style)
-    console.print("[bold white]USAGE[/bold white]")
-    console.print()
-    usage_table = Table(show_header=False, box=None, padding=(0, 2), border_style="dim")
-    usage_table.add_column(style="white")
-    usage_table.add_row("meta COMMAND MODEL_NAME [FLAGS]")
-    usage_table.add_row("meta COMMAND [FLAGS]                   [dim](for list, search, refresh)[/dim]")
-    console.print(Panel(usage_table, border_style="white", padding=(0, 0)))
+    console.print("[bold white]USAGE[/bold white]  meta <command> [MODEL...] [FLAGS]    [dim]meta <command> -h for details[/dim]")
     rprint()
 
-    # Print Commands and Flags panels only
     console.print(_build_commands_panel())
     console.print(_build_flags_panel())
 
-    # Footer with links
-    console.print()
-    console.print("─" * 80)
-    console.print("  Run [cyan]meta examples[/cyan] for usage examples")
-    console.print("  Run [cyan]meta config-help[/cyan] for env vars and TOML configuration")
     console.print()
     console.print("  📚 Docs:   https://github.com/Filianin/dbt-meta")
     console.print("  🐛 Issues: https://github.com/Filianin/dbt-meta/issues")
@@ -497,6 +457,7 @@ def settings_init(
     Creates ~/.config/dbt-meta/config.toml with documented defaults.
     Use --force to overwrite existing config.
 
+    \b
     Examples:
         meta settings init              # Create config file
         meta settings init --force      # Overwrite existing
@@ -552,6 +513,7 @@ def settings_show(
 
     Shows configuration from TOML file with environment variable overrides.
 
+    \b
     Examples:
         meta settings show              # Human-readable table
         meta settings show --json       # JSON output
@@ -617,6 +579,7 @@ def settings_validate() -> None:
 
     Checks TOML syntax and validates configuration values.
 
+    \b
     Examples:
         meta settings validate
     """
@@ -663,6 +626,7 @@ def settings_path() -> None:
 
     Displays the path to the config file being used (if any).
 
+    \b
     Examples:
         meta settings path
     """
@@ -817,6 +781,7 @@ def schema(
     """
     Production table name (database.schema.table) or dev with --dev flag
 
+    \b
     Examples:
         meta schema jaffle_shop__orders            # Production
         meta schema --dev jaffle_shop__orders      # Dev (personal_USERNAME)
@@ -849,6 +814,7 @@ def columns(
     """
     Column names and types
 
+    \b
     Examples:
         meta columns -j customers                # Production
         meta columns --dev -j customers          # Dev
@@ -886,6 +852,7 @@ def config(
     """
     Full dbt config (29 fields: partition_by, cluster_by, etc.)
 
+    \b
     Examples:
         meta config -j model_name              # Production
         meta config --dev -j model_name        # Dev (personal_USERNAME)
@@ -925,6 +892,7 @@ def sql(
     """
     Compiled SQL (default) or raw SQL with --jinja
 
+    \b
     Examples:
         meta sql model_name                  # Production compiled SQL
         meta sql --dev model_name            # Dev (personal_USERNAME)
@@ -966,6 +934,7 @@ def validate(
     """
     Validate SQL syntax using BigQuery dry run
 
+    \b
     Examples:
         meta validate model_name          # Validate production SQL
         meta validate --dev model_name    # Validate dev SQL
@@ -999,6 +968,7 @@ def scan(
     """
     Estimate query scan size using BigQuery dry run
 
+    \b
     Examples:
         meta scan model_name              # Show scan size for production SQL
         meta scan --dev model_name        # Show scan size for dev SQL
@@ -1040,6 +1010,7 @@ def path(
     """
     Relative file path to .sql file
 
+    \b
     Examples:
         meta path model_name              # Production
         meta path --dev model_name        # Dev (personal_USERNAME)
@@ -1239,6 +1210,7 @@ def parents(
     """
     Upstream dependencies (direct or all ancestors)
 
+    \b
     Examples:
         meta parents -j model_name                    # Direct parents (old format)
         meta parents -a model_name                    # Tree view
@@ -1269,6 +1241,7 @@ def children(
     """
     Downstream dependencies (direct or all descendants)
 
+    \b
     Examples:
         meta children -j model_name                 # Direct children (old format)
         meta children -a model_name                 # Tree view
@@ -1305,6 +1278,7 @@ def refresh(
       Runs: dbt parse --target dev
       Use after: Editing models, schema.yml, dbt_project.yml
 
+    \b
     Examples:
       meta refresh              # Sync production artifacts from remote storage
       meta refresh --dev        # Parse local project (dev mode)
@@ -1345,6 +1319,7 @@ def context(
     query without exploratory SELECT */DISTINCT/COUNT probes. Output is always a
     JSON object keyed by model name; not-found models become null + a warning.
 
+    \b
     Examples:
         meta context -j core_client__events                 # single, keyed
         meta context -j model_a model_b model_c             # batch in one JSON
@@ -1429,6 +1404,7 @@ def analyze(
     Combines manifest metadata with BigQuery monitoring data to identify
     optimization opportunities.
 
+    \b
     Examples:
         meta analyze core_client__events          # Full analysis
         meta analyze -j core_client__events       # JSON output
@@ -1525,6 +1501,7 @@ def hotspots(
     Analyzes all tables and scores them based on partitioning,
     clustering, and query patterns.
 
+    \b
     Examples:
         meta hotspots                     # Top 20 optimization candidates
         meta hotspots -n 10               # Top 10
@@ -1558,6 +1535,7 @@ def contour(
     are exempt. Missing decision docs and thin tests are warnings, not
     violations. Exit code 1 when a violation is found.
 
+    \b
     Examples:
         meta contour                      # whole-project check
         meta contour -w                   # include warnings
@@ -1612,6 +1590,106 @@ def _print_contour_result(result: dict[str, Any], show_warnings: bool) -> None:
                 f"  [cyan]{warning['model']}[/cyan] ({warning['tier']}): "
                 + "; ".join(warning['missing'])
             )
+    print()
+
+
+@app.command("run-set")
+@meta_command
+def run_set(
+    models: list[str] = typer.Argument(None, help="Target model names: models you rebuild or inspect numbers in"),
+    use_all: bool = typer.Option(False, "--all", help="Targets = every model and seed modified on the branch"),
+    check: bool = typer.Option(False, "--check", help="Verify MODELS is a closed --select list; exit 2 when not"),
+    base_branch: Optional[str] = typer.Option(None, "--base", help="Base branch for git diff (default: auto-detect origin/main → origin/master → main → master)"),
+    json_output: bool = typer.Option(False, "-j", "--json", help="JSON output"),
+    manifest_path: Optional[str] = typer.Option(None, "--manifest", help="Explicit dev manifest.json path (default ./target/manifest.json)"),
+    no_parse: bool = typer.Option(False, "--no-parse", help="Do not run `dbt parse` when the dev manifest is stale"),
+) -> None:
+    """
+    Closed --select list for `defer run` in dev
+
+    Without --favor-state an unselected ref() reads the dev table if it
+    exists, else prod. The run set closes the selection: every target plus
+    every model on a path from a branch-modified ancestor down to it,
+    including unmodified intermediates. Modified models that do not feed a
+    target are left out. "Modified" comes from git (committed vs base,
+    uncommitted, untracked); yml edits count only when the build config
+    differs from prod; changed macros only warn.
+
+    Exit codes: 0 ok / closed, 2 --check found missing models, 1 error
+    (treat as "cannot verify", never as success).
+
+    \b
+    Examples:
+        meta run-set model_1                  # set to build before inspecting model_1
+        meta run-set report_1 -j              # unmodified mart used for reconciliation
+        meta run-set --all                    # every branch change + intermediates
+        meta run-set --check model_2 model_1  # exit 2, prints the missing model_x
+    """
+    from dbt_meta.utils.git import branch_changed_files
+
+    if use_all and models:
+        raise DbtMetaError("--all takes no model names")
+    if not use_all and not models:
+        raise DbtMetaError("pass target model names or --all")
+    if check and use_all:
+        raise DbtMetaError("--check needs the explicit model list, not --all")
+
+    config = Config.from_config_or_env()
+    dev_manifest = str(Path(manifest_path or config.dev_manifest_path).expanduser())
+    branch = branch_changed_files(base_branch)
+    result = RunSetCommand(
+        dev_manifest,
+        config.prod_manifest_path,
+        branch.files,
+        base_branch=branch.base,
+        parse=not no_parse,
+    ).execute(models, use_all=use_all, check=check)
+
+    if json_output:
+        print(json.dumps(result, indent=2))
+    else:
+        _print_run_set_result(result, check)
+
+    if check and not result["closed"]:
+        raise typer.Exit(code=2)
+
+
+def _print_run_set_result(result: dict[str, Any], check: bool) -> None:
+    """Pretty print run-set command result."""
+    out = Console(soft_wrap=True)  # never wrap: the command line is copied verbatim
+    err = Console(stderr=True, soft_wrap=True)
+    print()
+    out.print(f"Targets:   [cyan]{', '.join(result['targets']) or '(none)'}[/cyan]")
+    out.print(f"Modified (git, upstream of targets): {', '.join(result['modified_upstream']) or '(none)'}")
+    if result["ignored_modified"]:
+        out.print(f"Ignored modified (not upstream):     [{STYLE_DIM}]{', '.join(result['ignored_modified'])}[/{STYLE_DIM}]")
+    out.print(f"Run set ({len(result['run_set'])}):")
+    width = max((len(e["model"]) for e in result["run_set"]), default=0)
+    for entry in result["run_set"]:
+        if entry["role"] == "target":
+            role = "modified, target" if entry["modified"] else "target"
+        elif entry["role"] == "intermediate":
+            role = "intermediate (unmodified)"
+        else:
+            role = entry["role"]
+        out.print(f"  {entry['model']:<{width}}   {role:<26} materialized={entry['materialized']}")
+
+    for warning in result["macro_warnings"]:
+        models = ", ".join(warning["models"]) or "no target ancestors"
+        err.print(f"[yellow]macro changed: {warning['macro']}[/yellow] — used by {models}; add as targets if relevant")
+    for warning in result["seed_warnings"] + result["warnings"]:
+        err.print(f"[yellow]⚠️  {warning}[/yellow]")
+
+    if check:
+        print()
+        if result["closed"]:
+            out.print("[green]Closed — the list is a complete run set.[/green]")
+        else:
+            out.print(f"[bold red]Not closed — {len(result['missing'])} missing:[/bold red]")
+            for item in result["missing"]:
+                out.print(f"  {item['model']}: {item['reason']}")
+    if result["command"]:
+        out.print(f"Run:  [{STYLE_COMMAND}]{result['command']}[/{STYLE_COMMAND}]")
     print()
 
 
@@ -1745,6 +1823,7 @@ def branch(
     Examines upstream and downstream models to identify alignment
     issues between partitioning/clustering configurations.
 
+    \b
     Examples:
         meta branch core_client__events          # Branch analysis
         meta branch -j core_client__events       # JSON output
@@ -1896,7 +1975,10 @@ def powerbi_artifacts(
 
     By default a second pass calls Fabric getDefinition per report to attach
     per-page visual layout (needs a Fabric-scoped SP that is a member of the
-    workspaces). Use --no-layouts to skip it.
+    workspaces). Classic and PBIR reports are both read; an [App] copy takes
+    its original's layout. Each report without a layout gets one
+    "layout skipped: <workspace> / <report>: <reason>" line on stderr.
+    Use --no-layouts to skip the pass.
     """
     import os
 
@@ -2153,7 +2235,8 @@ def _print_powerbi_layout(result: dict[str, Any]) -> None:
     if not pages:
         console.print(
             f"[{STYLE_DIM}]No layout captured "
-            f"(report scanned with --no-layouts or no PBIR).[/{STYLE_DIM}]"
+            f"(scanned with --no-layouts, or the layout fetch failed: see the "
+            f"'layout skipped' lines of `meta powerbi artifacts`).[/{STYLE_DIM}]"
         )
         return
 
@@ -2573,7 +2656,11 @@ def _available_cpus() -> int:
 
 
 def _resolve_lineage_jobs(cli_jobs: Optional[int]) -> int:
-    """Resolve worker count: --jobs > DBT_LINEAGE_JOBS > min(cpus, 3)."""
+    """Resolve worker count: --jobs > DBT_LINEAGE_JOBS > min(cpus, 3).
+
+    The cap of 3 keeps the build from starving the shared prod Airflow host;
+    pin DBT_LINEAGE_JOBS there to the pod's CPU/RAM budget.
+    """
     import os
 
     if cli_jobs is not None:
@@ -2625,6 +2712,7 @@ def lineage_build(
     state). The artifact is written next to the production manifest
     (default ~/dbt-state/lineage.json), mirroring its location.
 
+    \b
     Examples:
         meta lineage build              # build prod artifact
         meta lineage build -o my.json   # custom output
@@ -2771,6 +2859,7 @@ def lineage_column(
 ) -> None:
     """Show upstream lineage for a column ('where does this column come from').
 
+    \b
     Examples:
         meta lineage column core_clients.client_id
         meta lineage column -j core_clients:client_id
@@ -2812,6 +2901,7 @@ def lineage_downstream(
 ) -> None:
     """Show downstream impact for a column ('what breaks if this changes').
 
+    \b
     Examples:
         meta lineage downstream raw_clients.id
         meta lineage downstream -j staging_clients.client_id
@@ -2851,6 +2941,7 @@ def lineage_stats_cmd(
 ) -> None:
     """Print summary stats for a lineage artifact (size, age, warnings).
 
+    \b
     Examples:
         meta lineage stats
         meta lineage stats -j
@@ -3116,6 +3207,7 @@ def optimize_cluster(
 ) -> None:
     """Recommend BigQuery clustering keys based on downstream WHERE/JOIN usage.
 
+    \b
     Examples:
         meta optimize cluster core_internal_tracking__sessions
         meta optimize cluster -j core_clients
@@ -3196,6 +3288,7 @@ def optimize_partition(
 ) -> None:
     """Recommend BigQuery partition column based on downstream range/equality filters.
 
+    \b
     Examples:
         meta optimize partition core_clients
         meta optimize partition -j core_events
@@ -3337,7 +3430,7 @@ def _print_partition_breakdown(rec: Any) -> None:
 @optimize_app.command("refresh")
 def optimize_refresh(
     models: list[str] = typer.Argument(None, help="Changed model short names (omit with -m to auto-detect from git)"),
-    use_modified: bool = typer.Option(False, "-m", "--modified", help="Auto-detect changed models from git (committed-vs-base + uncommitted + untracked)"),
+    use_modified: bool = typer.Option(False, "-m", "--modified", help="Auto-detect changed models from git (committed-vs-base + uncommitted + untracked): edited .sql, or a .yml edit that changes the model's build config vs prod; doc/test-only .yml edits are ignored"),
     base_branch: Optional[str] = typer.Option(None, "--base", help="Base branch for git diff (default: auto-detect origin/main → origin/master → main → master)"),
     cols: list[str] = typer.Option(None, "--cols", help="Limit changes to specific columns: --cols MODEL:c1,c2 (repeatable). Without it, the whole model is treated as affected and chain propagation is conservative."),
     json_output: bool = typer.Option(False, "-j", "--json", help="JSON output"),
@@ -3360,13 +3453,14 @@ def optimize_refresh(
     render Jinja, so ``compiled_code`` would stay empty and SQLGlot would
     have no SQL to parse.
 
+    \b
     Examples:
         meta optimize refresh -m                          # auto from git
         meta optimize refresh model_a model_b             # explicit list
         meta optimize refresh -mj | jq '.summary'         # JSON output
         meta optimize refresh -m --no-compile             # use whatever manifest is on disk as-is
     """
-    from dbt_meta.usage import RefreshAdvisor, changed_models_from_git
+    from dbt_meta.usage import RefreshAdvisor
     from dbt_meta.usage.advisor_refresh import _RefreshDecision
     from dbt_meta.utils.compiled_sql import (
         find_dbt_executable,
@@ -3384,57 +3478,15 @@ def optimize_refresh(
     used_base: Optional[str] = None
     file_sources: dict[str, str] = {}
     if use_modified:
-        import subprocess
+        from dbt_meta.utils.git import branch_changed_files
 
-        def _git(cmd: list[str]) -> tuple[int, str]:
-            try:
-                r = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
-                return r.returncode, r.stdout
-            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-                return 1, ""
-
-        # 1) Committed changes vs base branch
-        bases_to_try = (
-            (base_branch,) if base_branch
-            else ("origin/main", "origin/master", "main", "master")
-        )
-        for base in bases_to_try:
-            rc, out = _git(["git", "diff", f"{base}...HEAD", "--name-only"])
-            if rc == 0:
-                used_base = base
-                for f in out.splitlines():
-                    if f:
-                        file_sources.setdefault(f, "committed")
-                break
-        if base_branch and used_base is None:
-            Console(stderr=True).print(
-                f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] explicit --base '{base_branch}' not found"
-            )
-            raise typer.Exit(code=1)
-
-        # 2) Uncommitted (unstaged + staged) and untracked
-        rc, out = _git(["git", "diff", "HEAD", "--name-only"])
-        if rc == 0:
-            for f in out.splitlines():
-                if f:
-                    file_sources[f] = "uncommitted"  # overrides 'committed'
-        rc, out = _git(["git", "diff", "--cached", "--name-only"])
-        if rc == 0:
-            for f in out.splitlines():
-                if f:
-                    file_sources[f] = "uncommitted"
-        # --untracked-files=all so git lists each new .sql file inside
-        # untracked directories instead of collapsing the dir to a single
-        # entry (e.g. ``?? models/intermediate/client/``). Without this
-        # flag, models added in brand-new directories never match any
-        # node's ``original_file_path`` and silently fall out of the plan.
-        rc, out = _git(["git", "status", "--porcelain", "--untracked-files=all"])
-        if rc == 0:
-            for line in out.splitlines():
-                if line.startswith("??"):
-                    f = line[3:].strip()
-                    if f:
-                        file_sources[f] = "untracked"
+        try:
+            branch = branch_changed_files(base_branch)
+        except DbtMetaError as e:
+            Console(stderr=True).print(f"[{STYLE_ERROR}]Error:[/{STYLE_ERROR}] {e.message}")
+            raise typer.Exit(code=1) from None
+        used_base = branch.base
+        file_sources = branch.files
 
         modified_files = set(file_sources.keys())
         if not modified_files and not models:
@@ -3482,8 +3534,25 @@ def optimize_refresh(
                         f"silence the auto-compile attempt.[/yellow]"
                     )
 
-        for short in changed_models_from_git(modified_files, manifest):
-            changes[short] = None
+        # Same "modified" definition as `meta run-set`: .sql/seed files plus
+        # yml edits that change a node's build config vs prod. Seeds are
+        # dropped — the advisor classifies models only.
+        from dbt_meta.manifest.changes import detect_modified
+        from dbt_meta.manifest.graph import ManifestGraph
+        from dbt_meta.utils import get_cached_parser
+
+        prod_path = Config.from_config_or_env().prod_manifest_path
+        prod = (
+            get_cached_parser(prod_path).manifest
+            if prod_path and Path(prod_path).exists()
+            else None
+        )
+        modified, _, detect_warnings = detect_modified(file_sources, manifest, prod, ManifestGraph(manifest))
+        for warning in detect_warnings:
+            Console(stderr=True).print(f"[yellow]⚠️  {warning}[/yellow]")
+        for uid in modified:
+            if uid.startswith("model."):
+                changes[uid.split(".")[-1]] = None
     if models:
         for m in models:
             changes[m] = None  # Whole-model change unless caller has a column-level diff

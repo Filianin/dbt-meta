@@ -12,9 +12,9 @@ The tag lives in ``config.meta.tier``. Values:
 ``mirror``      an unprocessed 1:1 copy of one staging model; outside the
                 ordered rungs, so it is neither trusted nor a violation
 
-Invariant (a violation): no model tagged ``primary`` or ``verified`` has an
-ancestor in ``core`` / ``report`` / ``intermediate`` that is untagged or
-tagged ``review`` or ``deprecating``. ``staging`` models and ``mirror``
+Invariant (a violation): no model tagged ``primary`` or ``verified`` has a
+transitive model ancestor that is untagged or tagged ``review`` or
+``deprecating``. ``staging`` models and ``mirror``
 models are exempt — a staging wrapper is reviewed together with the core
 model that reads it, and a mirror has nothing in it to review.
 
@@ -54,36 +54,15 @@ class ContourCommand:
         self.json_output = json_output
         self._parser = get_cached_parser(manifest_path)
         self._models = self._parser.get_all_models()
-        self._ancestor_cache: dict[str, set[str]] = {}
+        self._graph = self._parser.graph(('model.',))
         self._test_counts: Optional[dict[str, int]] = None
         self._project_root = infer_project_root(manifest_path)
 
     # -- graph -------------------------------------------------------------
 
-    def _parents(self, unique_id: str) -> list[str]:
-        node = self._models.get(unique_id, {})
-        depends = node.get('depends_on', {}).get('nodes', [])
-        return [n for n in depends if n.startswith('model.')]
-
-    def _ancestors(self, unique_id: str) -> set[str]:
-        """Transitive model ancestors, cycle-safe."""
-        cached = self._ancestor_cache.get(unique_id)
-        if cached is not None:
-            return cached
-        seen: set[str] = set()
-        stack = list(self._parents(unique_id))
-        while stack:
-            current = stack.pop()
-            if current in seen or current not in self._models:
-                continue
-            seen.add(current)
-            cached_parent = self._ancestor_cache.get(current)
-            if cached_parent is not None:
-                seen |= cached_parent
-                continue
-            stack.extend(self._parents(current))
-        self._ancestor_cache[unique_id] = seen
-        return seen
+    def _ancestors(self, unique_id: str) -> frozenset[str]:
+        """Transitive model ancestors (self excluded), memoized by the graph."""
+        return self._graph.ancestors(unique_id) - {unique_id}
 
     # -- model facts -------------------------------------------------------
 

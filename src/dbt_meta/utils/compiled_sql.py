@@ -9,6 +9,7 @@ across ``usage/advisor_refresh.py`` and ``cli.py``:
 * :func:`read_disk_compiled` — read ``target/compiled/.../<file>.sql`` for a node.
 * :func:`run_dbt_compile` — the one ``dbt compile`` subprocess runner, with
   single / bulk / whole-project modes selected by keyword args.
+* :func:`run_dbt_parse` — ``dbt parse`` (graph refresh only, used by ``meta run-set``).
 
 :func:`get_compiled_sql` (used by ``meta validate`` and ``meta scan``) is the
 3-level fallback built on top of these:
@@ -131,6 +132,36 @@ def read_disk_compiled(project_root: str, node: dict[str, Any]) -> str:
     return content if content.strip() else ""
 
 
+def _run_dbt(
+    project_root: str,
+    subcommand: str,
+    extra: list[str],
+    timeout: int,
+) -> tuple[bool, str | None]:
+    """Run ``dbt <subcommand> <extra...>`` in ``project_root``. Returns (success, error_text)."""
+    dbt_cmd = find_dbt_executable(project_root)
+    if not dbt_cmd:
+        return False, "dbt CLI not found in project venv or PATH"
+
+    try:
+        result = subprocess.run(
+            [dbt_cmd, subcommand, *extra],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"dbt {subcommand} timed out after {timeout}s"
+    except OSError as exc:
+        return False, f"failed to launch dbt: {exc}"
+
+    if result.returncode != 0:
+        output = ((result.stdout or "") + (result.stderr or "")).strip()
+        return False, output or f"dbt {subcommand} exited with code {result.returncode}"
+    return True, None
+
+
 def run_dbt_compile(
     project_root: str,
     *,
@@ -149,35 +180,26 @@ def run_dbt_compile(
     ``profiles_dir`` adds ``--profiles-dir`` (projects that ship their own
     ``profiles.yml`` at root). Without it dbt falls back to ``~/.dbt``.
     """
-    dbt_cmd = find_dbt_executable(project_root)
-    if not dbt_cmd:
-        return False, "dbt CLI not found in project venv or PATH"
-
-    argv: list[str] = [dbt_cmd, "compile"]
+    extra: list[str] = []
     if select:
-        argv += ["--select", *select]
+        extra += ["--select", *select]
     if target:
-        argv += ["--target", target]
+        extra += ["--target", target]
     if profiles_dir:
-        argv += ["--profiles-dir", profiles_dir]
+        extra += ["--profiles-dir", profiles_dir]
+    return _run_dbt(project_root, "compile", extra, timeout)
 
-    try:
-        result = subprocess.run(
-            argv,
-            cwd=project_root,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
-        return False, f"dbt compile timed out after {timeout}s"
-    except OSError as exc:
-        return False, f"failed to launch dbt: {exc}"
 
-    if result.returncode != 0:
-        output = ((result.stdout or "") + (result.stderr or "")).strip()
-        return False, output or f"dbt compile exited with code {result.returncode}"
-    return True, None
+def run_dbt_parse(
+    project_root: str,
+    *,
+    target: str | None = "dev",
+    timeout: int = DBT_COMPILE_TIMEOUT,
+) -> tuple[bool, str | None]:
+    """Invoke ``dbt parse`` in ``project_root`` — refreshes the manifest graph
+    (nodes, ``depends_on``, config) without rendering SQL. Returns (success, error_text)."""
+    extra = ["--target", target] if target else []
+    return _run_dbt(project_root, "parse", extra, timeout)
 
 
 # ── validate / scan: 3-level compiled-SQL fallback ──────────────────────────

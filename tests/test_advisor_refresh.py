@@ -2,7 +2,7 @@
 
 from unittest.mock import patch
 
-from dbt_meta.usage import RefreshAdvisor, changed_models_from_git
+from dbt_meta.usage import RefreshAdvisor
 
 # NOTE: project-root inference, disk-compiled read and the dbt-compile runner
 # now live in ``utils/compiled_sql.py`` (unified CompiledSqlResolver) and are
@@ -287,6 +287,40 @@ class TestChainPropagation:
         assert "d" not in all_models  # not even in scope
 
 
+class TestRefreshGraphWalk:
+    """Downstream comes from ``ManifestGraph`` (``depends_on``), not ``child_map``."""
+
+    def test_model_behind_a_snapshot_is_in_scope(self):
+        up = _model("up", sql="SELECT 1 AS x")
+        ds = _model("ds", sql="SELECT s.x FROM proj.ds.snap s", depends_on=["snapshot.pkg.snap"])
+        manifest = {
+            "nodes": {
+                up[0]: up[1],
+                "snapshot.pkg.snap": {"depends_on": {"nodes": [up[0]]}, "config": {}},
+                ds[0]: ds[1],
+            },
+            "sources": {},
+        }
+        plan = RefreshAdvisor(manifest, auto_compile=False).plan({"up": None})
+        in_scope = {d.model for d in plan.needs_full_refresh + plan.needs_incremental + plan.can_skip}
+        assert in_scope == {"up", "ds"}
+
+    def test_no_child_map_needed(self):
+        up = _model("up", sql="SELECT 1 AS x", alias="t")
+        mid = _model("mid", sql="SELECT * FROM proj.ds.t", depends_on=[up[0]])
+        leaf = _model("leaf", sql="SELECT * FROM proj.ds.mid", depends_on=[mid[0]])
+        manifest = {"nodes": dict([up, mid, leaf]), "sources": {}}
+        plan = RefreshAdvisor(manifest, auto_compile=False).plan({"up": None})
+        assert {d.model for d in plan.needs_full_refresh} == {"up", "mid", "leaf"}
+
+    def test_changed_model_downstream_of_another_is_classified_once(self):
+        a = _model("a", sql="SELECT 1 AS x", alias="ta")
+        b = _model("b", sql="SELECT * FROM proj.ds.ta", alias="tb", depends_on=[a[0]])
+        manifest = {"nodes": dict([a, b]), "sources": {}}
+        plan = RefreshAdvisor(manifest, auto_compile=False).plan({"a": None, "b": None})
+        assert sorted(d.model for d in plan.needs_full_refresh) == ["a", "b"]
+
+
 class TestRefreshDiskFallback:
     def test_uses_disk_compiled_when_manifest_empty(self, tmp_path):
         # Set up: target with empty compiled_code in manifest, but disk has SQL
@@ -512,36 +546,93 @@ class TestBulkCompileTrigger:
         mock_run.assert_not_called()
 
 
-class TestChangedModelsFromGit:
-    def test_resolves_modified_paths_to_models(self):
-        manifest = {
-            "nodes": {
-                "model.p.m1": {"original_file_path": "models/m1.sql", "resource_type": "model"},
-                "model.p.m2": {"original_file_path": "models/m2.sql", "resource_type": "model"},
-                "model.p.m3": {"original_file_path": "models/m3.sql", "resource_type": "model"},
-            }
-        }
-        out = changed_models_from_git(["models/m1.sql", "models/m3.sql"], manifest)
-        assert set(out.keys()) == {"m1", "m3"}
-        assert all(v is None for v in out.values())
+class TestRefreshModifiedDetection:
+    """``optimize refresh -m`` shares ``meta run-set``'s "modified" definition.
 
-    def test_ignores_paths_not_in_manifest(self):
-        manifest = {"nodes": {"model.p.m1": {"original_file_path": "models/m1.sql"}}}
-        out = changed_models_from_git(["models/unknown.sql"], manifest)
-        assert out == {}
+    A changed ``.sql`` counts; a changed yml counts only when it alters the
+    node's build config vs prod; seeds are dropped (the advisor plans models).
+    """
 
-    def test_ignores_non_model_nodes(self):
-        # Non-model unique_ids (sources, tests, seeds) must be skipped even
-        # when their file path matches a changed file.
-        manifest = {
-            "nodes": {
-                "model.p.m1": {"original_file_path": "models/m1.sql", "resource_type": "model"},
-                "test.p.t1": {"original_file_path": "models/m1.sql", "resource_type": "test"},
-                "seed.p.s1": {"original_file_path": "models/m1.sql", "resource_type": "seed"},
-            }
+    def _node(self, name, *, prefix="model", config=None, path=None, patch=None):
+        return {
+            "name": name,
+            "alias": name,
+            "schema": "ds",
+            "database": "proj",
+            "compiled_code": "SELECT 1",
+            "config": config or {"materialized": "table"},
+            "package_name": "pkg",
+            "resource_type": prefix,
+            "depends_on": {"nodes": []},
+            "original_file_path": path or f"models/{name}.sql",
+            "patch_path": f"pkg://{patch}" if patch else None,
         }
-        out = changed_models_from_git(["models/m1.sql"], manifest)
-        assert set(out.keys()) == {"m1"}
+
+    def _run(self, tmp_path, monkeypatch, files, *, dev_config=None, prod=True):
+        import json as _json
+
+        from typer.testing import CliRunner
+
+        from dbt_meta.cli import app
+        from dbt_meta.utils.git import BranchChanges
+
+        nodes = {
+            "model.pkg.m_sql": self._node("m_sql"),
+            "model.pkg.m_yml": self._node(
+                "m_yml", config=dev_config or {"materialized": "table"}, patch="models/m_yml.yml"
+            ),
+            "seed.pkg.s": self._node("s", prefix="seed", path="seeds/s.csv"),
+        }
+        dev = tmp_path / "dev.json"
+        dev.write_text(_json.dumps({"nodes": nodes, "sources": {}, "macros": {}}))
+        prod_path = tmp_path / "prod.json"
+        prod_nodes = {**nodes, "model.pkg.m_yml": self._node("m_yml", patch="models/m_yml.yml")}
+        if prod:
+            prod_path.write_text(_json.dumps({"nodes": prod_nodes, "sources": {}, "macros": {}}))
+        monkeypatch.setattr("dbt_meta.config.Config.find_config_file", staticmethod(lambda: None))
+        monkeypatch.setenv("DBT_PROD_MANIFEST_PATH", str(prod_path))
+        monkeypatch.setattr(
+            "dbt_meta.utils.git.branch_changed_files",
+            lambda base=None: BranchChanges(files=dict.fromkeys(files, "committed"), base="main"),
+        )
+        result = CliRunner().invoke(
+            app, ["optimize", "refresh", "-m", "-j", "--no-compile", "--manifest", str(dev)]
+        )
+        return result
+
+    def _changed(self, result):
+        import json as _json
+
+        return set(_json.loads(result.stdout)["git"]["changed_models_source"])
+
+    def test_changed_sql_counts(self, tmp_path, monkeypatch):
+        result = self._run(tmp_path, monkeypatch, ["models/m_sql.sql"])
+        assert result.exit_code == 0, result.output
+        assert self._changed(result) == {"m_sql"}
+
+    def test_yml_config_change_counts(self, tmp_path, monkeypatch):
+        result = self._run(
+            tmp_path, monkeypatch, ["models/m_yml.yml"],
+            dev_config={"materialized": "incremental"},
+        )
+        assert result.exit_code == 0, result.output
+        assert self._changed(result) == {"m_yml"}
+
+    def test_yml_without_config_change_is_ignored(self, tmp_path, monkeypatch):
+        result = self._run(tmp_path, monkeypatch, ["models/m_yml.yml"])
+        assert result.exit_code == 1
+        assert "No changed models specified" in result.stdout
+
+    def test_yml_without_prod_manifest_counts_and_warns(self, tmp_path, monkeypatch):
+        result = self._run(tmp_path, monkeypatch, ["models/m_yml.yml"], prod=False)
+        assert result.exit_code == 0, result.output
+        assert self._changed(result) == {"m_yml"}
+        assert "prod manifest not found" in result.stderr
+
+    def test_seed_is_not_planned(self, tmp_path, monkeypatch):
+        result = self._run(tmp_path, monkeypatch, ["seeds/s.csv", "models/m_sql.sql"])
+        assert result.exit_code == 0, result.output
+        assert self._changed(result) == {"m_sql"}
 
 
 class TestConfigSetHelpers:

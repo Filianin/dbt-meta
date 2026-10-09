@@ -23,7 +23,6 @@ from dbt_meta.usage.advisor_partition import (
 from dbt_meta.usage.advisor_refresh import (
     RefreshAdvisor,
     RefreshPlan,
-    changed_models_from_git,
 )
 from dbt_meta.usage.extractor import ColumnUsageExtractor, UsageEvent
 
@@ -38,5 +37,4 @@ __all__ = [
     "RefreshAdvisor",
     "RefreshPlan",
     "UsageEvent",
-    "changed_models_from_git",
 ]

@@ -389,7 +389,6 @@ class TestAncestorCache:
             "model.p.core_b": _node("core/a/core_b.sql", "primary", ["model.p.core_a"]),
         })
         command = ContourCommand(object(), path)
-        first = command._ancestors("model.p.core_b")
-        second = command._ancestors("model.p.core_b")
-        assert first == {"model.p.core_a"}
-        assert second is first
+        assert command._ancestors("model.p.core_b") == {"model.p.core_a"}
+        first = command._graph.ancestors("model.p.core_b")
+        assert command._graph.ancestors("model.p.core_b") is first

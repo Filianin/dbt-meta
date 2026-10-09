@@ -4,13 +4,13 @@ Centralises the boilerplate of resolving a target dbt model to:
   - its physical table aliases (for ``ColumnUsageExtractor``)
   - its column types (from catalog.json)
   - its dbt config (partition_by / cluster_by / unique_key)
-  - its transitive downstream model unique_ids (from manifest's child_map)
+  - its direct downstream model unique_ids (from manifest's child_map;
+    transitive walks use ``manifest/graph.py``)
   - compiled SQL of each downstream (manifest → disk fallback)
 """
 
 from __future__ import annotations
 
-from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -43,27 +43,6 @@ def find_target_node(manifest: dict[str, Any], short_name: str) -> tuple[str, di
         if unique_id.split(".")[-1] == short_name:
             return unique_id, node
     return None
-
-
-def transitive_downstream(manifest: dict[str, Any], unique_id: str) -> list[str]:
-    """BFS over manifest['child_map'] to collect all downstream model ids."""
-    child_map = manifest.get("child_map", {})
-    nodes = manifest.get("nodes", {})
-    visited: set[str] = set()
-    out: list[str] = []
-    q: deque[str] = deque(child_map.get(unique_id, []))
-    while q:
-        cur = q.popleft()
-        if cur in visited:
-            continue
-        visited.add(cur)
-        # We only care about models — not tests, snapshots, seeds, exposures
-        if cur.startswith("model.") and cur in nodes:
-            out.append(cur)
-        for child in child_map.get(cur, []):
-            if child not in visited:
-                q.append(child)
-    return out
 
 
 def direct_downstream(manifest: dict[str, Any], unique_id: str) -> list[str]:

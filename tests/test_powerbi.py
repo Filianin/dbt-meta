@@ -1031,7 +1031,7 @@ class TestCommandArtifacts:
         monkeypatch.setattr(cmd, "get_fabric_token", lambda *a, **k: "fabtok")
         monkeypatch.setattr(cmd, "scan_workspaces", lambda *a, **k: _cmd_scan_result())
         monkeypatch.setattr(
-            cmd, "get_report_definition", lambda *a, **k: fx.PBIR_LEGACY_REPORT
+            cmd, "fetch_report_layout", lambda *a, **k: (fx.PBIR_LEGACY_REPORT, "")
         )
         man = _cmd_write(tmp_path / "manifest.json", CMD_MANIFEST)
         raw_out = tmp_path / "powerbi_raw.json"
@@ -1117,7 +1117,7 @@ class TestEnrichWithLayouts:
     def test_none_definition_leaves_pages_empty(self, monkeypatch):
         scan = _cmd_scan_result()
         index = build_index(scan, CMD_MANIFEST)
-        monkeypatch.setattr(cmd, "get_report_definition", lambda *a, **k: None)
+        monkeypatch.setattr(cmd, "fetch_report_layout", lambda *a, **k: (None, "HTTP 403"))
 
         got, total = cmd.enrich_with_layouts(index, scan, "fabtok")
 
@@ -1131,8 +1131,8 @@ class TestEnrichWithLayouts:
         called = []
         monkeypatch.setattr(
             cmd,
-            "get_report_definition",
-            lambda *a, **k: called.append(a) or fx.PBIR_LEGACY_REPORT,
+            "fetch_report_layout",
+            lambda *a, **k: called.append(a) or (fx.PBIR_LEGACY_REPORT, ""),
         )
 
         got, total = cmd.enrich_with_layouts(index, scan, "fabtok")
@@ -1144,7 +1144,7 @@ class TestEnrichWithLayouts:
         scan = _cmd_scan_result()
         index = build_index(scan, CMD_MANIFEST)
         monkeypatch.setattr(
-            cmd, "get_report_definition", lambda *a, **k: {"sections": []}
+            cmd, "fetch_report_layout", lambda *a, **k: ({"sections": []}, "")
         )
 
         got, total = cmd.enrich_with_layouts(index, scan, "fabtok")
@@ -1156,7 +1156,7 @@ class TestEnrichWithLayouts:
         scan = _cmd_scan_result()
         index = build_index(scan, CMD_MANIFEST)
         monkeypatch.setattr(
-            cmd, "get_report_definition", lambda *a, **k: fx.PBIR_LEGACY_REPORT
+            cmd, "fetch_report_layout", lambda *a, **k: (fx.PBIR_LEGACY_REPORT, "")
         )
 
         got, total = cmd.enrich_with_layouts(index, scan, "fabtok")
@@ -3118,7 +3118,7 @@ class TestLayoutCmd:
             ]
         }
         monkeypatch.setattr(
-            cmd, "get_report_definition", lambda *a, **k: fx.PBIR_LEGACY_SEMANTICS
+            cmd, "fetch_report_layout", lambda *a, **k: (fx.PBIR_LEGACY_SEMANTICS, "")
         )
 
         got, _total = cmd.enrich_with_layouts(index, scan, "fabtok")

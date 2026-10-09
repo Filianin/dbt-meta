@@ -25,15 +25,15 @@ Usage:
 from __future__ import annotations
 
 import sys
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from dbt_meta.manifest.graph import ManifestGraph
 from dbt_meta.usage._common import (
     find_target_node,
     references_target,
     select_star_from,
-    transitive_downstream,
     upstream_table_aliases,
 )
 from dbt_meta.usage.extractor import ColumnUsageExtractor
@@ -146,6 +146,8 @@ class RefreshAdvisor:
         """
         plan = RefreshPlan()
         nodes = self.manifest.get("nodes", {})
+        # Snapshots stay in the graph so a model behind one is still reached.
+        graph = ManifestGraph(self.manifest)
 
         # 1) Resolve changed models, collect transitive downstream
         resolved: list[tuple[str, dict[str, Any], set[str] | None]] = []
@@ -159,7 +161,9 @@ class RefreshAdvisor:
             unique_id, model = target
             resolved.append((unique_id, model, cols))
             changed_uids.add(unique_id)
-            all_downstream.update(transitive_downstream(self.manifest, unique_id))
+            all_downstream.update(
+                uid for uid in graph.descendants(unique_id) - {unique_id} if uid.startswith("model.")
+            )
 
         # 2) Bulk-compile if needed
         if self.auto_compile:
@@ -175,7 +179,7 @@ class RefreshAdvisor:
             affected_via[uid] = ["changed model itself"]
 
         # 3a) Topological order: process upstream before downstream.
-        ordered = self._topological_order(all_downstream, nodes)
+        ordered = graph.topological(all_downstream)
 
         # 3b) Walk and propagate
         for ds_uid in ordered:
@@ -200,7 +204,7 @@ class RefreshAdvisor:
                     reasons=["changed model itself"],
                 )
             )
-        for ds_uid in sorted(all_downstream):
+        for ds_uid in sorted(all_downstream - changed_uids):
             ds_node = nodes.get(ds_uid)
             if ds_node is None:
                 continue
@@ -230,43 +234,6 @@ class RefreshAdvisor:
         return plan
 
     # ----- chain propagation -----
-
-    @staticmethod
-    def _topological_order(downstream_uids: set[str], nodes: dict[str, Any]) -> list[str]:
-        """Return downstream uids in topological order (Kahn's algorithm).
-
-        Order guarantees parents are visited before children, so by the time
-        we process a model M every upstream M had a chance to be marked as
-        affected.
-        """
-        in_set = downstream_uids
-        # Build subgraph adjacency limited to nodes in our downstream set
-        adj: dict[str, list[str]] = {uid: [] for uid in in_set}
-        indeg: dict[str, int] = {uid: 0 for uid in in_set}
-        for uid in in_set:
-            node = nodes.get(uid) or {}
-            parents = (node.get("depends_on") or {}).get("nodes") or []
-            for p in parents:
-                if p in in_set:
-                    adj[p].append(uid)
-                    indeg[uid] += 1
-
-        # Roots first — models whose only parents (in our subgraph) have been processed
-        from collections import deque
-        q: deque[str] = deque(uid for uid, d in indeg.items() if d == 0)
-        out: list[str] = []
-        while q:
-            cur = q.popleft()
-            out.append(cur)
-            for child in adj.get(cur, []):
-                indeg[child] -= 1
-                if indeg[child] == 0:
-                    q.append(child)
-        # Append any models we couldn't topologically order (cycles shouldn't
-        # happen in dbt, but guard against pathological manifests).
-        if len(out) < len(in_set):
-            out.extend(uid for uid in in_set if uid not in set(out))
-        return out
 
     def _propagate(
         self,
@@ -513,21 +480,3 @@ class RefreshAdvisor:
                 f"   Or fix dbt project errors and retry, or use --no-compile to skip\n"
                 f"   the auto-compile attempt entirely.\n"
             )
-
-
-def changed_models_from_git(modified_files: Iterable[str], manifest: dict[str, Any]) -> dict[str, None]:
-    """Helper: convert a list of git-modified file paths into ``{model: None}``.
-
-    Each value is ``None`` because git only tells us *which file* changed,
-    not which columns inside that file were affected. Callers can pass
-    column-level diffs separately if they have them.
-    """
-    out: dict[str, None] = {}
-    files = {f for f in modified_files if f}
-    for unique_id, node in manifest.get("nodes", {}).items():
-        if not unique_id.startswith("model."):
-            continue
-        path = node.get("original_file_path", "")
-        if path in files:
-            out[unique_id.split(".")[-1]] = None
-    return out

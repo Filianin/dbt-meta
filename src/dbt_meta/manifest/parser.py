@@ -12,6 +12,7 @@ from typing import Any, Optional, cast
 import orjson
 
 from dbt_meta.errors import ManifestNotFoundError, ManifestParseError
+from dbt_meta.manifest.graph import DEFAULT_PREFIXES, ManifestGraph
 
 
 class ManifestParser:
@@ -27,6 +28,14 @@ class ManifestParser:
         Note: Manifest is not loaded until accessed (lazy loading)
         """
         self.manifest_path = manifest_path
+        self._graphs: dict[tuple[str, ...], ManifestGraph] = {}
+
+    def graph(self, prefixes: tuple[str, ...] = DEFAULT_PREFIXES) -> ManifestGraph:
+        """Dependency graph over ``prefixes`` node types, built once per parser."""
+        graph = self._graphs.get(prefixes)
+        if graph is None:
+            graph = self._graphs[prefixes] = ManifestGraph(self.manifest, prefixes)
+        return graph
 
     @cached_property
     def manifest(self) -> dict[str, Any]:

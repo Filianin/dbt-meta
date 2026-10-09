@@ -20,6 +20,7 @@ from dbt_meta.utils.compiled_sql import (
     infer_project_root,
     read_disk_compiled,
     run_dbt_compile,
+    run_dbt_parse,
 )
 
 # =============================================================================
@@ -573,6 +574,19 @@ class TestRunDbtCompile:
         monkeypatch.setattr('dbt_meta.utils.compiled_sql.subprocess.run', raise_os)
         ok, err = run_dbt_compile(str(tmp_path))
         assert ok is False and 'failed to launch dbt' in (err or '')
+
+    def test_parse_argv_defaults_to_dev_target(self, tmp_path, monkeypatch):
+        calls = self._capture(monkeypatch)
+        ok, err = run_dbt_parse(str(tmp_path))
+        assert ok is True and err is None
+        assert calls['argv'] == ['/usr/bin/dbt', 'parse', '--target', 'dev']
+        assert calls['kwargs']['cwd'] == str(tmp_path)
+
+    def test_parse_without_target_omits_the_flag(self, tmp_path, monkeypatch):
+        calls = self._capture(monkeypatch)
+        run_dbt_parse(str(tmp_path), target=None, timeout=5)
+        assert calls['argv'] == ['/usr/bin/dbt', 'parse']
+        assert calls['kwargs']['timeout'] == 5
 
 
 class TestRareErrorPaths:
