@@ -12,6 +12,11 @@ resolve which scope-local alias corresponds to the upstream model (via
 (``EQ`` / ``In`` / ``Between`` / ``GT`` / …) is mapped to a coarse
 ``operator`` tag, and the right-hand operand is inspected to classify
 ``selectivity`` (``literal`` vs ``subquery`` vs ``range`` vs ``none``).
+
+Blind spots shared by every advisor built on these events: a UDF call hides
+column usage inside its body; SQL that sqlglot cannot parse or qualify yields
+zero events (so advisors stay conservative); scoring is not
+cardinality-aware.
 """
 
 from __future__ import annotations

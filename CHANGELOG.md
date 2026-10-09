@@ -5,6 +5,75 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.9] - 2026-10-09
+
+### Added
+
+- **`meta contour`** — whole-project check of the trust contour invariant: a
+  model tagged `primary` or `verified` must not have an ancestor that is
+  untagged or tagged `review` / `deprecating`. `staging` models and `mirror`
+  models are exempt — a staging wrapper is reviewed together with the `core`
+  model that reads it, and a mirror is an unprocessed 1:1 copy with nothing in
+  it to review. A missing decision doc or fewer than `--min-tests` tests is a
+  warning, never a violation, so a contour under construction is not reported
+  as empty. Exits 1 on a violation, so it can gate a pipeline. Flags:
+  `-w/--warnings`, `--min-tests N`, `-j/--json`, `-d/--dev`, `--manifest`.
+- **`meta run-set`** — closed `--select` list for `defer run` in dev. Without
+  `--favor-state` an unselected `ref()` reads the dev table if it exists, else
+  prod, so hand-picked lists silently read prod or stale parents. Returns every
+  target plus every model on a path from a branch-modified ancestor to it,
+  unmodified intermediates included; unrelated modified models are left out.
+  "Modified" comes from git (committed vs base, uncommitted, untracked); a
+  `.yml` change counts only when the build `config` differs from prod; changed
+  macros only warn. `--all` targets every modified model and seed; a changed
+  file of a disabled node (`enabled: false`) only warns. Ephemeral models and snapshots on a path are traversed,
+  never emitted; a snapshot on a path is a warning. `--check` verifies a proposed list and exits 2 with the
+  missing models, their reason chains and the corrected command (1 = cannot
+  verify). Refreshes the dev manifest with `dbt parse` when stale. Flags:
+  `--all`, `--check`, `--base`, `-j/--json`, `--manifest`, `--no-parse`.
+
+### Changed
+
+- `meta -h` is a one-screen overview (115 → ~50 lines): commands grouped by
+  task (model metadata, find models, branch workflow, quality & optimization,
+  lineage, Power BI, settings & help), subcommand families collapsed to one
+  row, global flags plus flags shared by several commands (`-a/--all`,
+  `--all`, `-m`, `--base`, `--no-compile`), one-line usage. Command flags and subcommand
+  descriptions live in `meta <cmd> -h`. A test fails when a command is
+  missing from the overview.
+- Git change detection used by `meta optimize refresh -m` moved to
+  `utils/git.py::branch_changed_files` and is shared with `run-set`; behaviour
+  unchanged. `utils/compiled_sql.py` gained `run_dbt_parse`.
+- `meta optimize refresh -m` now uses the same "modified" definition as
+  `run-set`: a `.yml` edit that changes a model's build `config` vs prod now
+  puts that model in the plan (previously only `.sql` edits did). Changed seeds
+  are still not planned. Disabled, deleted and unparsed files print a warning.
+  Removed `dbt_meta.usage.changed_models_from_git`.
+- One dependency graph: `manifest/graph.py::ManifestGraph` (edges from
+  `depends_on`, cycle-safe, memoized closures, stable build order) now backs
+  `run-set`, `contour` and `optimize refresh`; `ManifestParser.graph()` builds
+  it once per manifest. Branch-change detection moved to
+  `manifest/changes.py`. Removed `usage._common.transitive_downstream` and
+  `RefreshAdvisor._topological_order`. Output unchanged (verified on the
+  `reports` manifest).
+
+### Fixed
+
+- `meta optimize refresh`: a changed model that is also downstream of another
+  changed model was listed twice in `needs_full_refresh` and in the generated
+  full-refresh command, inflating the counts.
+- `meta powerbi artifacts`: reports stored in the PBIR format got no layout
+  (0 pages) because getDefinition was always asked for `PBIR-Legacy` and only
+  a root `report.json` was read. PBIR reports (Scanner `format: PBIR`) are now
+  fetched as `PBIR` and their per-page / per-visual files folded into the same
+  layout. `[App] …` copies (`originalReportObjectId`) are no longer fetched
+  and take their original's layout. Each report left without a layout writes
+  `layout skipped: <workspace> / <report>: <reason>` to stderr (HTTP status
+  with the Fabric error code, operation failure/timeout, missing parts) —
+  before, every failure was silent.
+- `meta <cmd> -h`: the "Examples:" block of every command rendered as one
+  run-on paragraph; it now keeps one example per line (`\b` marker).
+
 ## [0.3.8] - 2026-07-22
 
 ### Added

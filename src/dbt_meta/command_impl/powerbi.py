@@ -8,6 +8,7 @@ function returns a JSON-serializable dict for the CLI; credentials are read from
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 import orjson
@@ -36,7 +37,7 @@ from ..powerbi.raw_reader import (
 )
 from ..powerbi.scanner import get_powerbi_token, scan_workspaces
 from ..utils.monitoring import fetch_model_query_costs
-from ..utils.powerbi import get_fabric_token, get_report_definition
+from ..utils.powerbi import fetch_report_layout, get_fabric_token
 
 __all__ = [
     "_load_lineage_graph",
@@ -136,18 +137,30 @@ def _dataset_measures(scan_result: dict[str, Any]) -> dict[str, set[str]]:
 
 def _report_coordinates(
     scan_result: dict[str, Any],
-) -> list[tuple[str, str, str]]:
-    """(workspace_id, report_id, dataset_id) per report, in build_index order.
+) -> list[dict[str, str]]:
+    """Scanner facts per report, in build_index order.
 
     ``build_index`` appends one entry per ``ws.reports`` in workspace/report
     order, so this list lines up 1:1 with ``index.reports``.
     """
-    coords: list[tuple[str, str, str]] = []
+    coords: list[dict[str, str]] = []
     for ws in scan_result.get("workspaces") or []:
         ws_id = ws.get("id", "")
         for report in ws.get("reports") or []:
-            coords.append((ws_id, report.get("id", ""), report.get("datasetId", "")))
+            coords.append(
+                {
+                    "workspace_id": ws_id,
+                    "report_id": report.get("id", ""),
+                    "dataset_id": report.get("datasetId", ""),
+                    "format": report.get("format") or "",
+                    "original_id": report.get("originalReportObjectId") or "",
+                }
+            )
     return coords
+
+
+def _skip(entry: ReportEntry, reason: str) -> None:
+    sys.stderr.write(f"layout skipped: {entry.workspace} / {entry.report}: {reason}\n")
 
 
 def enrich_with_layouts(
@@ -159,29 +172,53 @@ def enrich_with_layouts(
     """Attach per-page visual layout to each report via Fabric getDefinition.
 
     Returns ``(reports_with_layout, reports_total)``. Each report is fetched in
-    isolation: any failure (no PBIR, HTTP error, LRO timeout) leaves that
-    report's ``pages`` empty and never aborts the pass — the already-built
-    table/measure index is preserved regardless.
+    the format it is stored in (Scanner ``format: PBIR`` → ``PBIR``, else
+    ``PBIR-Legacy``). An app copy (``originalReportObjectId`` set) is never
+    fetched: it takes the layout of its original once the originals are done.
+    Any failure leaves that report's ``pages`` empty, writes one
+    ``layout skipped: <workspace> / <report>: <reason>`` line to stderr and
+    never aborts the pass — the already-built table/measure index is kept.
     """
     measures_by_ds = _dataset_measures(scan_result)
     coords = _report_coordinates(scan_result)
+    by_id: dict[str, ReportEntry] = {}
+    copies: list[tuple[ReportEntry, str]] = []
     got = 0
-    for entry, (ws_id, report_id, ds_id) in zip(index.reports, coords):
-        if not (ws_id and report_id):
+    for entry, c in zip(index.reports, coords):
+        if c["original_id"]:
+            copies.append((entry, c["original_id"]))
             continue
-        # get_report_definition isolates every failure internally (returns None
-        # on HTTP error / LRO failure / timeout), so one bad report never aborts
-        # the pass.
-        report_json = get_report_definition(token, ws_id, report_id, timeout=timeout)
+        if not (c["workspace_id"] and c["report_id"]):
+            _skip(entry, "no workspace or report id in the scan")
+            continue
+        fmt = "PBIR" if c["format"] == "PBIR" else "PBIR-Legacy"
+        report_json, reason = fetch_report_layout(
+            token, c["workspace_id"], c["report_id"], fmt=fmt, timeout=timeout
+        )
         if not report_json:
+            _skip(entry, f"{fmt}: {reason}")
             continue
-        measures = measures_by_ds.get(ds_id, set())
+        measures = measures_by_ds.get(c["dataset_id"], set())
         pages = parse_pbir_legacy(report_json, measures)
         report_filters = parse_report_filters(report_json, measures)
         if pages or report_filters:
             entry.pages = pages
             entry.filters = report_filters
+            by_id[c["report_id"]] = entry
             got += 1
+        else:
+            _skip(entry, f"{fmt}: definition has no pages")
+
+    originals = {c["report_id"]: e for e, c in zip(index.reports, coords)}
+    for entry, original_id in copies:
+        source = by_id.get(original_id)
+        if source is None:
+            why = "has no layout" if original_id in originals else "is not in the scan"
+            _skip(entry, f"app copy: original {original_id} {why}")
+            continue
+        entry.pages = source.pages
+        entry.filters = source.filters
+        got += 1
     return got, len(index.reports)
 
 

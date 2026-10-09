@@ -12,6 +12,10 @@ and classifies each ref as ``measure`` or ``column`` (decision #9): an
 aggregation wrapper is a measure; a bare ref whose name is in the dataset's
 measure list is a measure; everything else is a column.
 
+Reports stored in the newer PBIR format arrive as one JSON file per page and
+per visual; :func:`pbir_parts_to_legacy` folds those files into the same
+classic shape first, so every parser below serves both formats.
+
 Pure parsing — no I/O, no network. Failure-tolerant: malformed containers are
 skipped, never raised, so one bad visual can't sink a report's whole layout.
 """
@@ -475,3 +479,92 @@ def parse_report_filters(
     not to any page. Failure-isolated like every other parse here.
     """
     return _parse_filters(report_json.get("filters"), frozenset(measures))
+
+
+# -- PBIR (one file per page / visual) → classic report.json shape ---------
+
+_PAGES = "definition/pages/"
+
+
+def _pbir_filters(owner: Any) -> list[dict[str, Any]]:
+    """``filterConfig.filters`` with PBIR's ``field`` renamed to classic ``expression``."""
+    config = owner.get("filterConfig") if isinstance(owner, dict) else None
+    filters = config.get("filters") if isinstance(config, dict) else None
+    out: list[dict[str, Any]] = []
+    for f in filters if isinstance(filters, list) else []:
+        if isinstance(f, dict):
+            f = dict(f)
+            f.setdefault("expression", f.get("field"))
+            out.append(f)
+    return out
+
+
+def _pbir_container(visual_file: Any) -> dict[str, Any] | None:
+    """One PBIR ``visual.json`` → a classic ``visualContainer``; groups → ``None``."""
+    if not isinstance(visual_file, dict):
+        return None
+    visual = visual_file.get("visual")
+    if not isinstance(visual, dict):
+        return None
+    query = visual.get("query")
+    state = query.get("queryState") if isinstance(query, dict) else None
+    projections: dict[str, list[dict[str, Any]]] = {}
+    for role, bucket in (state if isinstance(state, dict) else {}).items():
+        items = bucket.get("projections") if isinstance(bucket, dict) else None
+        projections[role] = [
+            {"queryRef": it.get("queryRef", "")}
+            for it in (items if isinstance(items, list) else [])
+            if isinstance(it, dict)
+        ]
+    single: dict[str, Any] = {
+        "visualType": visual.get("visualType"),
+        "projections": projections,
+    }
+    container_objects = visual.get("visualContainerObjects")
+    if isinstance(container_objects, dict):
+        single["vcObjects"] = container_objects
+    return {
+        "config": json.dumps({"singleVisual": single}),
+        "filters": _pbir_filters(visual_file),
+    }
+
+
+def pbir_parts_to_legacy(parts: dict[str, Any]) -> dict[str, Any]:
+    """Fold decoded PBIR parts (path → JSON) into the classic ``report.json`` shape.
+
+    Pages follow ``pages.json`` ``pageOrder``; pages missing from it come after,
+    sorted by folder name. Visuals inside a page are sorted by folder name.
+    Visual groups (no ``visual`` block) and non-JSON parts are ignored.
+    """
+    pages: dict[str, dict[str, Any]] = {}
+    visuals: dict[str, list[tuple[str, Any]]] = {}
+    for path, data in parts.items():
+        if not path.startswith(_PAGES):
+            continue
+        segs = path[len(_PAGES):].split("/")
+        if len(segs) == 2 and segs[1] == "page.json" and isinstance(data, dict):
+            pages[segs[0]] = data
+        elif len(segs) == 4 and segs[1] == "visuals" and segs[3] == "visual.json":
+            visuals.setdefault(segs[0], []).append((segs[2], data))
+
+    meta = parts.get(_PAGES + "pages.json")
+    order = meta.get("pageOrder") if isinstance(meta, dict) else None
+    ordered = [p for p in (order if isinstance(order, list) else []) if p in pages]
+    ordered += sorted(p for p in pages if p not in ordered)
+
+    sections = []
+    for folder in ordered:
+        page = pages[folder]
+        containers = [
+            c for _, v in sorted(visuals.get(folder, []), key=lambda x: x[0])
+            if (c := _pbir_container(v))
+        ]
+        sections.append(
+            {
+                "name": page.get("name") or folder,
+                "displayName": page.get("displayName") or "",
+                "visualContainers": containers,
+                "filters": _pbir_filters(page),
+            }
+        )
+    return {"sections": sections, "filters": _pbir_filters(parts.get("definition/report.json"))}

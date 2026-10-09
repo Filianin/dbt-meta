@@ -53,8 +53,9 @@ _SKIP_SILENT = "silent"
 _SKIP_WIDE = "wide"
 
 # Skip models whose resolved column count exceeds this — all-columns SQLGlot
-# lineage on a very wide table (e.g. a 1400+ column `SELECT *` staging
-# passthrough) blows up to GBs of RAM and minutes of pure-Python work.
+# lineage on a very wide table blows up to GBs of RAM and minutes of
+# pure-Python work (``jira_issues``: 1478 columns, a ``SELECT * EXCEPT``
+# passthrough of a 1476-column source, peaked at ~1.7 GB).
 # Downstream models still resolve edges to the skipped model's columns by name;
 # only the skipped model's own internal passthrough edges are absent. Override
 # via ``DBT_LINEAGE_MAX_COLUMNS``; ``<=0`` disables the guard.
@@ -74,6 +75,10 @@ def _per_model_timeout(seconds: int) -> Iterator[None]:
 
     In the parallel build each pool worker runs its task on its own main
     thread, so this transfers unchanged into workers.
+
+    The CLI default is ``0`` (disabled): a skipped model loses its lineage,
+    and SIGALRM cannot interrupt sqlglot's C-level regex anyway, so slow
+    models are left to finish.
     """
     if seconds <= 0 or sys.platform.startswith("win"):
         yield
@@ -281,6 +286,10 @@ class LineageBuilder:
             self.per_model_timeout,
             self.max_columns,
         )
+        # No ``max_tasks_per_child``: recycling spawn workers that carry large
+        # initargs (table index + sqlglot schema) deadlocked the pool at the
+        # recycle threshold (0% CPU, workers never respawned). Workers live
+        # for the whole pool.
         pool_kwargs: dict[str, Any] = {
             "max_workers": self.jobs,
             "mp_context": ctx,
