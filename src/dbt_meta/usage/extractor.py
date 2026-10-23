@@ -48,6 +48,26 @@ _OP_BY_CLASS = {
 _RANGE_OPS = {"between", "gt", "ge", "lt", "le"}
 
 
+def _attach_single_table_columns(expression: exp.Expr) -> None:
+    """Attribute bare columns to the scope's only physical table.
+
+    sqlglot < 30.23 did this inside ``qualify_columns`` (``infer_schema``);
+    later releases leave such columns unqualified when the schema is empty,
+    which would hide every unprefixed reference from the alias filter.
+    """
+    for scope in traverse_scope(expression):
+        tables = [
+            alias
+            for alias, (_, source) in scope.selected_sources.items()
+            if isinstance(source, exp.Table)
+        ]
+        if len(tables) != 1:
+            continue
+        for col in scope.columns:
+            if not col.table:
+                col.set("table", exp.to_identifier(tables[0]))
+
+
 @dataclass(frozen=True)
 class UsageEvent:
     """A single column reference in a downstream model's SQL.
@@ -172,7 +192,8 @@ class ColumnUsageExtractor:
                 parsed = qualify_tables(parsed)
                 root_scope = build_scope(parsed)
                 if root_scope is not None:
-                    parsed = qualify_columns(parsed, schema={}, infer_schema=True)
+                    parsed = qualify_columns(parsed, schema={})
+                    _attach_single_table_columns(parsed)
             except (SqlglotError, AttributeError, KeyError):
                 # Optimizer can fail on weird schemas; bare-name fallback
                 # below still works for fully qualified refs.

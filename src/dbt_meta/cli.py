@@ -1274,8 +1274,8 @@ def refresh(
       Always runs with --force (immediate sync)
 
     Dev mode (--dev):
-      Parses local dbt project to ./target/manifest.json
-      Runs: dbt parse --target dev
+      Parses the dbt project containing the cwd to <project>/target/manifest.json
+      Runs: dbt parse --target dev (project venv's dbt first)
       Use after: Editing models, schema.yml, dbt_project.yml
 
     \b

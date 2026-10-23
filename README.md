@@ -533,9 +533,9 @@ The third level only fires when `--dev` is set, since auto-compilation is only s
 meta refresh
 # → Downloads to ~/dbt-state/ (always --force)
 
-# Parse local project to ./target/manifest.json (use after editing models)
+# Parse the enclosing dbt project to <project>/target/manifest.json (use after editing models)
 meta refresh --dev
-# → Runs: dbt parse --target dev
+# → Runs: dbt parse --target dev (the project venv's dbt, --project-dir <project>)
 ```
 
 ### Optimization Analysis

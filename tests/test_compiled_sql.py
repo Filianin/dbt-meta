@@ -509,18 +509,18 @@ class TestRunDbtCompile:
         calls = self._capture(monkeypatch)
         ok, err = run_dbt_compile(str(tmp_path), select=['events'], target='dev')
         assert ok is True and err is None
-        assert calls['argv'] == ['/usr/bin/dbt', 'compile', '--select', 'events', '--target', 'dev']
+        assert calls['argv'] == ['/usr/bin/dbt', 'compile', '--project-dir', str(tmp_path), '--select', 'events', '--target', 'dev']
 
     def test_bulk_mode_argv(self, tmp_path, monkeypatch):
         calls = self._capture(monkeypatch)
         run_dbt_compile(str(tmp_path), select=['a', 'b'], timeout=300)
-        assert calls['argv'] == ['/usr/bin/dbt', 'compile', '--select', 'a', 'b']
+        assert calls['argv'] == ['/usr/bin/dbt', 'compile', '--project-dir', str(tmp_path), '--select', 'a', 'b']
         assert calls['kwargs']['timeout'] == 300
 
     def test_whole_mode_argv_with_profiles_dir(self, tmp_path, monkeypatch):
         calls = self._capture(monkeypatch)
         run_dbt_compile(str(tmp_path), profiles_dir=str(tmp_path))
-        assert calls['argv'] == ['/usr/bin/dbt', 'compile', '--profiles-dir', str(tmp_path)]
+        assert calls['argv'] == ['/usr/bin/dbt', 'compile', '--project-dir', str(tmp_path), '--profiles-dir', str(tmp_path)]
 
     def test_dbt_not_found(self, tmp_path, monkeypatch):
         monkeypatch.delenv('VIRTUAL_ENV', raising=False)
@@ -579,13 +579,13 @@ class TestRunDbtCompile:
         calls = self._capture(monkeypatch)
         ok, err = run_dbt_parse(str(tmp_path))
         assert ok is True and err is None
-        assert calls['argv'] == ['/usr/bin/dbt', 'parse', '--target', 'dev']
+        assert calls['argv'] == ['/usr/bin/dbt', 'parse', '--project-dir', str(tmp_path), '--target', 'dev']
         assert calls['kwargs']['cwd'] == str(tmp_path)
 
     def test_parse_without_target_omits_the_flag(self, tmp_path, monkeypatch):
         calls = self._capture(monkeypatch)
         run_dbt_parse(str(tmp_path), target=None, timeout=5)
-        assert calls['argv'] == ['/usr/bin/dbt', 'parse']
+        assert calls['argv'] == ['/usr/bin/dbt', 'parse', '--project-dir', str(tmp_path)]
         assert calls['kwargs']['timeout'] == 5
 
 
