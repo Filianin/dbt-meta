@@ -663,16 +663,30 @@ class TestRefreshCommand:
         assert call_args[0].endswith('sync-artifacts.sh')
         assert call_args[1] == '--force'
 
-    def test_refresh_dev_mode(self, mocker):
-        """Should call dbt parse --target dev in dev mode"""
-        mock_run = mocker.patch('subprocess.run')
+    def test_refresh_dev_mode(self, mocker, tmp_path, monkeypatch):
+        """Should run dbt parse through the shared runner in the enclosing project"""
+        project = tmp_path / "proj"
+        (project / "models").mkdir(parents=True)
+        (project / "dbt_project.yml").write_text("name: proj\n")
+        monkeypatch.chdir(project / "models")
+        mock_parse = mocker.patch(
+            'dbt_meta.command_impl.refresh.run_dbt_parse', return_value=(True, None)
+        )
 
         refresh(use_dev=True)
 
-        # Verify dbt parse --target dev was called
-        mock_run.assert_called_once()
-        call_args = mock_run.call_args[0][0]
-        assert call_args == ['dbt', 'parse', '--target', 'dev']
+        mock_parse.assert_called_once_with(str(project.resolve()))
+
+    def test_refresh_dev_mode_without_project(self, mocker, tmp_path, monkeypatch):
+        """Should raise DbtMetaError when no dbt_project.yml is above the cwd"""
+        from dbt_meta.errors import DbtMetaError
+        monkeypatch.chdir(tmp_path)
+        mocker.patch('dbt_meta.command_impl.refresh.infer_project_root', return_value=None)
+        mock_parse = mocker.patch('dbt_meta.command_impl.refresh.run_dbt_parse')
+
+        with pytest.raises(DbtMetaError, match="No dbt project found"):
+            refresh(use_dev=True)
+        mock_parse.assert_not_called()
 
     def test_refresh_script_not_found(self, mocker):
         """Should raise DbtMetaError if sync script missing"""
@@ -683,12 +697,26 @@ class TestRefreshCommand:
             refresh(use_dev=False)
 
     def test_refresh_raises_on_subprocess_error(self, mocker):
-        """Should raise exception if subprocess fails"""
+        """Should raise exception if the sync script fails"""
         import subprocess as sp
+        mocker.patch('pathlib.Path.exists', return_value=True)
         mock_run = mocker.patch('subprocess.run')
-        mock_run.side_effect = sp.CalledProcessError(1, 'dbt parse')
+        mock_run.side_effect = sp.CalledProcessError(1, 'sync-artifacts.sh')
 
         with pytest.raises(sp.CalledProcessError):
+            refresh(use_dev=False)
+
+    def test_refresh_dev_raises_on_parse_failure(self, mocker, tmp_path, monkeypatch):
+        """Should raise DbtMetaError carrying the dbt error text"""
+        from dbt_meta.errors import DbtMetaError
+        (tmp_path / "dbt_project.yml").write_text("name: proj\n")
+        monkeypatch.chdir(tmp_path)
+        mocker.patch(
+            'dbt_meta.command_impl.refresh.run_dbt_parse',
+            return_value=(False, "Permission denied"),
+        )
+
+        with pytest.raises(DbtMetaError, match="dbt parse failed: Permission denied"):
             refresh(use_dev=True)
 
 

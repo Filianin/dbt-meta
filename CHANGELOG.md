@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.10] - 2026-10-23
+
+### Fixed
+
+- **`meta optimize refresh` (and every advisor built on column usage) crashed
+  on sqlglot >= 30.23** with `TypeError: qualify_columns() got an unexpected
+  keyword argument 'infer_schema'`: sqlglot removed the argument. The usage
+  extractor no longer passes it.
+- **Unprefixed columns are attributed to the scope's only table again.**
+  sqlglot >= 30.23 stopped inferring the source of a bare column when the
+  schema is empty, so `WHERE event_type = 1` against a single upstream table
+  produced no usage event and the refresh planner could under-classify a
+  model. The extractor now attaches such columns to the single physical table
+  of their scope itself; behaviour is identical on older sqlglot.
+- **dbt 2.0: every `dbt compile` / `dbt parse` launched by meta failed** with
+  `Failed to create directory: <path>/logs: Permission denied`. dbt 2.0 loads
+  the project's `.env` itself, and a `DBT_PROJECT_DIR` there (a Docker path)
+  redirected the run. meta now always passes `--project-dir <project root>`.
+  Fixes auto-compile in `optimize refresh`, `analyze`, `sql --dev`,
+  `validate --dev`, `scan --dev` and the auto-parse in `run-set`; the refresh
+  planner no longer falls back to blanket `full_refresh` for that reason.
+- **`meta refresh --dev` ignored the project venv.** It ran a bare `dbt` from
+  PATH in the cwd, so it failed whenever dbt lives only in the project venv
+  (the dbt 2.0 setup). It now finds the project by walking up to
+  `dbt_project.yml` and uses the same venv-first dbt lookup as the other
+  commands; a parse failure is reported with dbt's error text.
+
 ## [0.3.9] - 2026-10-09
 
 ### Added

@@ -84,10 +84,10 @@ def find_dbt_executable(project_root: str | None) -> str | None:
       3. ``$VIRTUAL_ENV/bin/dbt`` if the user has a venv activated
       4. ``shutil.which("dbt")`` — system PATH
 
-    The project-local lookup matters because users frequently install
-    ``dbt-core`` inside a project venv while having a different ``dbt`` on
-    PATH (e.g. ``dbt-fusion`` preview). Without this the wrong CLI would be
-    invoked and either fail or produce a differently-parsed manifest.
+    The project-local lookup matters because the project pins its dbt
+    (dbt-core 1.x or dbt 2.0) inside its own venv, while a different ``dbt``
+    may sit on PATH. Without this the wrong CLI would be invoked and either
+    fail or produce a differently-parsed manifest.
     """
     if project_root:
         for candidate in (".venv/bin/dbt", "venv/bin/dbt"):
@@ -138,14 +138,19 @@ def _run_dbt(
     extra: list[str],
     timeout: int,
 ) -> tuple[bool, str | None]:
-    """Run ``dbt <subcommand> <extra...>`` in ``project_root``. Returns (success, error_text)."""
+    """Run ``dbt <subcommand> <extra...>`` in ``project_root``. Returns (success, error_text).
+
+    ``--project-dir`` is always passed: dbt 2.0 loads the project's ``.env``
+    on its own, and a ``DBT_PROJECT_DIR`` there (e.g. a Docker path) would
+    otherwise redirect the run, failing on its ``logs/`` directory.
+    """
     dbt_cmd = find_dbt_executable(project_root)
     if not dbt_cmd:
         return False, "dbt CLI not found in project venv or PATH"
 
     try:
         result = subprocess.run(
-            [dbt_cmd, subcommand, *extra],
+            [dbt_cmd, subcommand, "--project-dir", project_root, *extra],
             cwd=project_root,
             capture_output=True,
             text=True,
